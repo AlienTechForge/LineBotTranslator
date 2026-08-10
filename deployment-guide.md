@@ -61,6 +61,11 @@ Secrets 只作為容器環境變數傳入，不會寫入 image、Repository 或 
 | `MONGODB_SERVER_SELECTION_TIMEOUT_MS` | `3000` | 每次操作等待可用 Mongo 節點的上限 |
 | `MONGODB_HEARTBEAT_FREQUENCY_MS` | `5000` | Mongo background topology recheck 間隔 |
 | `MONGODB_MIN_HEARTBEAT_FREQUENCY_MS` | `500` | Mongo background recheck 的最小間隔 |
+| `MINIO_ENABLED` | `true` | 是否啟用 optional MinIO 圖片儲存 |
+| `MINIO_RETRY_INTERVAL_MS` | `30000` | MinIO outage 後再次 probe 的間隔 |
+| `MINIO_CONNECT_TIMEOUT_MS` | `3000` | MinIO 連線 timeout |
+| `MINIO_WRITE_TIMEOUT_MS` | `5000` | MinIO 上傳 timeout |
+| `MINIO_READ_TIMEOUT_MS` | `5000` | MinIO API 讀取 timeout |
 
 ## 手動部署
 

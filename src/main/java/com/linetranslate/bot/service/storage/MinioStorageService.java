@@ -4,8 +4,13 @@ import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.LongSupplier;
 
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -13,157 +18,192 @@ import com.linetranslate.bot.logging.SafeLog;
 
 import io.minio.BucketExistsArgs;
 import io.minio.GetPresignedObjectUrlArgs;
+import io.minio.Http.Method;
 import io.minio.MakeBucketArgs;
 import io.minio.MinioClient;
 import io.minio.PutObjectArgs;
-import io.minio.http.Method;
 import lombok.extern.slf4j.Slf4j;
 
 @Service
 @Slf4j
 public class MinioStorageService {
 
-    private MinioClient minioClient;
-    private String bucketName;
+    private final MinioClient minioClient;
+    private final String bucketName;
+    private final long retryIntervalMs;
+    private final LongSupplier currentTimeMs;
+    private final AtomicReference<State> state;
+    private final AtomicLong retryAfterMs = new AtomicLong(0);
+    private final AtomicBoolean bucketReady = new AtomicBoolean(false);
 
-    public MinioStorageService(ObjectProvider<MinioClient> minioClientProvider,
-            @Value("${minio.bucket-name}") String bucketName) {
-        this.minioClient = minioClientProvider.getIfAvailable();
+    @Autowired
+    public MinioStorageService(
+            ObjectProvider<MinioClient> minioClientProvider,
+            @Value("${minio.bucket-name}") String bucketName,
+            @Value("${minio.enabled:${MINIO_ENABLED:true}}") boolean enabled,
+            @Value("${minio.retry-interval-ms:${MINIO_RETRY_INTERVAL_MS:30000}}") long retryIntervalMs) {
+        this(
+                minioClientProvider.getIfAvailable(),
+                bucketName,
+                enabled,
+                retryIntervalMs,
+                System::currentTimeMillis);
+    }
+
+    MinioStorageService(
+            MinioClient minioClient,
+            String bucketName,
+            boolean enabled,
+            long retryIntervalMs,
+            LongSupplier currentTimeMs) {
+        if (retryIntervalMs <= 0) {
+            throw new IllegalArgumentException("MinIO retry interval must be greater than zero");
+        }
+        this.minioClient = minioClient;
         this.bucketName = bucketName;
-        
-        // 檢查 MinioClient 是否為 null
-        if (this.minioClient == null) {
-            log.warn("MinIO 客戶端為 null，MinIO 功能將被禁用");
-            return;
-        }
-        
-        try {
-            initializeBucket();
-        } catch (Exception e) {
-            log.error("初始化 MinIO 存儲桶失敗，但應用程式將繼續運行: failure={}",
-                    SafeLog.failure(e));
-            // 不拋出異常，讓應用程式繼續運行
+        this.retryIntervalMs = retryIntervalMs;
+        this.currentTimeMs = currentTimeMs;
+        this.state = new AtomicReference<>(enabled && minioClient != null ? State.UNKNOWN : State.DISABLED);
+
+        if (this.state.get() == State.DISABLED) {
+            log.info("MinIO storage is disabled or unconfigured; image translation will continue without storage");
         }
     }
 
     /**
-     * 初始化 MinIO 存儲桶
+     * Stores an image when MinIO is available. An open circuit skips network calls until the
+     * configured recovery interval has elapsed.
      */
-    private void initializeBucket() {
-        try {
-            boolean bucketExists = minioClient.bucketExists(BucketExistsArgs.builder().bucket(bucketName).build());
-            if (!bucketExists) {
-                minioClient.makeBucket(MakeBucketArgs.builder().bucket(bucketName).build());
-                log.info("創建 MinIO 存儲桶: {}", bucketName);
-            } else {
-                log.info("MinIO 存儲桶已存在: {}", bucketName);
-            }
-        } catch (Exception e) {
-            log.error("初始化 MinIO 存儲桶失敗: failure={}", SafeLog.failure(e));
-            throw new IllegalStateException("初始化 MinIO 存儲桶失敗");
+    public ImageStorageResult uploadImage(byte[] imageBytes, String contentType) {
+        if (!beginAttempt()) {
+            return ImageStorageResult.notStored();
         }
-    }
 
-    /**
-     * 上傳圖片到 MinIO
-     *
-     * @param imageBytes 圖片字節數組
-     * @param contentType 圖片內容類型 (例如 "image/jpeg", "image/png")
-     * @return 圖片的 URL，如果上傳失敗則返回 null
-     */
-    public String uploadImage(byte[] imageBytes, String contentType) {
-        // 檢查 MinioClient 是否為 null
-        if (minioClient == null) {
-            log.warn("MinIO 客戶端為 null，無法上傳圖片");
-            return null;
-        }
-        
+        String objectName = generateObjectName(contentType);
         try {
-            String objectName = generateObjectName(contentType);
-            
+            ensureBucket();
             try (InputStream inputStream = new ByteArrayInputStream(imageBytes)) {
                 minioClient.putObject(
                         PutObjectArgs.builder()
                                 .bucket(bucketName)
                                 .object(objectName)
-                                .stream(inputStream, imageBytes.length, -1)
+                                .stream(inputStream, Long.valueOf(imageBytes.length), Long.valueOf(-1))
                                 .contentType(contentType)
                                 .build());
             }
-            
-            String imageUrl = getPresignedUrl(objectName);
-            log.info("圖片上傳成功: object={}", objectName);
-            return imageUrl;
-        } catch (Exception e) {
-            log.error("上傳圖片到 MinIO 失敗: failure={}", SafeLog.failure(e));
-            // 返回 null 而不是拋出異常，讓應用程式能夠繼續運行
-            return null;
+
+            try {
+                String url = minioClient.getPresignedObjectUrl(
+                        GetPresignedObjectUrlArgs.builder()
+                                .bucket(bucketName)
+                                .object(objectName)
+                                .method(Method.GET)
+                                .expiry(7, TimeUnit.DAYS)
+                                .build());
+                markAvailable();
+                log.info("MinIO image stored: object={}", objectName);
+                return ImageStorageResult.stored(url);
+            } catch (Exception failure) {
+                markUnavailable(failure);
+                return ImageStorageResult.storedWithoutUrl();
+            }
+        } catch (Exception failure) {
+            markUnavailable(failure);
+            return ImageStorageResult.notStored();
         }
     }
 
-    /** Performs a read-only bucket accessibility check for development diagnostics and health. */
+    /** Read-only availability state for diagnostics; an eligible call also probes recovery. */
     public boolean isAvailable() {
-        if (minioClient == null) {
+        State current = state.get();
+        if (current == State.AVAILABLE) {
+            return true;
+        }
+        if (!beginAttempt()) {
             return false;
         }
+
         try {
-            return minioClient.bucketExists(BucketExistsArgs.builder().bucket(bucketName).build());
-        } catch (Exception exception) {
-            log.warn("MinIO availability check failed: failure={}", SafeLog.failure(exception));
+            ensureBucket();
+            markAvailable();
+            return true;
+        } catch (Exception failure) {
+            markUnavailable(failure);
             return false;
         }
     }
 
-    /**
-     * 獲取對象的預簽名 URL
-     *
-     * @param objectName 對象名稱
-     * @return 預簽名 URL，如果獲取失敗則返回臨時 URL
-     */
-    public String getPresignedUrl(String objectName) {
-        // 檢查 MinioClient 是否為 null
-        if (minioClient == null) {
-            log.warn("MinIO 客戶端為 null，無法獲取預簽名 URL");
-            // 返回一個臨時 URL
-            return "http://192.168.0.10:9000/" + bucketName + "/" + objectName;
-        }
-        
-        try {
-            return minioClient.getPresignedObjectUrl(
-                    GetPresignedObjectUrlArgs.builder()
-                            .bucket(bucketName)
-                            .object(objectName)
-                            .method(Method.GET)
-                            .expiry(7, TimeUnit.DAYS)
-                            .build());
-        } catch (Exception e) {
-            log.error("獲取預簽名 URL 失敗: failure={}", SafeLog.failure(e));
-            // 返回一個臨時 URL，讓應用程式能夠繼續運行
-            return "http://192.168.0.10:9000/" + bucketName + "/" + objectName;
-        }
-    }
-
-    /**
-     * 生成唯一的對象名稱
-     *
-     * @param contentType 內容類型
-     * @return 對象名稱
-     */
-    private String generateObjectName(String contentType) {
-        String extension = "";
-        if (contentType != null) {
-            if (contentType.equals("image/jpeg")) {
-                extension = ".jpg";
-            } else if (contentType.equals("image/png")) {
-                extension = ".png";
-            } else if (contentType.equals("image/gif")) {
-                extension = ".gif";
-            } else {
-                extension = ".bin";
+    private boolean beginAttempt() {
+        while (true) {
+            State current = state.get();
+            if (current == State.DISABLED || current == State.PROBING) {
+                return false;
+            }
+            if (current == State.AVAILABLE) {
+                return true;
+            }
+            if (current == State.UNAVAILABLE && currentTimeMs.getAsLong() < retryAfterMs.get()) {
+                return false;
+            }
+            if (state.compareAndSet(current, State.PROBING)) {
+                return true;
             }
         }
-        
-        String uuid = UUID.randomUUID().toString();
-        return "images/" + uuid + extension;
+    }
+
+    private void ensureBucket() throws Exception {
+        if (bucketReady.get()) {
+            return;
+        }
+
+        synchronized (bucketReady) {
+            if (bucketReady.get()) {
+                return;
+            }
+            boolean exists = minioClient.bucketExists(
+                    BucketExistsArgs.builder().bucket(bucketName).build());
+            if (!exists) {
+                minioClient.makeBucket(MakeBucketArgs.builder().bucket(bucketName).build());
+            }
+            bucketReady.set(true);
+        }
+    }
+
+    private void markAvailable() {
+        State previous = state.getAndSet(State.AVAILABLE);
+        retryAfterMs.set(0);
+        if (previous != State.AVAILABLE) {
+            log.info("MinIO storage state changed: state=available, bucket={}", bucketName);
+        }
+    }
+
+    private void markUnavailable(Exception failure) {
+        State previous = state.getAndSet(State.UNAVAILABLE);
+        bucketReady.set(false);
+        retryAfterMs.set(currentTimeMs.getAsLong() + retryIntervalMs);
+        if (previous != State.UNAVAILABLE) {
+            log.warn(
+                    "MinIO storage state changed: state=unavailable, bucket={}, failure={}",
+                    bucketName,
+                    SafeLog.failure(failure));
+        }
+    }
+
+    private String generateObjectName(String contentType) {
+        String extension = switch (contentType == null ? "" : contentType) {
+            case "image/jpeg" -> ".jpg";
+            case "image/png" -> ".png";
+            case "image/gif" -> ".gif";
+            default -> ".bin";
+        };
+        return "images/" + UUID.randomUUID() + extension;
+    }
+
+    private enum State {
+        UNKNOWN,
+        PROBING,
+        AVAILABLE,
+        UNAVAILABLE,
+        DISABLED
     }
 }

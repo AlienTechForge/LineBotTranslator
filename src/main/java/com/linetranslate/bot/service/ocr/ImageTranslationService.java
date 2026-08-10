@@ -25,6 +25,7 @@ import com.linetranslate.bot.repository.UserProfileRepository;
 import com.linetranslate.bot.service.ai.AiExecutionResult;
 import com.linetranslate.bot.service.ai.AiProviderException;
 import com.linetranslate.bot.service.ai.AiServiceFactory;
+import com.linetranslate.bot.service.storage.ImageStorageResult;
 import com.linetranslate.bot.service.storage.MinioStorageService;
 import com.linetranslate.bot.service.translation.LanguageDetectionService;
 import com.linetranslate.bot.service.translation.TranslationService;
@@ -107,6 +108,7 @@ public class ImageTranslationService {
 
             // 獲取圖片內容並轉換為Base64
             String recognizedText;
+            ImageStorageResult storageResult = ImageStorageResult.notStored();
 
             try {
                 Result<BlobContent> response = messagingApiBlobClient.getMessageContent(messageId).get();
@@ -123,8 +125,9 @@ public class ImageTranslationService {
                 // 上傳圖片到 MinIO 並獲取 URL
                 // LINE 平台的圖片通常是 JPEG 格式
                 String contentType = "image/jpeg";
-                String imageUrl = minioStorageService.uploadImage(imageBytes, contentType);
-                log.info("圖片已上傳到 MinIO: stored={}", SafeLog.present(imageUrl));
+                storageResult = minioStorageService.uploadImage(imageBytes, contentType);
+                log.info("圖片儲存處理完成: stored={}, urlPresent={}",
+                        storageResult.stored(), storageResult.url().isPresent());
 
                 // 準備OCR識別文字
                 if (ocrService != null) {
@@ -144,8 +147,6 @@ public class ImageTranslationService {
                     recognizedText = ocrResult.text();
                 }
                 
-                // 保存圖片 URL 到 ThreadLocal 變量，以便在保存翻譯記錄時使用
-                ImageContext.setCurrentImageUrl(imageUrl);
             } catch (Exception e) {
                 log.error("圖片處理失敗: user={}, failure={}",
                         SafeLog.user(userId), SafeLog.failure(e));
@@ -195,13 +196,10 @@ public class ImageTranslationService {
             // 計算處理時間
             long processingTimeMs = Duration.between(start, Instant.now()).toMillis();
 
-            // 獲取圖片 URL
-            String storedImageUrl = ImageContext.getCurrentImageUrl();
-            
             // 保存翻譯記錄
             saveTranslationRecord(userId, recognizedText, sourceLanguage, targetLanguage,
                     translatedText, translationResult.providerName(), translationResult.modelName(),
-                    processingTimeMs, true, storedImageUrl);
+                    processingTimeMs, true, storageResult.url().orElse(null), storageResult.stored());
 
             // 更新用戶資料
             updateUserProfileAfterImageTranslation(userProfile);
@@ -234,8 +232,6 @@ public class ImageTranslationService {
             log.error("圖片翻譯失敗: user={}, failure={}",
                     SafeLog.user(userId), SafeLog.failure(e));
             return "圖片翻譯處理失敗，請稍後再試。";
-        } finally {
-            ImageContext.clear();
         }
     }
 
@@ -298,7 +294,8 @@ public class ImageTranslationService {
      */
     private void saveTranslationRecord(String userId, String sourceText, String sourceLanguage,
                                        String targetLanguage, String translatedText, String aiProvider,
-                                       String modelName, double processingTimeMs, boolean isImageTranslation, String imageUrl) {
+                                       String modelName, double processingTimeMs, boolean isImageTranslation,
+                                       String imageUrl, boolean imageStored) {
 
         TranslationRecord record = TranslationRecord.builder()
                 .userId(userId)
@@ -312,6 +309,7 @@ public class ImageTranslationService {
                 .processingTimeMs(processingTimeMs)
                 .isImageTranslation(isImageTranslation)
                 .imageUrl(imageUrl)
+                .imageStored(imageStored)
                 .build();
 
         translationRecordRepository.save(record);
