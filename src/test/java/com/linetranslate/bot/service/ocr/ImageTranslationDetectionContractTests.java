@@ -30,13 +30,16 @@ import com.linetranslate.bot.model.TranslationRecord;
 import com.linetranslate.bot.model.UserProfile;
 import com.linetranslate.bot.repository.TranslationRecordRepository;
 import com.linetranslate.bot.repository.UserProfileRepository;
+import com.linetranslate.bot.service.ai.AiExecutionFailure;
+import com.linetranslate.bot.service.ai.AiExecutionOutcome;
 import com.linetranslate.bot.service.ai.AiExecutionResult;
 import com.linetranslate.bot.service.ai.AiProviderException;
 import com.linetranslate.bot.service.ai.AiProviderExecutionModule;
 import com.linetranslate.bot.service.storage.ImageStorageResult;
 import com.linetranslate.bot.service.storage.MinioStorageService;
+import com.linetranslate.bot.service.translation.CachedTranslationAdapter;
 import com.linetranslate.bot.service.translation.LanguageDetectionService;
-import com.linetranslate.bot.service.translation.TranslationService;
+import com.linetranslate.bot.service.translation.TranslationWorkflowModule;
 
 @ExtendWith(MockitoExtension.class)
 class ImageTranslationDetectionContractTests {
@@ -46,7 +49,7 @@ class ImageTranslationDetectionContractTests {
     @Mock
     private OcrService ocrService;
     @Mock
-    private TranslationService translationService;
+    private CachedTranslationAdapter translationAdapter;
     @Mock
     private LanguageDetectionService languageDetectionService;
     @Mock
@@ -72,15 +75,18 @@ class ImageTranslationDetectionContractTests {
     @BeforeEach
     void setUp() throws Exception {
         when(ocrServiceProvider.getIfAvailable()).thenReturn(ocrService);
-        imageTranslationService = new ImageTranslationService(
-                ocrServiceProvider,
-                translationService,
+        TranslationWorkflowModule workflowModule = new TranslationWorkflowModule(
                 languageDetectionService,
-                aiServiceFactory,
-                messagingApiBlobClient,
+                translationAdapter,
                 translationRecordRepository,
                 userProfileRepository,
-                appConfig,
+                appConfig);
+        imageTranslationService = new ImageTranslationService(
+                ocrServiceProvider,
+                workflowModule,
+                aiServiceFactory,
+                messagingApiBlobClient,
+                userProfileRepository,
                 minioStorageService);
         ReflectionTestUtils.setField(imageTranslationService, "ocrEnabled", true);
 
@@ -100,8 +106,9 @@ class ImageTranslationDetectionContractTests {
         when(ocrService.recognizeText(any(ByteArrayInputStream.class))).thenReturn("hello");
         when(languageDetectionService.detectLanguage("hello")).thenReturn("en");
         when(appConfig.getDefaultTargetLanguageForOthers()).thenReturn("zh-TW");
-        lenient().when(translationService.translateWithService(any(UserProfile.class), anyString(), anyString()))
-                .thenReturn(new AiExecutionResult("翻譯結果", "openai", "gpt-test"));
+        lenient().when(translationAdapter.translate(any(UserProfile.class), anyString(), anyString()))
+                .thenReturn(new AiExecutionOutcome.Success(
+                        new AiExecutionResult("翻譯結果", "openai", "gpt-test")));
     }
 
     @Test
@@ -117,8 +124,9 @@ class ImageTranslationDetectionContractTests {
 
     @Test
     void imageFallbackPersistsTheProviderThatActuallyTranslated() {
-        when(translationService.translateWithService(any(UserProfile.class), anyString(), anyString()))
-                .thenReturn(new AiExecutionResult("翻譯結果", "gemini", "gemini-test"));
+        when(translationAdapter.translate(any(UserProfile.class), anyString(), anyString()))
+                .thenReturn(new AiExecutionOutcome.Success(
+                        new AiExecutionResult("翻譯結果", "gemini", "gemini-test")));
 
         imageTranslationService.processImageTranslation("U-test", "message-id");
 
@@ -144,15 +152,17 @@ class ImageTranslationDetectionContractTests {
 
     @Test
     void totalImageTranslationFailureDoesNotSaveOrCount() {
-        when(translationService.translateWithService(any(UserProfile.class), anyString(), anyString()))
-                .thenThrow(new AiProviderException(
+        AiProviderException error = new AiProviderException(
                         AiProviderException.Outcome.TRANSPORT_ERROR,
                         "gemini",
                         "gemini-test",
                         "IO_FAILURE",
                         "correlation-1",
                         -1,
-                        null));
+                        null);
+        when(translationAdapter.translate(any(UserProfile.class), anyString(), anyString()))
+                .thenReturn(new AiExecutionOutcome.Failure(
+                        AiExecutionFailure.from(error, java.util.List.of())));
 
         String response = imageTranslationService.processImageTranslation("U-test", "message-id");
 

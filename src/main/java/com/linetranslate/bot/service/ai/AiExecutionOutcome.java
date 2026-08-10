@@ -8,6 +8,10 @@ public sealed interface AiExecutionOutcome permits AiExecutionOutcome.Success, A
     record Failure(AiExecutionFailure failure) implements AiExecutionOutcome {
     }
 
+    default boolean failed() {
+        return this instanceof Failure;
+    }
+
     default AiExecutionResult resultOrThrow() {
         if (this instanceof Success success) {
             return success.result();

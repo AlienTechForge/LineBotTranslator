@@ -1,6 +1,5 @@
 package com.linetranslate.bot.service.translation;
 
-import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -12,19 +11,13 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 
 import com.linetranslate.bot.config.AppConfig;
 import com.linetranslate.bot.logging.SafeLog;
-import com.linetranslate.bot.model.TranslationRecord;
 import com.linetranslate.bot.model.UserProfile;
-import com.linetranslate.bot.repository.TranslationRecordRepository;
 import com.linetranslate.bot.repository.UserProfileRepository;
-import com.linetranslate.bot.service.ai.AiExecutionResult;
-import com.linetranslate.bot.service.ai.AiProviderExecutionModule;
-import com.linetranslate.bot.service.ai.AiProviderException;
-import com.linetranslate.bot.service.translation.LanguageDetectionService;
+import com.linetranslate.bot.service.ai.AiExecutionFailure;
 import com.linetranslate.bot.util.LanguageUtils;
 import lombok.extern.slf4j.Slf4j;
 
@@ -35,9 +28,7 @@ public class TranslationService {
     private static final String PROVIDER_UNAVAILABLE_MESSAGE =
             "翻譯服務暫時無法使用，請稍後再試。";
 
-    private final LanguageDetectionService languageDetectionService;
-    private final AiProviderExecutionModule aiProviderExecutionModule;
-    private final TranslationRecordRepository translationRecordRepository;
+    private final TranslationWorkflowModule translationWorkflowModule;
     private final UserProfileRepository userProfileRepository;
     private final AppConfig appConfig;
 
@@ -59,14 +50,10 @@ public class TranslationService {
 
     @Autowired
     public TranslationService(
-            LanguageDetectionService languageDetectionService,
-            AiProviderExecutionModule aiProviderExecutionModule,
-            TranslationRecordRepository translationRecordRepository,
+            TranslationWorkflowModule translationWorkflowModule,
             UserProfileRepository userProfileRepository,
             AppConfig appConfig) {
-        this.languageDetectionService = languageDetectionService;
-        this.aiProviderExecutionModule = aiProviderExecutionModule;
-        this.translationRecordRepository = translationRecordRepository;
+        this.translationWorkflowModule = translationWorkflowModule;
         this.userProfileRepository = userProfileRepository;
         this.appConfig = appConfig;
     }
@@ -206,52 +193,28 @@ public class TranslationService {
             return handleDefaultTranslation(userId, text, userProfile, start);
         }
 
-        // 指定目標語言的請求仍需偵測一次來源語言，並在後續流程重用。
-        String sourceLanguage = languageDetectionService.detectLanguage(sourceText);
         return performTranslation(
-                userId, userProfile, sourceText, sourceLanguage, targetLanguage, start);
+                userId,
+                userProfile,
+                sourceText,
+                targetLanguage,
+                TranslationRequestKind.STANDARD_TEXT,
+                start,
+                true);
     }
 
     /**
      * 處理默認的翻譯情況（無指定目標語言）
      */
     private String handleDefaultTranslation(String userId, String text, UserProfile userProfile, Instant start) {
-        // 使用自動檢測語言並選擇目標語言
-        String sourceText = text;
-        String sourceLanguage = languageDetectionService.detectLanguage(sourceText);
-        String targetLanguage = getDefaultTargetLanguage(sourceLanguage, userProfile);
-
-        log.info("自動檢測語言: {}, 目標語言: {}", sourceLanguage, targetLanguage);
-
         return performTranslation(
-                userId, userProfile, sourceText, sourceLanguage, targetLanguage, start);
-    }
-
-    /**
-     * 根據源語言選擇默認的目標語言
-     *
-     * @param sourceLanguage 源語言
-     * @param userProfile 用戶資料
-     * @return 目標語言代碼
-     */
-    private String getDefaultTargetLanguage(String sourceLanguage, UserProfile userProfile) {
-        // 如果是中文，且用戶設置了偏好的中文翻譯目標語言
-        if (sourceLanguage != null && (sourceLanguage.startsWith("zh") || "zh".equals(sourceLanguage))) {
-            String preferredChineseTargetLanguage = userProfile.getPreferredChineseTargetLanguage();
-            if (preferredChineseTargetLanguage != null && !preferredChineseTargetLanguage.isEmpty()) {
-                return preferredChineseTargetLanguage;
-            }
-            return appConfig.getDefaultTargetLanguageForChinese();
-        } else {
-            // 如果不是中文，使用用戶偏好的語言或默認設置
-            String preferredLanguage = userProfile.getPreferredLanguage();
-            if (preferredLanguage != null
-                    && !preferredLanguage.isEmpty()
-                    && !preferredLanguage.equalsIgnoreCase(sourceLanguage)) {
-                return preferredLanguage;
-            }
-            return appConfig.getDefaultTargetLanguageForOthers();
-        }
+                userId,
+                userProfile,
+                text,
+                null,
+                TranslationRequestKind.STANDARD_TEXT,
+                start,
+                true);
     }
 
     /**
@@ -261,33 +224,33 @@ public class TranslationService {
             String userId,
             UserProfile userProfile,
             String sourceText,
-            String sourceLanguage,
             String targetLanguage,
-            Instant start) {
-        AiExecutionResult executionResult;
-        try {
-            executionResult = translateWithService(userProfile, sourceText, targetLanguage);
-        } catch (AiProviderException failure) {
-            logTranslationFailure(userId, failure);
+            TranslationRequestKind kind,
+            Instant start,
+            boolean includeLanguageSummary) {
+        TranslationWorkflowOutcome outcome = translationWorkflowModule.execute(
+                new TranslationWorkflowRequest(
+                        userProfile,
+                        sourceText,
+                        targetLanguage,
+                        kind,
+                        null,
+                        null,
+                        start));
+        if (outcome instanceof TranslationWorkflowOutcome.Failure failure) {
+            logTranslationFailure(userId, failure.failure());
             return PROVIDER_UNAVAILABLE_MESSAGE;
         }
-        String translatedText = executionResult.text();
-
-        // 計算處理時間
-        long processingTimeMs = Duration.between(start, Instant.now()).toMillis();
-
-        // 保存翻譯記錄
-        saveTranslationRecord(userId, sourceText, sourceLanguage,
-                targetLanguage, translatedText, executionResult.providerName(),
-                executionResult.modelName(), processingTimeMs, false, null);
-
-        // 更新用戶資料
-        updateUserProfileAfterTranslation(userProfile, translatedText, targetLanguage);
+        TranslationWorkflowResult result = ((TranslationWorkflowOutcome.Success) outcome).result();
+        if (!includeLanguageSummary) {
+            return result.translatedText();
+        }
 
         // 在翻譯結果中添加偵測到的語言資訊和翻譯目標語言
-        String sourceLanguageName = LanguageUtils.toChineseName(sourceLanguage);
-        String targetLanguageName = LanguageUtils.toChineseName(targetLanguage);
-        return translatedText + "\n\n[偵測到: " + sourceLanguageName + " | 翻譯成: " + targetLanguageName + "]";
+        String sourceLanguageName = LanguageUtils.toChineseName(result.sourceLanguage());
+        String targetLanguageName = LanguageUtils.toChineseName(result.targetLanguage());
+        return result.translatedText() + "\n\n[偵測到: " + sourceLanguageName
+                + " | 翻譯成: " + targetLanguageName + "]";
     }
 
     /**
@@ -310,29 +273,14 @@ public class TranslationService {
         log.info("快速翻譯請求: user={}, target={}, content={}",
                 SafeLog.user(userId), standardLanguageCode, SafeLog.content(text));
 
-        String sourceLanguage = languageDetectionService.detectLanguage(text);
-
-        AiExecutionResult executionResult;
-        try {
-            executionResult = translateWithService(userProfile, text, standardLanguageCode);
-        } catch (AiProviderException failure) {
-            logTranslationFailure(userId, failure);
-            return PROVIDER_UNAVAILABLE_MESSAGE;
-        }
-        String translatedText = executionResult.text();
-
-        // 計算處理時間
-        long processingTimeMs = Duration.between(start, Instant.now()).toMillis();
-
-        // 保存翻譯記錄
-        saveTranslationRecord(userId, text, sourceLanguage,
-                standardLanguageCode, translatedText, executionResult.providerName(),
-                executionResult.modelName(), processingTimeMs, false, null);
-
-        // 更新用戶資料
-        updateUserProfileAfterTranslation(userProfile, translatedText, standardLanguageCode);
-
-        return translatedText;
+        return performTranslation(
+                userId,
+                userProfile,
+                text,
+                standardLanguageCode,
+                TranslationRequestKind.QUICK_TEXT,
+                start,
+                false);
     }
 
     /**
@@ -357,75 +305,25 @@ public class TranslationService {
         Instant start = Instant.now();
         UserProfile userProfile = ensureUserProfileExists(userId);
 
-        // 檢測原文語言
-        String sourceLanguage = languageDetectionService.detectLanguage(text);
-
-        // 確定目標語言
-        String targetLanguage;
-        if (userProfile.getPreferredLanguage() != null && !userProfile.getPreferredLanguage().isEmpty()) {
-            // 如果用戶偏好與源語言相同，使用默認規則
-            if (sourceLanguage.equals(userProfile.getPreferredLanguage()) ||
-                    (sourceLanguage.startsWith("zh") && userProfile.getPreferredLanguage().startsWith("zh"))) {
-                targetLanguage = getDefaultTargetLanguage(sourceLanguage, userProfile);
-            } else {
-                targetLanguage = userProfile.getPreferredLanguage();
-            }
-        } else {
-            targetLanguage = getDefaultTargetLanguage(sourceLanguage, userProfile);
-        }
-
-        AiExecutionResult executionResult;
-        try {
-            executionResult = translateWithService(userProfile, text, targetLanguage);
-        } catch (AiProviderException failure) {
-            logTranslationFailure(userId, failure);
-            return PROVIDER_UNAVAILABLE_MESSAGE;
-        }
-        String translatedText = executionResult.text();
-
-        // 計算處理時間
-        long processingTimeMs = Duration.between(start, Instant.now()).toMillis();
-
-        // 保存翻譯記錄
-        saveTranslationRecord(userId, text, sourceLanguage, targetLanguage,
-                translatedText, executionResult.providerName(),
-                executionResult.modelName(), processingTimeMs, false, null);
-
-        // 更新用戶資料
-        updateUserProfileAfterTranslation(userProfile, translatedText, targetLanguage);
-
-        return translatedText;
+        return performTranslation(
+                userId,
+                userProfile,
+                text,
+                null,
+                TranslationRequestKind.BATCH_TEXT,
+                start,
+                false);
     }
 
-    /**
-     * 使用指定的 AI 服務進行翻譯
-     *
-     * @param userProfile user preferences used to select the primary provider
-     * @param text 要翻譯的文本
-     * @param targetLanguage 目標語言
-     * @return 翻譯結果
-     */
-    @Cacheable(
-            value = "translations",
-            key = "{#text, #targetLanguage, #userProfile.preferredAiProvider, "
-                    + "#userProfile.openaiPreferredModel, #userProfile.geminiPreferredModel}")
-    public AiExecutionResult translateWithService(
-            UserProfile userProfile,
-            String text,
-            String targetLanguage) {
-        log.info("執行 AI 翻譯: target={}", targetLanguage);
-        return aiProviderExecutionModule.translateText(userProfile, text, targetLanguage);
-    }
-
-    private void logTranslationFailure(String userId, AiProviderException failure) {
+    private void logTranslationFailure(String userId, AiExecutionFailure failure) {
         log.warn(
                 "AI 翻譯未完成: user={}, provider={}, model={}, outcome={}, reason={}, correlation={}",
                 SafeLog.user(userId),
-                failure.getProvider(),
-                failure.getModel(),
-                failure.getOutcome(),
-                failure.getReason(),
-                failure.getCorrelationId());
+                failure.provider(),
+                failure.model(),
+                failure.outcome(),
+                failure.reason(),
+                failure.correlationId());
     }
 
     /**
@@ -449,51 +347,6 @@ public class TranslationService {
                     .build();
             return userProfileRepository.save(newUserProfile);
         }
-    }
-
-    /**
-     * 保存翻譯記錄
-     */
-    private void saveTranslationRecord(String userId, String sourceText, String sourceLanguage,
-                                       String targetLanguage, String translatedText, String aiProvider,
-                                       String modelName, double processingTimeMs, boolean isImageTranslation, String imageUrl) {
-
-        TranslationRecord record = TranslationRecord.builder()
-                .userId(userId)
-                .sourceText(sourceText)
-                .sourceLanguage(sourceLanguage)
-                .targetLanguage(targetLanguage)
-                .translatedText(translatedText)
-                .aiProvider(aiProvider)
-                .modelName(modelName)
-                .createdAt(LocalDateTime.now())
-                .processingTimeMs(processingTimeMs)
-                .isImageTranslation(isImageTranslation)
-                .imageUrl(imageUrl)
-                .build();
-
-        translationRecordRepository.save(record);
-        log.info("已保存翻譯記錄: user={}", SafeLog.user(userId));
-    }
-
-    /**
-     * 更新用戶資料
-     */
-    private void updateUserProfileAfterTranslation(UserProfile userProfile, String translatedText, String targetLanguage) {
-        userProfile.setLastInteractionAt(LocalDateTime.now());
-        userProfile.setTotalTranslations(userProfile.getTotalTranslations() + 1);
-        userProfile.setTextTranslations(userProfile.getTextTranslations() + 1);
-
-        // 更新最近的翻譯
-        userProfile.getRecentTranslations().add(0, translatedText);
-        if (userProfile.getRecentTranslations().size() > 5) {
-            userProfile.getRecentTranslations().remove(5);
-        }
-
-        // 更新最近使用的語言
-        userProfile.addRecentLanguage(targetLanguage);
-
-        userProfileRepository.save(userProfile);
     }
 
     /**
