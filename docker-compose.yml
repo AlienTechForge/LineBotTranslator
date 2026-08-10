@@ -2,9 +2,9 @@ version: '3.8'
 
 services:
   app:
-    image: alien7666/linebot-translator:latest
+    image: ghcr.io/alientechforge/linebot-translator:latest
     container_name: linebot-translator
-    restart: always
+    restart: unless-stopped
     network_mode: "host"  # 使用宿主機網路
     env_file:
       - .env
@@ -17,3 +17,9 @@ services:
     volumes:
       - ./logs:/app/logs
       - ./linebot.json:/app/linebot.json:ro
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:4040/actuator/health/readiness"]
+      interval: 10s
+      timeout: 5s
+      start_period: 40s
+      retries: 6

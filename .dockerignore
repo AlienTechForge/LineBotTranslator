@@ -1,0 +1,15 @@
+.git
+.github
+.idea
+.vscode
+.env
+.env.*
+!.env.example
+linebot.json
+target
+logs
+*.log
+deployment-guide.md
+docker-compose.yml
+docker-deploy.bat
+run-on-server.sh
