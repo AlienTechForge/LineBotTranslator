@@ -19,7 +19,6 @@ import com.linetranslate.bot.service.ocr.ImageTranslationService;
 import com.linetranslate.bot.service.translation.TranslationService;
 import com.linetranslate.bot.logging.SafeLog;
 import com.linetranslate.bot.service.line.LineUserProfileService;
-import com.linetranslate.bot.service.AdminService;
 import com.linetranslate.bot.util.LanguageUtils;
 import com.linetranslate.bot.config.OpenAiConfig;
 import com.linetranslate.bot.config.GeminiConfig;
@@ -34,7 +33,6 @@ public class LineBotController {
 
     private final TranslationService translationService;
     private final LineUserProfileService lineUserProfileService;
-    private final AdminService adminService;
     private final AdminController adminController;
     private final ImageTranslationService imageTranslationService;
     private final OpenAiConfig openAiConfig;
@@ -44,14 +42,12 @@ public class LineBotController {
     public LineBotController(
             TranslationService translationService,
             LineUserProfileService lineUserProfileService,
-            AdminService adminService,
             AdminController adminController,
             ImageTranslationService imageTranslationService,
             OpenAiConfig openAiConfig,
             GeminiConfig geminiConfig) {
         this.translationService = translationService;
         this.lineUserProfileService = lineUserProfileService;
-        this.adminService = adminService;
         this.adminController = adminController;
         this.imageTranslationService = imageTranslationService;
         this.openAiConfig = openAiConfig;
@@ -174,18 +170,9 @@ public class LineBotController {
 
             // 處理管理員命令
             case "adminhelp":
-                // 確保只有管理員可以執行 /adminhelp 命令
-                if (!adminService.isAdmin(userId)) {
-                    return new TextMessage("您沒有管理員權限。");
-                }
                 return adminController.handleCommand(userId, "help");
                 
             case "admin":
-                // 確保只有管理員可以執行 /admin 命令
-                if (!adminService.isAdmin(userId)) {
-                    return new TextMessage("您沒有管理員權限。");
-                }
-                // 如果有多個參數，將後面的參數合併為一個字符串
                 String adminCommand = "";
                 if (parts.length > 1) {
                     adminCommand = parts[1];
@@ -193,10 +180,6 @@ public class LineBotController {
                 return adminController.handleCommand(userId, adminCommand);
                 
             case "isadmin":
-                // 將 /isadmin 命令也視為管理員命令，需要管理員權限
-                if (!adminService.isAdmin(userId)) {
-                    return new TextMessage("您沒有管理員權限。");
-                }
                 return adminController.handleCommand(userId, "isadmin");
 
             default:
