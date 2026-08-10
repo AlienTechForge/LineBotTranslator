@@ -47,6 +47,18 @@ Self-hosted runner 必須：
 
 Secrets 只作為容器環境變數傳入，不會寫入 image、Repository 或 Actions artifact。Google service account JSON 會以權限 `0400` 儲存在 Docker volume，掛載至 `/run/secrets/linebot.json`。
 
+## MongoDB 憑證輪替
+
+`.github/workflows/rotate-mongodb-credential.yml` 提供可回滾的人工輪替流程：
+
+1. 暫存 `MONGODB_ROTATION_OLD_URI`、`MONGODB_ROTATION_USERNAME` 與 `MONGODB_ROTATION_AUTH_DB`，先以 `audit` 模式確認 incident evidence、GitHub Secret、MongoDB 認證及本機 root 控制路徑一致。
+2. 產生新密碼與 URI，暫存 `MONGODB_ROTATION_NEW_URI`、`MONGODB_ROTATION_OLD_PASSWORD`、`MONGODB_ROTATION_NEW_PASSWORD`，並將正式 `MONGODB_URI` 更新為新 URI。
+3. 以 `rotate` 模式執行。流程會在 MongoDB container 內更新 app user、確認舊密碼遭拒、新密碼可用，再使用相同 immutable image 重建 app container。
+4. 若認證驗證或部署失敗，腳本會恢復舊 MongoDB 密碼；`scripts/deploy.sh` 會恢復舊 app container。
+5. 成功後立即刪除所有 `MONGODB_ROTATION_*` 暫存 Secrets，並再次確認正式 readiness 與舊密碼拒絕結果。
+
+輪替值不可放入 workflow inputs、Actions logs、issue、commit 或 artifact。MongoDB container 必須使用 `MONGO_INITDB_ROOT_USERNAME` / `MONGO_INITDB_ROOT_PASSWORD`，若同時執行多個 MongoDB container，需在 dispatch 時明確填入 container name。
+
 ## Actions Variables
 
 建議值：
