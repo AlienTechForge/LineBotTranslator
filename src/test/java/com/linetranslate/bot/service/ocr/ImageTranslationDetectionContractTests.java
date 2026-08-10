@@ -1,0 +1,117 @@
+package com.linetranslate.bot.service.ocr;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+import java.io.ByteArrayInputStream;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.test.util.ReflectionTestUtils;
+
+import com.linecorp.bot.client.base.BlobContent;
+import com.linecorp.bot.client.base.Result;
+import com.linecorp.bot.messaging.client.MessagingApiBlobClient;
+import com.linetranslate.bot.config.AppConfig;
+import com.linetranslate.bot.model.TranslationRecord;
+import com.linetranslate.bot.model.UserProfile;
+import com.linetranslate.bot.repository.TranslationRecordRepository;
+import com.linetranslate.bot.repository.UserProfileRepository;
+import com.linetranslate.bot.service.ai.AiService;
+import com.linetranslate.bot.service.ai.AiServiceFactory;
+import com.linetranslate.bot.service.storage.MinioStorageService;
+import com.linetranslate.bot.service.translation.LanguageDetectionService;
+import com.linetranslate.bot.service.translation.TranslationService;
+
+@ExtendWith(MockitoExtension.class)
+class ImageTranslationDetectionContractTests {
+
+    @Mock
+    private ObjectProvider<OcrService> ocrServiceProvider;
+    @Mock
+    private OcrService ocrService;
+    @Mock
+    private TranslationService translationService;
+    @Mock
+    private LanguageDetectionService languageDetectionService;
+    @Mock
+    private AiServiceFactory aiServiceFactory;
+    @Mock
+    private MessagingApiBlobClient messagingApiBlobClient;
+    @Mock
+    private TranslationRecordRepository translationRecordRepository;
+    @Mock
+    private UserProfileRepository userProfileRepository;
+    @Mock
+    private AppConfig appConfig;
+    @Mock
+    private MinioStorageService minioStorageService;
+    @Mock
+    private AiService aiService;
+    @Mock
+    private Result<BlobContent> blobResult;
+    @Mock
+    private BlobContent blobContent;
+
+    private ImageTranslationService imageTranslationService;
+
+    @BeforeEach
+    void setUp() throws Exception {
+        when(ocrServiceProvider.getIfAvailable()).thenReturn(ocrService);
+        imageTranslationService = new ImageTranslationService(
+                ocrServiceProvider,
+                translationService,
+                languageDetectionService,
+                aiServiceFactory,
+                messagingApiBlobClient,
+                translationRecordRepository,
+                userProfileRepository,
+                appConfig,
+                minioStorageService);
+        ReflectionTestUtils.setField(imageTranslationService, "ocrEnabled", true);
+
+        UserProfile profile = UserProfile.builder()
+                .userId("U-test")
+                .preferredAiProvider("openai")
+                .build();
+        when(userProfileRepository.findByUserId("U-test")).thenReturn(Optional.of(profile));
+        when(userProfileRepository.save(any(UserProfile.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+        when(messagingApiBlobClient.getMessageContent("message-id"))
+                .thenReturn(CompletableFuture.completedFuture(blobResult));
+        when(blobResult.body()).thenReturn(blobContent);
+        when(blobContent.byteStream()).thenReturn(new ByteArrayInputStream(new byte[] {1, 2, 3}));
+        when(minioStorageService.uploadImage(any(byte[].class), anyString()))
+                .thenReturn("https://storage.example/image.jpg");
+        when(ocrService.recognizeText(any(ByteArrayInputStream.class))).thenReturn("hello");
+        when(languageDetectionService.detectLanguage("hello")).thenReturn("en");
+        when(appConfig.getDefaultTargetLanguageForOthers()).thenReturn("zh-TW");
+        when(aiServiceFactory.getService("openai")).thenReturn(aiService);
+        when(aiService.getProviderName()).thenReturn("openai");
+        when(aiService.getModelName()).thenReturn("gpt-test");
+        when(translationService.translateWithService(aiService, "hello", "zh-TW"))
+                .thenReturn("翻譯結果");
+    }
+
+    @Test
+    void imageTranslationDetectsRecognizedTextOnceAndReusesIt() {
+        String response = imageTranslationService.processImageTranslation("U-test", "message-id");
+
+        verify(languageDetectionService, times(1)).detectLanguage("hello");
+        ArgumentCaptor<TranslationRecord> captor = ArgumentCaptor.forClass(TranslationRecord.class);
+        verify(translationRecordRepository).save(captor.capture());
+        assertThat(captor.getValue().getSourceLanguage()).isEqualTo("en");
+        assertThat(response).contains("偵測到:").contains("翻譯結果");
+    }
+}

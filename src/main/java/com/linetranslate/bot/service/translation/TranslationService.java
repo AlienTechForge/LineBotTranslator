@@ -202,8 +202,10 @@ public class TranslationService {
             return handleDefaultTranslation(userId, text, userProfile, start);
         }
 
-        // 進行實際的翻譯處理
-        return performTranslation(userId, userProfile, sourceText, targetLanguage, start);
+        // 指定目標語言的請求仍需偵測一次來源語言，並在後續流程重用。
+        String sourceLanguage = languageDetectionService.detectLanguage(sourceText);
+        return performTranslation(
+                userId, userProfile, sourceText, sourceLanguage, targetLanguage, start);
     }
 
     /**
@@ -232,7 +234,8 @@ public class TranslationService {
 
         log.info("自動檢測語言: {}, 目標語言: {}", sourceLanguage, targetLanguage);
 
-        return performTranslation(userId, userProfile, sourceText, targetLanguage, start);
+        return performTranslation(
+                userId, userProfile, sourceText, sourceLanguage, targetLanguage, start);
     }
 
     /**
@@ -263,12 +266,15 @@ public class TranslationService {
     /**
      * 執行翻譯並處理相關記錄
      */
-    private String performTranslation(String userId, UserProfile userProfile, String sourceText, String targetLanguage, Instant start) {
+    private String performTranslation(
+            String userId,
+            UserProfile userProfile,
+            String sourceText,
+            String sourceLanguage,
+            String targetLanguage,
+            Instant start) {
         // 選擇 AI 服務
         AiService aiService = aiServiceFactory.getService(userProfile.getPreferredAiProvider());
-
-        // 先偵測源語言
-        String detectedLanguage = languageDetectionService.detectLanguage(sourceText);
         
         // 執行翻譯
         String translatedText = translateWithService(aiService, sourceText, targetLanguage);
@@ -277,7 +283,7 @@ public class TranslationService {
         long processingTimeMs = Duration.between(start, Instant.now()).toMillis();
 
         // 保存翻譯記錄
-        saveTranslationRecord(userId, sourceText, detectedLanguage,
+        saveTranslationRecord(userId, sourceText, sourceLanguage,
                 targetLanguage, translatedText, aiService.getProviderName(),
                 aiService.getModelName(), processingTimeMs, false, null);
 
@@ -285,7 +291,7 @@ public class TranslationService {
         updateUserProfileAfterTranslation(userProfile, translatedText, targetLanguage);
 
         // 在翻譯結果中添加偵測到的語言資訊和翻譯目標語言
-        String sourceLanguageName = LanguageUtils.toChineseName(detectedLanguage);
+        String sourceLanguageName = LanguageUtils.toChineseName(sourceLanguage);
         String targetLanguageName = LanguageUtils.toChineseName(targetLanguage);
         return translatedText + "\n\n[偵測到: " + sourceLanguageName + " | 翻譯成: " + targetLanguageName + "]";
     }
@@ -310,6 +316,8 @@ public class TranslationService {
         log.info("快速翻譯請求: user={}, target={}, content={}",
                 SafeLog.user(userId), standardLanguageCode, SafeLog.content(text));
 
+        String sourceLanguage = languageDetectionService.detectLanguage(text);
+
         // 選擇 AI 服務
         AiService aiService = aiServiceFactory.getService(userProfile.getPreferredAiProvider());
 
@@ -320,7 +328,7 @@ public class TranslationService {
         long processingTimeMs = Duration.between(start, Instant.now()).toMillis();
 
         // 保存翻譯記錄
-        saveTranslationRecord(userId, text, languageDetectionService.detectLanguage(text),
+        saveTranslationRecord(userId, text, sourceLanguage,
                 standardLanguageCode, translatedText, aiService.getProviderName(),
                 aiService.getModelName(), processingTimeMs, false, null);
 
