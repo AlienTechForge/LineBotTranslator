@@ -5,7 +5,7 @@ import java.io.InputStream;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
-import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -26,9 +26,9 @@ public class MinioStorageService {
     private MinioClient minioClient;
     private String bucketName;
 
-    @Autowired(required = false)
-    public MinioStorageService(MinioClient minioClient, @Value("${minio.bucket-name}") String bucketName) {
-        this.minioClient = minioClient;
+    public MinioStorageService(ObjectProvider<MinioClient> minioClientProvider,
+            @Value("${minio.bucket-name}") String bucketName) {
+        this.minioClient = minioClientProvider.getIfAvailable();
         this.bucketName = bucketName;
         
         // 檢查 MinioClient 是否為 null

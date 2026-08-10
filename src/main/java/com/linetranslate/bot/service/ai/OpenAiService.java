@@ -3,7 +3,7 @@ package com.linetranslate.bot.service.ai;
 import com.theokanning.openai.completion.chat.*;
 import lombok.extern.slf4j.Slf4j;
 
-import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
@@ -24,9 +24,9 @@ public class OpenAiService implements AiService {
     private final com.theokanning.openai.service.OpenAiService openAiClient;
     private final String modelName;
 
-    @Autowired
-    public OpenAiService(OpenAiConfig openAiConfig, @Qualifier("openAiClient") @Autowired(required = false) com.theokanning.openai.service.OpenAiService openAiClient) {
-        this.openAiClient = openAiClient;
+    public OpenAiService(OpenAiConfig openAiConfig,
+            @Qualifier("openAiClient") ObjectProvider<com.theokanning.openai.service.OpenAiService> openAiClientProvider) {
+        this.openAiClient = openAiClientProvider.getIfAvailable();
         this.openAiConfig = openAiConfig;
         this.modelName = openAiConfig.getModelName();
 

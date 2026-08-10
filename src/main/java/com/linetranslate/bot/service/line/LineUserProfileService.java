@@ -5,8 +5,9 @@ import java.util.Optional;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
-import com.linecorp.bot.client.LineMessagingClient;
-import com.linecorp.bot.model.profile.UserProfileResponse;
+import com.linecorp.bot.client.base.Result;
+import com.linecorp.bot.messaging.client.MessagingApiClient;
+import com.linecorp.bot.messaging.model.UserProfileResponse;
 import com.linetranslate.bot.model.UserProfile;
 import com.linetranslate.bot.repository.TranslationRecordRepository;
 import com.linetranslate.bot.repository.UserProfileRepository;
@@ -18,16 +19,16 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 public class LineUserProfileService {
 
-    private final LineMessagingClient lineMessagingClient;
+    private final MessagingApiClient messagingApiClient;
     private final UserProfileRepository userProfileRepository;
     private final TranslationRecordRepository translationRecordRepository;
 
     @Autowired
     public LineUserProfileService(
-            LineMessagingClient lineMessagingClient,
+            MessagingApiClient messagingApiClient,
             UserProfileRepository userProfileRepository,
             TranslationRecordRepository translationRecordRepository) {
-        this.lineMessagingClient = lineMessagingClient;
+        this.messagingApiClient = messagingApiClient;
         this.userProfileRepository = userProfileRepository;
         this.translationRecordRepository = translationRecordRepository;
     }
@@ -38,7 +39,11 @@ public class LineUserProfileService {
     public void syncUserProfile(String userId) {
         try {
             // 從 LINE 平台獲取用戶資料
-            UserProfileResponse lineProfile = lineMessagingClient.getProfile(userId).get();
+            Result<UserProfileResponse> result = messagingApiClient.getProfile(userId).get();
+            UserProfileResponse lineProfile = result.body();
+            if (lineProfile == null) {
+                throw new IllegalStateException("LINE profile response body is empty");
+            }
 
             // 檢查用戶是否已存在
             Optional<UserProfile> existingProfile = userProfileRepository.findByUserId(userId);
@@ -46,29 +51,29 @@ public class LineUserProfileService {
             if (existingProfile.isPresent()) {
                 // 更新現有用戶資料
                 UserProfile userProfile = existingProfile.get();
-                userProfile.setDisplayName(lineProfile.getDisplayName());
+                userProfile.setDisplayName(lineProfile.displayName());
 
                 // 將 URI 轉換為 String
-                if (lineProfile.getPictureUrl() != null) {
-                    userProfile.setPictureUrl(lineProfile.getPictureUrl().toString());
+                if (lineProfile.pictureUrl() != null) {
+                    userProfile.setPictureUrl(lineProfile.pictureUrl().toString());
                 }
 
-                userProfile.setStatusMessage(lineProfile.getStatusMessage());
+                userProfile.setStatusMessage(lineProfile.statusMessage());
                 userProfileRepository.save(userProfile);
                 log.info("已更新用戶資料: user={}", SafeLog.user(userId));
             } else {
                 // 創建新用戶資料
                 UserProfile.UserProfileBuilder builder = UserProfile.builder()
                         .userId(userId)
-                        .displayName(lineProfile.getDisplayName());
+                        .displayName(lineProfile.displayName());
 
                 // 將 URI 轉換為 String
-                if (lineProfile.getPictureUrl() != null) {
-                    builder.pictureUrl(lineProfile.getPictureUrl().toString());
+                if (lineProfile.pictureUrl() != null) {
+                    builder.pictureUrl(lineProfile.pictureUrl().toString());
                 }
 
-                if (lineProfile.getStatusMessage() != null) {
-                    builder.statusMessage(lineProfile.getStatusMessage());
+                if (lineProfile.statusMessage() != null) {
+                    builder.statusMessage(lineProfile.statusMessage());
                 }
 
                 UserProfile newProfile = builder.build();

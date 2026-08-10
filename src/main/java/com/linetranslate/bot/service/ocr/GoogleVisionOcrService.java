@@ -4,7 +4,7 @@ import com.google.cloud.vision.v1.*;
 import com.google.protobuf.ByteString;
 import com.linetranslate.bot.logging.SafeLog;
 
-import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 
 import lombok.extern.slf4j.Slf4j;
@@ -20,9 +20,8 @@ public class GoogleVisionOcrService implements OcrService {
 
     private final ImageAnnotatorClient visionClient;
 
-    @Autowired(required = false)
-    public GoogleVisionOcrService(ImageAnnotatorClient visionClient) {
-        this.visionClient = visionClient;
+    public GoogleVisionOcrService(ObjectProvider<ImageAnnotatorClient> visionClientProvider) {
+        this.visionClient = visionClientProvider.getIfAvailable();
         if (visionClient != null) {
             log.info("Google Vision OCR 服務初始化成功");
         } else {

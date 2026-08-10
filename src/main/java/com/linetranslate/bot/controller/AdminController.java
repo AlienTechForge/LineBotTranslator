@@ -6,8 +6,8 @@ import java.util.Map;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
-import com.linecorp.bot.model.message.Message;
-import com.linecorp.bot.model.message.TextMessage;
+import com.linecorp.bot.messaging.model.Message;
+import com.linecorp.bot.messaging.model.TextMessage;
 import com.linetranslate.bot.service.AdminService;
 import com.linetranslate.bot.logging.SafeLog;
 

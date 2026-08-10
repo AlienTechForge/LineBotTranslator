@@ -11,15 +11,16 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.stream.Collectors;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
-import com.linecorp.bot.client.LineMessagingClient;
-import com.linecorp.bot.model.PushMessage;
-import com.linecorp.bot.model.message.TextMessage;
+import com.linecorp.bot.messaging.client.MessagingApiClient;
+import com.linecorp.bot.messaging.model.PushMessageRequest;
+import com.linecorp.bot.messaging.model.TextMessage;
 
 import com.linetranslate.bot.config.AppConfig;
 import com.linetranslate.bot.config.GeminiConfig;
@@ -46,7 +47,7 @@ public class AdminService {
 
     private final TranslationRecordRepository translationRecordRepository;
     private final UserProfileRepository userProfileRepository;
-    private final LineMessagingClient lineMessagingClient;
+    private final MessagingApiClient messagingApiClient;
     private final DateTimeFormatter dateTimeFormatter;
     private final AppConfig appConfig;
     private final OpenAiConfig openAiConfig;
@@ -57,14 +58,14 @@ public class AdminService {
     public AdminService(
             TranslationRecordRepository translationRecordRepository,
             UserProfileRepository userProfileRepository,
-            LineMessagingClient lineMessagingClient,
+            MessagingApiClient messagingApiClient,
             AppConfig appConfig,
             OpenAiConfig openAiConfig,
             GeminiConfig geminiConfig,
             LineUserProfileService lineUserProfileService) {
         this.translationRecordRepository = translationRecordRepository;
         this.userProfileRepository = userProfileRepository;
-        this.lineMessagingClient = lineMessagingClient;
+        this.messagingApiClient = messagingApiClient;
         this.appConfig = appConfig;
         this.openAiConfig = openAiConfig;
         this.geminiConfig = geminiConfig;
@@ -202,8 +203,11 @@ public class AdminService {
                     successCount++;
                 } else {
                     // 使用 LINE Messaging API 實際發送消息
-                    PushMessage pushMessage = new PushMessage(user.getUserId(), textMessage);
-                    lineMessagingClient.pushMessage(pushMessage).get();
+                    PushMessageRequest pushMessage = new PushMessageRequest.Builder(
+                            user.getUserId(), List.of(textMessage))
+                            .notificationDisabled(false)
+                            .build();
+                    messagingApiClient.pushMessage(UUID.randomUUID(), pushMessage).get();
                     log.info("廣播消息發送成功: user={}", SafeLog.user(user.getUserId()));
                     successCount++;
                 }

@@ -4,14 +4,14 @@ import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 
-import com.linecorp.bot.model.event.Event;
-import com.linecorp.bot.model.event.MessageEvent;
-import com.linecorp.bot.model.event.message.ImageMessageContent;
-import com.linecorp.bot.model.event.message.TextMessageContent;
-import com.linecorp.bot.model.message.Message;
-import com.linecorp.bot.model.message.TextMessage;
-import com.linecorp.bot.spring.boot.annotation.EventMapping;
-import com.linecorp.bot.spring.boot.annotation.LineMessageHandler;
+import com.linecorp.bot.messaging.model.Message;
+import com.linecorp.bot.messaging.model.TextMessage;
+import com.linecorp.bot.spring.boot.handler.annotation.EventMapping;
+import com.linecorp.bot.spring.boot.handler.annotation.LineMessageHandler;
+import com.linecorp.bot.webhook.model.Event;
+import com.linecorp.bot.webhook.model.ImageMessageContent;
+import com.linecorp.bot.webhook.model.MessageEvent;
+import com.linecorp.bot.webhook.model.TextMessageContent;
 
 import com.linetranslate.bot.model.UserProfile;
 import com.linetranslate.bot.repository.UserProfileRepository;
@@ -62,9 +62,9 @@ public class LineBotController {
      * 處理文本消息事件
      */
     @EventMapping
-    public Message handleTextMessageEvent(MessageEvent<TextMessageContent> event) {
-        String userId = event.getSource().getUserId();
-        String receivedText = event.getMessage().getText();
+    public Message handleTextMessageEvent(MessageEvent event, TextMessageContent content) {
+        String userId = event.source().userId();
+        String receivedText = content.text();
 
         log.info("收到文字訊息: user={}, content={}",
                 SafeLog.user(userId), SafeLog.content(receivedText));
@@ -88,9 +88,9 @@ public class LineBotController {
      * 處理圖片消息事件
      */
     @EventMapping
-    public Message handleImageMessageEvent(MessageEvent<ImageMessageContent> event) {
-        String userId = event.getSource().getUserId();
-        String messageId = event.getMessage().getId();
+    public Message handleImageMessageEvent(MessageEvent event, ImageMessageContent content) {
+        String userId = event.source().userId();
+        String messageId = content.id();
         log.info("收到圖片訊息: user={}, message={}",
                 SafeLog.user(userId), SafeLog.content(messageId));
 

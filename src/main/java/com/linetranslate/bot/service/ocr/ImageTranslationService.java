@@ -9,12 +9,13 @@ import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
-import com.linecorp.bot.client.LineBlobClient;
-import com.linecorp.bot.client.MessageContentResponse;
+import com.linecorp.bot.client.base.BlobContent;
+import com.linecorp.bot.client.base.Result;
+import com.linecorp.bot.messaging.client.MessagingApiBlobClient;
 import com.linetranslate.bot.config.AppConfig;
 import com.linetranslate.bot.logging.SafeLog;
 import com.linetranslate.bot.model.TranslationRecord;
@@ -38,7 +39,7 @@ public class ImageTranslationService {
     private final TranslationService translationService;
     private final LanguageDetectionService languageDetectionService;
     private final AiServiceFactory aiServiceFactory;
-    private final LineBlobClient lineBlobClient;
+    private final MessagingApiBlobClient messagingApiBlobClient;
     private final TranslationRecordRepository translationRecordRepository;
     private final UserProfileRepository userProfileRepository;
     private final AppConfig appConfig;
@@ -62,22 +63,21 @@ public class ImageTranslationService {
         return ocrEnabled;
     }
 
-    @Autowired
     public ImageTranslationService(
-            @Autowired(required = false) OcrService ocrService,
+            ObjectProvider<OcrService> ocrServiceProvider,
             TranslationService translationService,
             LanguageDetectionService languageDetectionService,
             AiServiceFactory aiServiceFactory,
-            LineBlobClient lineBlobClient,
+            MessagingApiBlobClient messagingApiBlobClient,
             TranslationRecordRepository translationRecordRepository,
             UserProfileRepository userProfileRepository,
             AppConfig appConfig,
             MinioStorageService minioStorageService) {
-        this.ocrService = ocrService;
+        this.ocrService = ocrServiceProvider.getIfAvailable();
         this.translationService = translationService;
         this.languageDetectionService = languageDetectionService;
         this.aiServiceFactory = aiServiceFactory;
-        this.lineBlobClient = lineBlobClient;
+        this.messagingApiBlobClient = messagingApiBlobClient;
         this.translationRecordRepository = translationRecordRepository;
         this.userProfileRepository = userProfileRepository;
         this.appConfig = appConfig;
@@ -108,8 +108,15 @@ public class ImageTranslationService {
             String recognizedText;
 
             try {
-                MessageContentResponse response = lineBlobClient.getMessageContent(messageId).get();
-                byte[] imageBytes = response.getStream().readAllBytes();
+                Result<BlobContent> response = messagingApiBlobClient.getMessageContent(messageId).get();
+                BlobContent content = response.body();
+                if (content == null) {
+                    throw new IllegalStateException("LINE image response body is empty");
+                }
+                byte[] imageBytes;
+                try (java.io.InputStream imageStream = content.byteStream()) {
+                    imageBytes = imageStream.readAllBytes();
+                }
                 String base64Image = Base64.getEncoder().encodeToString(imageBytes);
                 
                 // 上傳圖片到 MinIO 並獲取 URL
