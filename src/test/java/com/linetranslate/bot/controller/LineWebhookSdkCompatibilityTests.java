@@ -27,12 +27,13 @@ import org.springframework.test.web.servlet.MockMvc;
 
 import com.linecorp.bot.messaging.client.MessagingApiBlobClient;
 import com.linecorp.bot.messaging.client.MessagingApiClient;
+import com.linecorp.bot.messaging.model.FlexMessage;
 import com.linecorp.bot.messaging.model.ReplyMessageRequest;
 import com.linecorp.bot.messaging.model.TextMessage;
 import com.linetranslate.bot.service.ocr.ImageTranslationService;
 import com.linetranslate.bot.service.storage.MinioStorageService;
 
-@SpringBootTest
+@SpringBootTest(properties = "admin.users=U0123456789abcdef")
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 class LineWebhookSdkCompatibilityTests {
@@ -138,6 +139,61 @@ class LineWebhookSdkCompatibilityTests {
         assertThat(captor.getValue().messages()).singleElement().isInstanceOfSatisfying(
                 TextMessage.class,
                 message -> assertThat(message.text()).isEqualTo("圖片翻譯完成"));
+    }
+
+    @Test
+    void signedAdminWebhookRepliesWithFlexDashboard() throws Exception {
+        String payload = textPayload("admin-reply-token", "U0123456789abcdef", "/admin");
+        when(messagingApiClient.replyMessage(any()))
+                .thenReturn(CompletableFuture.completedFuture(null));
+
+        mockMvc.perform(post("/callback")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Line-Signature", signature(payload))
+                        .content(payload))
+                .andExpect(status().isOk());
+
+        ArgumentCaptor<ReplyMessageRequest> captor = ArgumentCaptor.forClass(ReplyMessageRequest.class);
+        verify(messagingApiClient, timeout(1_000)).replyMessage(captor.capture());
+        assertThat(captor.getValue().messages()).singleElement().isInstanceOfSatisfying(
+                FlexMessage.class,
+                message -> assertThat(message.altText()).contains("管理員控制台"));
+    }
+
+    @Test
+    void unauthorizedAdminWebhookRepliesWithAccessDeniedCard() throws Exception {
+        String payload = textPayload("denied-reply-token", "U-not-admin", "/admin stats");
+        when(messagingApiClient.replyMessage(any()))
+                .thenReturn(CompletableFuture.completedFuture(null));
+
+        mockMvc.perform(post("/callback")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Line-Signature", signature(payload))
+                        .content(payload))
+                .andExpect(status().isOk());
+
+        ArgumentCaptor<ReplyMessageRequest> captor = ArgumentCaptor.forClass(ReplyMessageRequest.class);
+        verify(messagingApiClient, timeout(1_000)).replyMessage(captor.capture());
+        assertThat(captor.getValue().messages()).singleElement().isInstanceOfSatisfying(
+                FlexMessage.class,
+                message -> assertThat(message.altText()).contains("沒有管理員權限"));
+    }
+
+    private static String textPayload(String replyToken, String userId, String text) {
+        return """
+                {
+                  "destination": "U0123456789abcdef",
+                  "events": [
+                    {
+                      "replyToken": "%s",
+                      "type": "message",
+                      "timestamp": 1462629479859,
+                      "source": { "type": "user", "userId": "%s" },
+                      "message": { "id": "325709", "type": "text", "text": "%s" }
+                    }
+                  ]
+                }
+                """.formatted(replyToken, userId, text);
     }
 
     private static String signature(String payload) throws Exception {
