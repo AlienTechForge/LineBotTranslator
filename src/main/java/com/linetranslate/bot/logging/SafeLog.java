@@ -88,4 +88,12 @@ public final class SafeLog {
     public static boolean present(String value) {
         return value != null && !value.isBlank();
     }
+
+    public static String metadata(String value) {
+        if (value == null || value.isBlank()) {
+            return "unknown";
+        }
+        String normalized = value.replaceAll("[^a-zA-Z0-9._:-]", "_");
+        return normalized.length() <= 100 ? normalized : normalized.substring(0, 100);
+    }
 }

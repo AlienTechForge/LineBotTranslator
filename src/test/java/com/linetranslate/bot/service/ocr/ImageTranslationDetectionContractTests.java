@@ -32,7 +32,7 @@ import com.linetranslate.bot.repository.TranslationRecordRepository;
 import com.linetranslate.bot.repository.UserProfileRepository;
 import com.linetranslate.bot.service.ai.AiExecutionResult;
 import com.linetranslate.bot.service.ai.AiProviderException;
-import com.linetranslate.bot.service.ai.AiServiceFactory;
+import com.linetranslate.bot.service.ai.AiProviderExecutionModule;
 import com.linetranslate.bot.service.storage.ImageStorageResult;
 import com.linetranslate.bot.service.storage.MinioStorageService;
 import com.linetranslate.bot.service.translation.LanguageDetectionService;
@@ -50,7 +50,7 @@ class ImageTranslationDetectionContractTests {
     @Mock
     private LanguageDetectionService languageDetectionService;
     @Mock
-    private AiServiceFactory aiServiceFactory;
+    private AiProviderExecutionModule aiServiceFactory;
     @Mock
     private MessagingApiBlobClient messagingApiBlobClient;
     @Mock

@@ -23,20 +23,20 @@ import com.linetranslate.bot.repository.TranslationRecordRepository;
 import com.linetranslate.bot.repository.UserProfileRepository;
 import com.linetranslate.bot.service.ai.AiExecutionResult;
 import com.linetranslate.bot.service.ai.AiProviderException;
-import com.linetranslate.bot.service.ai.AiServiceFactory;
+import com.linetranslate.bot.service.ai.AiProviderExecutionModule;
 
 class TranslationCachingContractTests {
 
     private AnnotationConfigApplicationContext context;
     private TranslationService translationService;
-    private AiServiceFactory aiServiceFactory;
+    private AiProviderExecutionModule aiServiceFactory;
     private UserProfile profile;
 
     @BeforeEach
     void setUp() {
         context = new AnnotationConfigApplicationContext(CacheTestConfiguration.class);
         translationService = context.getBean(TranslationService.class);
-        aiServiceFactory = context.getBean(AiServiceFactory.class);
+        aiServiceFactory = context.getBean(AiProviderExecutionModule.class);
         profile = UserProfile.builder()
                 .userId("U-test")
                 .preferredAiProvider("openai")
@@ -96,12 +96,12 @@ class TranslationCachingContractTests {
         }
 
         @Bean
-        AiServiceFactory aiServiceFactory() {
-            return mock(AiServiceFactory.class);
+        AiProviderExecutionModule aiServiceFactory() {
+            return mock(AiProviderExecutionModule.class);
         }
 
         @Bean
-        TranslationService translationService(AiServiceFactory aiServiceFactory) {
+        TranslationService translationService(AiProviderExecutionModule aiServiceFactory) {
             return new TranslationService(
                     mock(LanguageDetectionService.class),
                     aiServiceFactory,

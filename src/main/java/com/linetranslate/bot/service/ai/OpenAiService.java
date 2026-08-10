@@ -4,6 +4,7 @@ import java.net.SocketTimeoutException;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
@@ -24,12 +25,13 @@ import com.openai.models.responses.Response;
 import com.openai.models.responses.ResponseCreateParams;
 import com.openai.models.responses.ResponseInputImage;
 import com.openai.models.responses.ResponseInputItem;
+import com.openai.models.responses.ResponseUsage;
 
 import lombok.extern.slf4j.Slf4j;
 
 @Service
 @Slf4j
-public class OpenAiService implements AiService {
+public class OpenAiService implements AiProviderAdapter {
 
     private static final String TRANSLATION_INSTRUCTIONS =
             "你是一個專業的翻譯助手。請將用戶提供的文本翻譯成%s。只需返回翻譯結果，不要添加任何解釋或額外信息。";
@@ -55,35 +57,16 @@ public class OpenAiService implements AiService {
         }
     }
 
-    @Override
     public String translateText(String text, String targetLanguage) {
-        String correlationId = UUID.randomUUID().toString();
-        if (openAiClient == null) {
-            throw providerFailure(
-                    AiProviderException.Outcome.CONFIGURATION_ERROR,
-                    "CLIENT_UNAVAILABLE",
-                    correlationId,
-                    -1,
-                    null);
-        }
-
-        try {
-            ResponseCreateParams params = ResponseCreateParams.builder()
-                    .model(modelName)
-                    .instructions(TRANSLATION_INSTRUCTIONS.formatted(targetLanguage))
-                    .input(text)
-                    .temperature(0.3)
-                    .build();
-            return createResponse(params, correlationId);
-        } catch (AiProviderException exception) {
-            throw exception;
-        } catch (Exception exception) {
-            throw normalizeFailure(exception, correlationId);
-        }
+        return execute(AiProviderRequest.translate(modelName, text, targetLanguage)).text();
     }
 
-    @Override
     public String processImage(String prompt, String imageUrl) {
+        return execute(AiProviderRequest.image(modelName, prompt, imageUrl)).text();
+    }
+
+    @Override
+    public AiProviderResponse execute(AiProviderRequest request) {
         String correlationId = UUID.randomUUID().toString();
         if (openAiClient == null) {
             throw providerFailure(
@@ -91,42 +74,57 @@ public class OpenAiService implements AiService {
                     "CLIENT_UNAVAILABLE",
                     correlationId,
                     -1,
-                    null);
+                    null,
+                    request.model());
         }
 
         try {
-            ResponseInputImage image = ResponseInputImage.builder()
-                    .detail(ResponseInputImage.Detail.AUTO)
-                    .imageUrl(imageUrl)
-                    .build();
-            ResponseInputItem.Message message = ResponseInputItem.Message.builder()
-                    .role(ResponseInputItem.Message.Role.USER)
-                    .addInputTextContent(prompt)
-                    .addContent(image)
-                    .build();
-            ResponseCreateParams params = ResponseCreateParams.builder()
-                    .model(modelName)
-                    .instructions(OCR_INSTRUCTIONS)
-                    .inputOfResponse(List.of(ResponseInputItem.ofMessage(message)))
-                    .temperature(0.3)
-                    .maxOutputTokens(1024)
-                    .build();
-            return createResponse(params, correlationId);
+            ResponseCreateParams params = switch (request.operation()) {
+                case TRANSLATE_TEXT -> translationParams(request);
+                case PROCESS_IMAGE -> imageParams(request);
+                case GENERATE_TEXT -> generationParams(request);
+            };
+            return createResponse(params, correlationId, request.model());
         } catch (AiProviderException exception) {
             throw exception;
         } catch (Exception exception) {
-            throw normalizeFailure(exception, correlationId);
+            throw normalizeFailure(exception, correlationId, request.model());
         }
     }
 
     @Override
-    public String getProviderName() {
+    public String providerName() {
         return "openai";
     }
 
     @Override
-    public String getModelName() {
+    public String defaultModel() {
         return modelName;
+    }
+
+    @Override
+    public Set<String> availableModels() {
+        List<String> configuredModels = openAiConfig.getAvailableModels();
+        if (configuredModels == null || configuredModels.isEmpty()) {
+            return Set.of(modelName);
+        }
+        return configuredModels.stream()
+                .filter(model -> model != null && !model.isBlank())
+                .map(String::trim)
+                .collect(Collectors.toUnmodifiableSet());
+    }
+
+    @Override
+    public Set<AiProviderOperation> capabilities() {
+        return Set.of(AiProviderOperation.values());
+    }
+
+    public String getProviderName() {
+        return providerName();
+    }
+
+    public String getModelName() {
+        return defaultModel();
     }
 
     public String getModelName(UserProfile userProfile) {
@@ -137,34 +135,51 @@ public class OpenAiService implements AiService {
         return openAiConfig.getModelName();
     }
 
-    @Override
     public String generateText(String prompt) {
-        String correlationId = UUID.randomUUID().toString();
-        if (openAiClient == null) {
-            throw providerFailure(
-                    AiProviderException.Outcome.CONFIGURATION_ERROR,
-                    "CLIENT_UNAVAILABLE",
-                    correlationId,
-                    -1,
-                    null);
-        }
-
-        try {
-            ResponseCreateParams params = ResponseCreateParams.builder()
-                    .model(modelName)
-                    .instructions(GENERATION_INSTRUCTIONS)
-                    .input(prompt)
-                    .temperature(0.7)
-                    .build();
-            return createResponse(params, correlationId);
-        } catch (AiProviderException exception) {
-            throw exception;
-        } catch (Exception exception) {
-            throw normalizeFailure(exception, correlationId);
-        }
+        return execute(AiProviderRequest.generate(modelName, prompt)).text();
     }
 
-    private String createResponse(ResponseCreateParams params, String correlationId) {
+    private ResponseCreateParams translationParams(AiProviderRequest request) {
+        return ResponseCreateParams.builder()
+                .model(request.model())
+                .instructions(TRANSLATION_INSTRUCTIONS.formatted(request.targetLanguage()))
+                .input(request.input())
+                .temperature(0.3)
+                .build();
+    }
+
+    private ResponseCreateParams imageParams(AiProviderRequest request) {
+        ResponseInputImage image = ResponseInputImage.builder()
+                .detail(ResponseInputImage.Detail.AUTO)
+                .imageUrl(request.imageData())
+                .build();
+        ResponseInputItem.Message message = ResponseInputItem.Message.builder()
+                .role(ResponseInputItem.Message.Role.USER)
+                .addInputTextContent(request.input())
+                .addContent(image)
+                .build();
+        return ResponseCreateParams.builder()
+                .model(request.model())
+                .instructions(OCR_INSTRUCTIONS)
+                .inputOfResponse(List.of(ResponseInputItem.ofMessage(message)))
+                .temperature(0.3)
+                .maxOutputTokens(1024)
+                .build();
+    }
+
+    private ResponseCreateParams generationParams(AiProviderRequest request) {
+        return ResponseCreateParams.builder()
+                .model(request.model())
+                .instructions(GENERATION_INSTRUCTIONS)
+                .input(request.input())
+                .temperature(0.7)
+                .build();
+    }
+
+    private AiProviderResponse createResponse(
+            ResponseCreateParams params,
+            String correlationId,
+            String requestedModel) {
         Response response = openAiClient.responses().create(params);
         String output = response.output().stream()
                 .flatMap(item -> item.message().stream())
@@ -179,12 +194,30 @@ public class OpenAiService implements AiService {
                     "NO_OUTPUT_TEXT",
                     correlationId,
                     -1,
-                    null);
+                    null,
+                    requestedModel);
         }
-        return output;
+        String actualModel = response.model().string()
+                .orElseGet(() -> response.model().chat()
+                        .map(chatModel -> chatModel.asString())
+                        .orElse(requestedModel));
+        AiTokenUsage tokenUsage = response.usage()
+                .map(this::tokenUsage)
+                .orElse(AiTokenUsage.UNKNOWN);
+        return new AiProviderResponse(output, actualModel, tokenUsage);
     }
 
-    private AiProviderException normalizeFailure(Exception exception, String correlationId) {
+    private AiTokenUsage tokenUsage(ResponseUsage usage) {
+        return new AiTokenUsage(
+                usage.inputTokens(),
+                usage.outputTokens(),
+                usage.totalTokens());
+    }
+
+    private AiProviderException normalizeFailure(
+            Exception exception,
+            String correlationId,
+            String requestedModel) {
         AiProviderException.Outcome outcome = AiProviderException.Outcome.UNEXPECTED_ERROR;
         int httpStatus = -1;
         String reason = exception.getClass().getSimpleName();
@@ -219,11 +252,11 @@ public class OpenAiService implements AiService {
 
         log.warn(
                 "OpenAI request failed: provider=openai, model={}, outcome={}, reason={}, correlation={}",
-                modelName,
+                requestedModel,
                 outcome,
                 reason,
                 correlationId);
-        return providerFailure(outcome, reason, correlationId, httpStatus, exception);
+        return providerFailure(outcome, reason, correlationId, httpStatus, exception, requestedModel);
     }
 
     private boolean hasCause(Throwable throwable, Class<? extends Throwable> causeType) {
@@ -242,11 +275,12 @@ public class OpenAiService implements AiService {
             String reason,
             String correlationId,
             int httpStatus,
-            Throwable cause) {
+            Throwable cause,
+            String requestedModel) {
         return new AiProviderException(
                 outcome,
-                getProviderName(),
-                modelName,
+                providerName(),
+                requestedModel,
                 reason,
                 correlationId,
                 httpStatus,

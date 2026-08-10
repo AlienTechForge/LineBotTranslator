@@ -4,8 +4,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
-import com.linetranslate.bot.service.ai.AiService;
-import com.linetranslate.bot.service.ai.AiServiceFactory;
+import com.linetranslate.bot.service.ai.AiExecutionOutcome;
+import com.linetranslate.bot.service.ai.AiProviderExecutionModule;
 import com.linetranslate.bot.service.ai.AiProviderException;
 import com.linetranslate.bot.logging.SafeLog;
 
@@ -18,7 +18,7 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 public class AiLanguageDetectionService {
 
-    private final AiServiceFactory aiServiceFactory;
+    private final AiProviderExecutionModule aiProviderExecutionModule;
     
     @Value("${app.language-detection.ai-provider:gemini}")
     private String aiProvider;
@@ -30,8 +30,8 @@ public class AiLanguageDetectionService {
     private String defaultChineseType;
 
     @Autowired
-    public AiLanguageDetectionService(AiServiceFactory aiServiceFactory) {
-        this.aiServiceFactory = aiServiceFactory;
+    public AiLanguageDetectionService(AiProviderExecutionModule aiProviderExecutionModule) {
+        this.aiProviderExecutionModule = aiProviderExecutionModule;
     }
 
     /**
@@ -42,14 +42,24 @@ public class AiLanguageDetectionService {
      */
     public String detectLanguage(String text) {
         try {
-            // 使用指定的 AI 提供者和模型
-            AiService aiService = aiServiceFactory.getService(aiProvider);
-            
             // 構建提示詞
             String prompt = "請檢測以下文本的語言，只返回 ISO 639-1 語言代碼（如 zh, ja, en, ko 等），不要添加任何解釋或其他內容。\n\n" + text;
-            
-            // 調用 AI 模型
-            String response = aiService.generateText(prompt);
+
+            AiExecutionOutcome outcome = aiProviderExecutionModule.generateTextOutcome(
+                    aiProvider,
+                    modelName,
+                    prompt);
+            if (outcome instanceof AiExecutionOutcome.Failure failure) {
+                log.warn(
+                        "AI 語言檢測改用本地偵測: provider={}, model={}, outcome={}, reason={}, correlation={}",
+                        failure.failure().provider(),
+                        failure.failure().model(),
+                        failure.failure().outcome(),
+                        failure.failure().reason(),
+                        failure.failure().correlationId());
+                return "unknown";
+            }
+            String response = ((AiExecutionOutcome.Success) outcome).result().text();
             
             // 清理回應
             String languageCode = cleanResponse(response);
