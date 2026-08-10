@@ -22,8 +22,10 @@ import com.linetranslate.bot.model.UserProfile;
 import com.linetranslate.bot.repository.TranslationRecordRepository;
 import com.linetranslate.bot.repository.UserProfileRepository;
 import com.linetranslate.bot.service.translation.AiLanguageDetectionService;
+import com.linetranslate.bot.service.translation.CachedTranslationAdapter;
 import com.linetranslate.bot.service.translation.LanguageDetectionService;
 import com.linetranslate.bot.service.translation.TranslationService;
+import com.linetranslate.bot.service.translation.TranslationWorkflowModule;
 
 class GeminiSafetyResponseTests {
 
@@ -149,11 +151,6 @@ class GeminiSafetyResponseTests {
     void blockedDetectionStillAllowsTranslationThroughAllowedProvider() {
         AtomicInteger providerCalls = new AtomicInteger();
         AiProviderExecutionModule module = blockedModule(providerCalls);
-        when(module.translateText(
-                Mockito.any(UserProfile.class),
-                Mockito.eq("這是一段中文內容"),
-                Mockito.eq("en")))
-                .thenReturn(new AiExecutionResult("translated", "openai", "gpt-test"));
         LanguageDetectionService detector = languageDetector(module);
 
         UserProfileRepository userRepository = Mockito.mock(UserProfileRepository.class);
@@ -167,11 +164,22 @@ class GeminiSafetyResponseTests {
         when(userRepository.save(Mockito.any(UserProfile.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
         when(appConfig.getDefaultTargetLanguageForChinese()).thenReturn("en");
+        CachedTranslationAdapter translationAdapter = Mockito.mock(CachedTranslationAdapter.class);
+        when(translationAdapter.translate(
+                Mockito.any(UserProfile.class),
+                Mockito.eq("這是一段中文內容"),
+                Mockito.eq("en")))
+                .thenReturn(new AiExecutionOutcome.Success(
+                        new AiExecutionResult("translated", "openai", "gpt-test")));
+        TranslationWorkflowModule workflowModule = new TranslationWorkflowModule(
+                detector,
+                translationAdapter,
+                recordRepository,
+                userRepository,
+                appConfig);
 
         TranslationService translationService = new TranslationService(
-                detector,
-                module,
-                recordRepository,
+                workflowModule,
                 userRepository,
                 appConfig);
 

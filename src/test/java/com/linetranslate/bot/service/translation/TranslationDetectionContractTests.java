@@ -28,9 +28,10 @@ import com.linetranslate.bot.model.TranslationRecord;
 import com.linetranslate.bot.model.UserProfile;
 import com.linetranslate.bot.repository.TranslationRecordRepository;
 import com.linetranslate.bot.repository.UserProfileRepository;
+import com.linetranslate.bot.service.ai.AiExecutionFailure;
+import com.linetranslate.bot.service.ai.AiExecutionOutcome;
 import com.linetranslate.bot.service.ai.AiExecutionResult;
 import com.linetranslate.bot.service.ai.AiProviderException;
-import com.linetranslate.bot.service.ai.AiProviderExecutionModule;
 import com.linetranslate.bot.util.LanguageUtils;
 
 @ExtendWith(MockitoExtension.class)
@@ -41,7 +42,7 @@ class TranslationDetectionContractTests {
     @Mock
     private LanguageDetectionService languageDetectionService;
     @Mock
-    private AiProviderExecutionModule aiServiceFactory;
+    private CachedTranslationAdapter translationAdapter;
     @Mock
     private TranslationRecordRepository translationRecordRepository;
     @Mock
@@ -56,8 +57,9 @@ class TranslationDetectionContractTests {
         when(userProfileRepository.findByUserId(USER_ID)).thenReturn(Optional.of(profile()));
         when(userProfileRepository.save(any(UserProfile.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
-        lenient().when(aiServiceFactory.translateText(any(UserProfile.class), anyString(), anyString()))
-                .thenReturn(new AiExecutionResult("翻譯結果", "openai", "gpt-test"));
+        lenient().when(translationAdapter.translate(any(UserProfile.class), anyString(), anyString()))
+                .thenReturn(new AiExecutionOutcome.Success(
+                        new AiExecutionResult("翻譯結果", "openai", "gpt-test")));
         lenient().when(appConfig.getDefaultTargetLanguageForOthers()).thenReturn("zh-TW");
     }
 
@@ -137,8 +139,9 @@ class TranslationDetectionContractTests {
     @Test
     void fallbackSuccessPersistsTheProviderThatActuallyTranslated() {
         when(languageDetectionService.detectLanguage("hello")).thenReturn("en");
-        when(aiServiceFactory.translateText(any(UserProfile.class), anyString(), anyString()))
-                .thenReturn(new AiExecutionResult("翻譯結果", "gemini", "gemini-test"));
+        when(translationAdapter.translate(any(UserProfile.class), anyString(), anyString()))
+                .thenReturn(new AiExecutionOutcome.Success(
+                        new AiExecutionResult("翻譯結果", "gemini", "gemini-test")));
 
         translationService.processTranslationRequest(USER_ID, "hello");
 
@@ -152,8 +155,10 @@ class TranslationDetectionContractTests {
         UserProfile profile = profile();
         when(userProfileRepository.findByUserId(USER_ID)).thenReturn(Optional.of(profile));
         when(languageDetectionService.detectLanguage("hello")).thenReturn("en");
-        when(aiServiceFactory.translateText(any(UserProfile.class), anyString(), anyString()))
-                .thenThrow(providerFailure());
+        AiProviderException error = providerFailure();
+        when(translationAdapter.translate(any(UserProfile.class), anyString(), anyString()))
+                .thenReturn(new AiExecutionOutcome.Failure(
+                        AiExecutionFailure.from(error, java.util.List.of())));
 
         String response = translationService.processTranslationRequest(USER_ID, "hello");
 
@@ -165,12 +170,13 @@ class TranslationDetectionContractTests {
     }
 
     private TranslationService createService(LanguageDetectionService detector) {
-        return new TranslationService(
+        TranslationWorkflowModule workflowModule = new TranslationWorkflowModule(
                 detector,
-                aiServiceFactory,
+                translationAdapter,
                 translationRecordRepository,
                 userProfileRepository,
                 appConfig);
+        return new TranslationService(workflowModule, userProfileRepository, appConfig);
     }
 
     private TranslationRecord savedRecord() {
