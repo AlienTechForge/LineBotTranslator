@@ -1,91 +1,68 @@
-# LINE Bot 翻譯服務部署指南
+# LINE Bot Translator CI/CD 部署指南
 
-## 一、本地打包與推送到 Docker Hub
+本專案使用 GitHub Actions、GHCR 與 Alien-Server self-hosted runner，不使用 SSH 部署帳號或 PAT。
 
-1. 使用 Dockerfile 構建映像：
-   ```bash
-   # 在專案根目錄執行
-   docker build -t 您的用戶名/linebot-translator:latest .
-   ```
+## 流程行為
 
-2. 登入 Docker Hub：
-   ```bash
-   docker login
-   ```
+- Pull Request 到 `master`：在 GitHub-hosted runner 啟動隔離 MongoDB，執行 `./mvnw clean verify -B`。
+- Push 到 `master`：CI 成功後，由 self-hosted runner 建立並推送 `${commit SHA}` 與 `latest` image，接著部署 SHA image。
+- Push `v*` tag：建立 SHA 與版本 tag image，不變更正式容器。
+- `workflow_dispatch`：可手動重跑；只有從 `master` 執行時會部署。
 
-3. 推送映像到 Docker Hub：
-   ```bash
-   docker push 您的用戶名/linebot-translator:latest
-   ```
+部署會先保留目前容器。新容器通過 `/actuator/health/readiness` 後才移除舊容器；失敗或腳本中斷時會恢復舊容器。
 
-4. 或者直接使用 docker-deploy.bat 批處理文件：
-   ```bash
-   .\docker-deploy.bat
-   ```
-   按照提示輸入 Docker Hub 用戶名和標籤。
+## GitHub Repository 設定
 
-## 二、伺服器部署準備
+在 `Settings -> Actions -> General -> Workflow permissions` 啟用 `Read and write permissions`。Workflow 使用內建 `GITHUB_TOKEN` 推送 GHCR，不需要額外 PAT。
 
-1. 將以下文件上傳到伺服器：
-   - `.env`（環境變數配置）
-   - `linebot.json`（Google Cloud 憑證）
-   - `run-on-server.sh`（部署腳本）
-   - `docker-compose.yml`（容器配置）
+Self-hosted runner 必須：
 
-2. 確保 .env 文件中的 MongoDB 連接字串指向正確的伺服器位置：
-   ```
-   MONGODB_URI=mongodb://用戶名:密碼@伺服器IP:27017/數據庫名?authSource=admin
-   ```
+- 指派給 `AlienTechForge/LineBotTranslator`。
+- 具有 `self-hosted`、`Linux`、`X64` labels。
+- 版本至少為 `2.327.1`，才能執行目前 Node 24 版 Actions。
+- 已安裝 Docker，且 runner service 使用者可執行 Docker。
 
-## 三、伺服器部署步驟
+## Actions Secrets
 
-1. 設置腳本的執行權限：
-   ```bash
-   chmod +x run-on-server.sh
-   ```
+必要：
 
-2. 執行部署腳本：
-   ```bash
-   ./run-on-server.sh
-   ```
+- `LINE_BOT_CHANNEL_TOKEN`
+- `LINE_BOT_CHANNEL_SECRET`
+- `MONGODB_URI`
+- `MONGODB_DATABASE`
+- `OPENAI_API_KEY` 或 `GEMINI_API_KEY`，依 `AI_DEFAULT_PROVIDER` 而定
+- `GOOGLE_CREDENTIALS_JSON`，當 `OCR_ENABLED=true` 時必要
 
-3. 查看容器狀態：
-   ```bash
-   docker ps | grep linebot-translator
-   ```
+依功能設定：
 
-4. 查看容器日誌：
-   ```bash
-   docker logs -f linebot-translator
-   ```
+- `OPENAI_MODEL_NAME`、`OPENAI_AVAILABLE_MODELS`、`OPENAI_API_URL`
+- `GEMINI_MODEL_NAME`、`GEMINI_AVAILABLE_MODELS`
+- `OCR_ENABLED`、`AI_DEFAULT_PROVIDER`
+- `ADMIN_USERS`
+- `MINIO_ENDPOINT`、`MINIO_ACCESS_KEY`、`MINIO_SECRET_KEY`、`MINIO_BUCKET_NAME`
+- `LANGUAGE_DETECTION_USE_AI`、`LANGUAGE_DETECTION_AI_PROVIDER`、`LANGUAGE_DETECTION_DEFAULT_CHINESE`
+- `APP_BROADCAST_TEST_MODE`
 
-## 四、手動部署方法（如果腳本不起作用）
+Secrets 只作為容器環境變數傳入，不會寫入 image、Repository 或 Actions artifact。Google service account JSON 會以權限 `0400` 儲存在 Docker volume，掛載至 `/run/secrets/linebot.json`。
 
-1. 確保已有 docker-compose.yml 文件
+## Actions Variables
 
-2. 拉取最新映像：
-   ```bash
-   docker pull alien7666/linebot-translator:latest
-   ```
+建議值：
 
-3. 啟動容器：
-   ```bash
-   docker-compose down
-   docker-compose up -d
-   ```
+| Variable | Default | 說明 |
+| --- | --- | --- |
+| `CONTAINER_NAME` | `linebot-translator` | 正式容器名稱 |
+| `DOCKER_NETWORK` | `host` | 與既有 MongoDB/MinIO 相容的 Docker network |
+| `SERVER_PORT` | `4040` | 容器內服務 port |
+| `HOST_PORT` | `4040` | 非 host network 時的宿主機 port |
+| `HEALTH_TIMEOUT_SECONDS` | `120` | 等待 readiness 的最長秒數 |
 
-## 五、重要說明
+## 手動部署
 
-1. 我們使用 `network_mode: "host"` 設定，讓容器直接使用宿主機的網路，以連接到宿主機上的 MongoDB 服務。
+伺服器已有 `.env`、`linebot.json` 且已登入 GHCR 時，可在 checkout 根目錄執行：
 
-2. 我們添加了以下環境變數來解決 gRPC 原生庫問題：
-   ```
-   GRPC_NETTY_SHADED_NETTY_TCNATIVE_DO_NOT_USE_CONSCRYPT=true
-   GRPC_NETTY_SHADED_NETTY_TCNATIVE_DO_NOT_USE_NATIVE=true
-   ```
+```bash
+./run-on-server.sh
+```
 
-3. 確保 .env 文件和 linebot.json 文件的權限正確：
-   ```bash
-   chmod 644 .env
-   chmod 644 linebot.json
-   ```
+自動部署的實際入口是 `scripts/deploy.sh`；`docker-compose.yml` 只保留為手動除錯用途。
