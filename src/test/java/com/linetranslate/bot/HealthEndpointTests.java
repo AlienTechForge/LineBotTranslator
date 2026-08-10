@@ -1,9 +1,12 @@
 package com.linetranslate.bot;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.when;
 
+import java.util.Collection;
 import java.util.Map;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.resttestclient.TestRestTemplate;
@@ -14,14 +17,27 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.ResponseEntity;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+import com.linetranslate.bot.service.storage.MinioStorageService;
+
+@SpringBootTest(
+        webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
+        properties = "openai.api.key=test-openai-key")
 @AutoConfigureTestRestTemplate
 @ActiveProfiles("test")
 class HealthEndpointTests {
 
     @Autowired
     private TestRestTemplate restTemplate;
+
+    @MockitoBean
+    private MinioStorageService minioStorageService;
+
+    @BeforeEach
+    void storageIsAvailable() {
+        when(minioStorageService.isAvailable()).thenReturn(true);
+    }
 
     @Test
     void livenessReportsProcessHealthWithoutDetails() {
@@ -46,8 +62,33 @@ class HealthEndpointTests {
                 new ParameterizedTypeReference<>() { });
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
-        assertThat(response.getBody())
-                .containsEntry("status", "UP")
-                .doesNotContainKeys("components", "details");
+        assertThat(response.getBody()).containsEntry("status", "UP");
+        assertComponentStatus(response, "lineConfiguration", "UP");
+        assertComponentStatus(response, "mongo", "UP");
+        assertComponentStatus(response, "minio", "UP");
+        assertComponentStatus(response, "ocrConfiguration", "DISABLED");
+        assertComponentStatus(response, "aiProvidersConfigured", "UP");
+        assertComponentStatus(response, "openAiConfiguration", "UP");
+        assertComponentStatus(response, "geminiConfiguration", "DISABLED");
+        assertNoDetails(response.getBody());
+    }
+
+    @SuppressWarnings("unchecked")
+    private void assertComponentStatus(
+            ResponseEntity<Map<String, Object>> response,
+            String component,
+            String status) {
+        Map<String, Object> components = (Map<String, Object>) response.getBody().get("components");
+        assertThat((Map<String, Object>) components.get(component)).containsEntry("status", status);
+    }
+
+    @SuppressWarnings("unchecked")
+    private void assertNoDetails(Object value) {
+        if (value instanceof Map<?, ?> map) {
+            assertThat(map.containsKey("details")).isFalse();
+            map.values().forEach(this::assertNoDetails);
+        } else if (value instanceof Collection<?> collection) {
+            collection.forEach(this::assertNoDetails);
+        }
     }
 }

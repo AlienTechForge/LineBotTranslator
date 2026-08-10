@@ -54,6 +54,8 @@ class MongoDelayedAvailabilityIntegrationTests {
         registry.add("mongodb.server-selection-timeout-ms", () -> 300);
         registry.add("mongodb.heartbeat-frequency-ms", () -> 250);
         registry.add("mongodb.min-heartbeat-frequency-ms", () -> 100);
+        registry.add("minio.enabled", () -> false);
+        registry.add("openai.api.key", () -> "test-openai-key");
     }
 
     @AfterAll
@@ -68,17 +70,13 @@ class MongoDelayedAvailabilityIntegrationTests {
 
         ResponseEntity<Map<String, Object>> unavailable = health("/actuator/health/readiness");
         assertThat(unavailable.getStatusCode()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
-        assertThat(unavailable.getBody())
-                .containsEntry("status", "DOWN")
-                .doesNotContainKeys("components", "details");
+        assertThat(unavailable.getBody()).containsEntry("status", "DOWN");
 
         MONGO_PROXY.forwardTo(upstreamMongoAddress());
 
         ResponseEntity<Map<String, Object>> recovered = awaitReady(Duration.ofSeconds(15));
         assertThat(recovered.getStatusCode()).isEqualTo(HttpStatus.OK);
-        assertThat(recovered.getBody())
-                .containsEntry("status", "UP")
-                .doesNotContainKeys("components", "details");
+        assertThat(recovered.getBody()).containsEntry("status", "UP");
     }
 
     private ResponseEntity<Map<String, Object>> awaitReady(Duration timeout) throws InterruptedException {
