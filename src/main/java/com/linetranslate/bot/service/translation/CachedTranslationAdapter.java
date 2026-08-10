@@ -1,11 +1,14 @@
 package com.linetranslate.bot.service.translation;
 
-import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 
 import com.linetranslate.bot.model.UserProfile;
+import com.linetranslate.bot.service.ai.AiExecutionFailure;
 import com.linetranslate.bot.service.ai.AiExecutionOutcome;
+import com.linetranslate.bot.service.ai.AiExecutionResult;
+import com.linetranslate.bot.service.ai.AiProviderException;
 import com.linetranslate.bot.service.ai.AiProviderExecutionModule;
+import com.linetranslate.bot.service.ai.AiProviderRoute;
 
 /**
  * Cache Adapter around provider execution. Failures are never cached.
@@ -14,20 +17,83 @@ import com.linetranslate.bot.service.ai.AiProviderExecutionModule;
 public class CachedTranslationAdapter {
 
     private final AiProviderExecutionModule providerExecutionModule;
+    private final TranslationCacheStore cacheStore;
+    private final TranslationCacheProperties properties;
 
-    public CachedTranslationAdapter(AiProviderExecutionModule providerExecutionModule) {
+    public CachedTranslationAdapter(
+            AiProviderExecutionModule providerExecutionModule,
+            TranslationCacheStore cacheStore,
+            TranslationCacheProperties properties) {
         this.providerExecutionModule = providerExecutionModule;
+        this.cacheStore = cacheStore;
+        this.properties = properties;
     }
 
-    @Cacheable(
-            value = "translations",
-            key = "{#text, #targetLanguage, #userProfile.preferredAiProvider, "
-                    + "#userProfile.openaiPreferredModel, #userProfile.geminiPreferredModel}",
-            unless = "#result.failed()")
     public AiExecutionOutcome translate(
             UserProfile userProfile,
             String text,
             String targetLanguage) {
-        return providerExecutionModule.translateTextOutcome(userProfile, text, targetLanguage);
+        return translate(userProfile, text, targetLanguage, properties.currentVariant());
+    }
+
+    public AiExecutionOutcome translate(
+            UserProfile userProfile,
+            String text,
+            String targetLanguage,
+            TranslationCacheVariant variant) {
+        AiProviderRoute route = providerExecutionModule.planText(userProfile);
+        TranslationCacheKey key = TranslationCacheKeyFactory.create(
+                text,
+                targetLanguage,
+                route,
+                variant);
+
+        return cacheStore.find(key).<AiExecutionOutcome>map(value -> value)
+                .orElseGet(() -> executeAndMaybeCache(
+                        userProfile,
+                        text,
+                        targetLanguage,
+                        variant,
+                        route,
+                        key));
+    }
+
+    private AiExecutionOutcome executeAndMaybeCache(
+            UserProfile userProfile,
+            String text,
+            String targetLanguage,
+            TranslationCacheVariant variant,
+            AiProviderRoute route,
+            TranslationCacheKey plannedKey) {
+        AiExecutionOutcome outcome = providerExecutionModule.translateTextOutcome(
+                userProfile,
+                text,
+                targetLanguage);
+        if (outcome instanceof AiExecutionOutcome.Failure failure) {
+            cacheStore.recordSkipped(skipReason(failure.failure()));
+            return outcome;
+        }
+
+        AiExecutionOutcome.Success success = (AiExecutionOutcome.Success) outcome;
+        AiExecutionResult result = success.result();
+        if (result.fallbackUsed()) {
+            cacheStore.recordSkipped(TranslationCacheSkipReason.FALLBACK);
+        } else if (!route.providerMatches(result)) {
+            cacheStore.recordSkipped(TranslationCacheSkipReason.ROUTE_MISMATCH);
+        } else {
+            TranslationCacheKey actualKey = TranslationCacheKeyFactory.create(
+                    text,
+                    targetLanguage,
+                    new AiProviderRoute(result.providerName(), result.modelName()),
+                    variant);
+            cacheStore.put(plannedKey, actualKey, success);
+        }
+        return outcome;
+    }
+
+    private TranslationCacheSkipReason skipReason(AiExecutionFailure failure) {
+        return failure.outcome() == AiProviderException.Outcome.SAFETY_BLOCKED
+                ? TranslationCacheSkipReason.SAFETY_BLOCKED
+                : TranslationCacheSkipReason.FAILURE;
     }
 }

@@ -34,4 +34,19 @@ class CiQualityGateContractTests {
                 .contains("target/surefire-reports/")
                 .contains("target/failsafe-reports/");
     }
+
+    @Test
+    void deploymentPassesBoundedCachePolicyIntoTheRuntimeContainer() throws IOException {
+        String workflow = Files.readString(Path.of(".github", "workflows", "ci-cd.yml"));
+        String deployScript = Files.readString(Path.of("scripts", "deploy.sh"));
+
+        assertThat(workflow)
+                .contains("TRANSLATION_CACHE_TTL: ${{ vars.TRANSLATION_CACHE_TTL || 'PT30M' }}")
+                .contains("TRANSLATION_CACHE_MAX_ENTRIES: ${{ vars.TRANSLATION_CACHE_MAX_ENTRIES || '1000' }}")
+                .contains("TRANSLATION_PROMPT_VERSION:");
+        assertThat(deployScript)
+                .contains("TRANSLATION_CACHE_TTL")
+                .contains("TRANSLATION_CACHE_MAX_ENTRIES")
+                .contains("TRANSLATION_PROMPT_VERSION");
+    }
 }

@@ -59,6 +59,24 @@ public class AiProviderExecutionModule {
                 model -> AiProviderRequest.translate(model, text, targetLanguage));
     }
 
+    /**
+     * Resolves the primary text route without executing a provider request. Cache
+     * callers use this immutable fact as part of their isolation key.
+     */
+    public AiProviderRoute planText(UserProfile userProfile) {
+        String requestedProvider = preferredProvider(userProfile);
+        AiProviderAdapter primary = adapters.get(requestedProvider);
+        if (primary == null) {
+            primary = adapters.get(alternateProvider(requestedProvider));
+        }
+        if (primary == null) {
+            return new AiProviderRoute("none", "none");
+        }
+        return new AiProviderRoute(
+                primary.providerName(),
+                effectiveModel(primary, preferredModel(primary, userProfile)));
+    }
+
     public AiExecutionResult translateText(
             UserProfile userProfile,
             String text,

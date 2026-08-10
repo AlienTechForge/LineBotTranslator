@@ -13,6 +13,25 @@ import com.linetranslate.bot.model.UserProfile;
 class AiProviderExecutionModuleTests {
 
     @Test
+    void plannedTextRouteUsesTheEffectiveProviderAndModel() {
+        FakeAdapter openAi = new FakeAdapter("openai", "gpt-default", Set.of("gpt-default", "gpt-selected"));
+        AiProviderExecutionModule module = module(openAi);
+        UserProfile selected = UserProfile.builder()
+                .preferredAiProvider("openai")
+                .openaiPreferredModel("gpt-selected")
+                .build();
+        UserProfile unsupported = UserProfile.builder()
+                .preferredAiProvider("openai")
+                .openaiPreferredModel("gpt-unknown")
+                .build();
+
+        assertThat(module.planText(selected))
+                .isEqualTo(new AiProviderRoute("openai", "gpt-selected"));
+        assertThat(module.planText(unsupported))
+                .isEqualTo(new AiProviderRoute("openai", "gpt-default"));
+    }
+
+    @Test
     void selectedModelIsSentToTheProviderAdapter() {
         FakeAdapter openAi = new FakeAdapter("openai", "gpt-default", Set.of("gpt-default", "gpt-selected"));
         AiProviderExecutionModule module = module(openAi);
