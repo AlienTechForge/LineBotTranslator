@@ -23,8 +23,8 @@ import com.linetranslate.bot.model.UserProfile;
 import com.linetranslate.bot.repository.TranslationRecordRepository;
 import com.linetranslate.bot.repository.UserProfileRepository;
 import com.linetranslate.bot.service.ai.AiExecutionResult;
+import com.linetranslate.bot.service.ai.AiProviderExecutionModule;
 import com.linetranslate.bot.service.ai.AiProviderException;
-import com.linetranslate.bot.service.ai.AiServiceFactory;
 import com.linetranslate.bot.service.storage.ImageStorageResult;
 import com.linetranslate.bot.service.storage.MinioStorageService;
 import com.linetranslate.bot.service.translation.LanguageDetectionService;
@@ -40,7 +40,7 @@ public class ImageTranslationService {
     private final OcrService ocrService;
     private final TranslationService translationService;
     private final LanguageDetectionService languageDetectionService;
-    private final AiServiceFactory aiServiceFactory;
+    private final AiProviderExecutionModule aiProviderExecutionModule;
     private final MessagingApiBlobClient messagingApiBlobClient;
     private final TranslationRecordRepository translationRecordRepository;
     private final UserProfileRepository userProfileRepository;
@@ -69,7 +69,7 @@ public class ImageTranslationService {
             ObjectProvider<OcrService> ocrServiceProvider,
             TranslationService translationService,
             LanguageDetectionService languageDetectionService,
-            AiServiceFactory aiServiceFactory,
+            AiProviderExecutionModule aiProviderExecutionModule,
             MessagingApiBlobClient messagingApiBlobClient,
             TranslationRecordRepository translationRecordRepository,
             UserProfileRepository userProfileRepository,
@@ -78,7 +78,7 @@ public class ImageTranslationService {
         this.ocrService = ocrServiceProvider.getIfAvailable();
         this.translationService = translationService;
         this.languageDetectionService = languageDetectionService;
-        this.aiServiceFactory = aiServiceFactory;
+        this.aiProviderExecutionModule = aiProviderExecutionModule;
         this.messagingApiBlobClient = messagingApiBlobClient;
         this.translationRecordRepository = translationRecordRepository;
         this.userProfileRepository = userProfileRepository;
@@ -140,7 +140,7 @@ public class ImageTranslationService {
                     // 構建提示詞
                     String prompt = "請識別這張圖片中的所有文字，只返回文字內容，不要添加任何其他描述或解釋。";
 
-                    AiExecutionResult ocrResult = aiServiceFactory.processImage(
+                    AiExecutionResult ocrResult = aiProviderExecutionModule.processImage(
                             userProfile,
                             prompt,
                             "data:image/jpeg;base64," + base64Image);

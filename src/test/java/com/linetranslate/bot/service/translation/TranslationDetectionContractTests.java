@@ -30,7 +30,7 @@ import com.linetranslate.bot.repository.TranslationRecordRepository;
 import com.linetranslate.bot.repository.UserProfileRepository;
 import com.linetranslate.bot.service.ai.AiExecutionResult;
 import com.linetranslate.bot.service.ai.AiProviderException;
-import com.linetranslate.bot.service.ai.AiServiceFactory;
+import com.linetranslate.bot.service.ai.AiProviderExecutionModule;
 import com.linetranslate.bot.util.LanguageUtils;
 
 @ExtendWith(MockitoExtension.class)
@@ -41,7 +41,7 @@ class TranslationDetectionContractTests {
     @Mock
     private LanguageDetectionService languageDetectionService;
     @Mock
-    private AiServiceFactory aiServiceFactory;
+    private AiProviderExecutionModule aiServiceFactory;
     @Mock
     private TranslationRecordRepository translationRecordRepository;
     @Mock

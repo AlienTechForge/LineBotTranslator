@@ -22,8 +22,8 @@ import com.linetranslate.bot.model.UserProfile;
 import com.linetranslate.bot.repository.TranslationRecordRepository;
 import com.linetranslate.bot.repository.UserProfileRepository;
 import com.linetranslate.bot.service.ai.AiExecutionResult;
+import com.linetranslate.bot.service.ai.AiProviderExecutionModule;
 import com.linetranslate.bot.service.ai.AiProviderException;
-import com.linetranslate.bot.service.ai.AiServiceFactory;
 import com.linetranslate.bot.service.translation.LanguageDetectionService;
 import com.linetranslate.bot.util.LanguageUtils;
 import lombok.extern.slf4j.Slf4j;
@@ -36,7 +36,7 @@ public class TranslationService {
             "翻譯服務暫時無法使用，請稍後再試。";
 
     private final LanguageDetectionService languageDetectionService;
-    private final AiServiceFactory aiServiceFactory;
+    private final AiProviderExecutionModule aiProviderExecutionModule;
     private final TranslationRecordRepository translationRecordRepository;
     private final UserProfileRepository userProfileRepository;
     private final AppConfig appConfig;
@@ -60,12 +60,12 @@ public class TranslationService {
     @Autowired
     public TranslationService(
             LanguageDetectionService languageDetectionService,
-            AiServiceFactory aiServiceFactory,
+            AiProviderExecutionModule aiProviderExecutionModule,
             TranslationRecordRepository translationRecordRepository,
             UserProfileRepository userProfileRepository,
             AppConfig appConfig) {
         this.languageDetectionService = languageDetectionService;
-        this.aiServiceFactory = aiServiceFactory;
+        this.aiProviderExecutionModule = aiProviderExecutionModule;
         this.translationRecordRepository = translationRecordRepository;
         this.userProfileRepository = userProfileRepository;
         this.appConfig = appConfig;
@@ -414,7 +414,7 @@ public class TranslationService {
             String text,
             String targetLanguage) {
         log.info("執行 AI 翻譯: target={}", targetLanguage);
-        return aiServiceFactory.translateText(userProfile, text, targetLanguage);
+        return aiProviderExecutionModule.translateText(userProfile, text, targetLanguage);
     }
 
     private void logTranslationFailure(String userId, AiProviderException failure) {

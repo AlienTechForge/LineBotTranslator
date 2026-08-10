@@ -54,5 +54,7 @@ class SafeLogTest {
         assertThat(SafeLog.httpStatus(429)).isEqualTo(429);
         assertThat(SafeLog.present("seeded-private-message")).isTrue();
         assertThat(SafeLog.present(" ")).isFalse();
+        assertThat(SafeLog.metadata("gemini\nforged"))
+                .isEqualTo("gemini_forged");
     }
 }

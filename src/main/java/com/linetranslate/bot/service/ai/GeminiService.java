@@ -15,6 +15,7 @@ import com.linetranslate.bot.config.GeminiConfig;
 
 import java.io.IOException;
 import java.net.SocketTimeoutException;
+import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
@@ -23,7 +24,7 @@ import com.linetranslate.bot.model.UserProfile;
 
 @Service
 @Slf4j
-public class GeminiService implements AiService {
+public class GeminiService implements AiProviderAdapter {
 
     private static final Set<String> BLOCKED_FINISH_REASONS = Set.of(
             "SAFETY",
@@ -42,49 +43,86 @@ public class GeminiService implements AiService {
 
     @Autowired
     public GeminiService(GeminiConfig geminiConfig) {
+        this(
+                geminiConfig,
+                new OkHttpClient.Builder()
+                        .connectTimeout(30, TimeUnit.SECONDS)
+                        .readTimeout(30, TimeUnit.SECONDS)
+                        .writeTimeout(30, TimeUnit.SECONDS)
+                        .build(),
+                new ObjectMapper());
+    }
+
+    GeminiService(
+            GeminiConfig geminiConfig,
+            OkHttpClient httpClient,
+            ObjectMapper objectMapper) {
         this.geminiConfig = geminiConfig;
         this.modelName = geminiConfig.getModelName();
         this.apiKey = geminiConfig.getApiKey();
-
-        this.httpClient = new OkHttpClient.Builder()
-                .connectTimeout(30, TimeUnit.SECONDS)
-                .readTimeout(30, TimeUnit.SECONDS)
-                .writeTimeout(30, TimeUnit.SECONDS)
-                .build();
-        this.objectMapper = new ObjectMapper();
+        this.httpClient = httpClient;
+        this.objectMapper = objectMapper;
 
         log.info("Gemini 服務初始化成功，使用模型: {}", modelName);
     }
 
-    @Override
     public String translateText(String text, String targetLanguage) {
-        String prompt = "請將以下文本翻譯成" + targetLanguage
-                + "。只需返回翻譯結果，不要添加任何解釋或額外信息：\n\n" + text;
-        ObjectNode requestBody = textRequest(prompt, 0.2, 40, 1024);
-        return executeRequest(requestBody, UUID.randomUUID().toString());
+        return execute(AiProviderRequest.translate(modelName, text, targetLanguage)).text();
     }
 
-    @Override
     public String processImage(String prompt, String imageUrl) {
-        ObjectNode requestBody = textRequest(prompt, 0.1, 32, 1024);
-        ArrayNode parts = (ArrayNode) requestBody.path("contents").get(0).path("parts");
-        ObjectNode inlineData = parts.addObject().putObject("inlineData");
-        String base64Data = imageUrl.contains(";base64,")
-                ? imageUrl.substring(imageUrl.indexOf(";base64,") + ";base64,".length())
-                : imageUrl;
-        inlineData.put("data", base64Data);
-        inlineData.put("mimeType", "image/jpeg");
-        return executeRequest(requestBody, UUID.randomUUID().toString());
+        return execute(AiProviderRequest.image(modelName, prompt, imageUrl)).text();
     }
 
     @Override
-    public String getProviderName() {
+    public AiProviderResponse execute(AiProviderRequest request) {
+        ObjectNode requestBody = switch (request.operation()) {
+            case TRANSLATE_TEXT -> textRequest(
+                    "請將以下文本翻譯成" + request.targetLanguage()
+                            + "。只需返回翻譯結果，不要添加任何解釋或額外信息：\n\n"
+                            + request.input(),
+                    0.2,
+                    40,
+                    1024);
+            case PROCESS_IMAGE -> imageRequest(request.input(), request.imageData());
+            case GENERATE_TEXT -> textRequest(request.input(), 0.7, 40, 1024);
+        };
+        return executeRequest(requestBody, UUID.randomUUID().toString(), request.model());
+    }
+
+    @Override
+    public String providerName() {
         return "gemini";
     }
 
     @Override
-    public String getModelName() {
+    public String defaultModel() {
         return modelName;
+    }
+
+    @Override
+    public Set<String> availableModels() {
+        List<String> configuredModels = geminiConfig.getAvailableModels();
+        if (configuredModels == null || configuredModels.isEmpty()) {
+            return Set.of(modelName);
+        }
+        return configuredModels.stream()
+                .filter(model -> model != null && !model.isBlank())
+                .map(String::trim)
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+    }
+
+    @Override
+    public Set<AiProviderOperation> capabilities() {
+        return Set.of(AiProviderOperation.values());
+    }
+
+    public String getProviderName() {
+        return providerName();
+    }
+
+    public String getModelName() {
+        return defaultModel();
     }
     
     /**
@@ -102,11 +140,20 @@ public class GeminiService implements AiService {
         return geminiConfig.getModelName();
     }
 
-    @Override
     public String generateText(String prompt) {
-        return executeRequest(
-                textRequest(prompt, 0.7, 40, 1024),
-                UUID.randomUUID().toString());
+        return execute(AiProviderRequest.generate(modelName, prompt)).text();
+    }
+
+    private ObjectNode imageRequest(String prompt, String imageUrl) {
+        ObjectNode requestBody = textRequest(prompt, 0.1, 32, 1024);
+        ArrayNode parts = (ArrayNode) requestBody.path("contents").get(0).path("parts");
+        ObjectNode inlineData = parts.addObject().putObject("inlineData");
+        String base64Data = imageUrl.contains(";base64,")
+                ? imageUrl.substring(imageUrl.indexOf(";base64,") + ";base64,".length())
+                : imageUrl;
+        inlineData.put("data", base64Data);
+        inlineData.put("mimeType", "image/jpeg");
+        return requestBody;
     }
 
     private ObjectNode textRequest(
@@ -127,12 +174,15 @@ public class GeminiService implements AiService {
         return requestBody;
     }
 
-    private String executeRequest(ObjectNode requestBodyJson, String correlationId) {
+    private AiProviderResponse executeRequest(
+            ObjectNode requestBodyJson,
+            String correlationId,
+            String requestedModel) {
         try {
             String requestBody = objectMapper.writeValueAsString(requestBodyJson);
             Request request = new Request.Builder()
                     .url("https://generativelanguage.googleapis.com/v1beta/models/"
-                            + modelName + ":generateContent?key=" + apiKey)
+                            + requestedModel + ":generateContent?key=" + apiKey)
                     .post(RequestBody.create(requestBody, MediaType.parse("application/json")))
                     .build();
 
@@ -140,7 +190,7 @@ public class GeminiService implements AiService {
                 ResponseBody body = response.body();
                 String responseBody = body == null ? "" : body.string();
                 if (!response.isSuccessful()) {
-                    throw providerHttpFailure(response.code(), responseBody, correlationId);
+                    throw providerHttpFailure(response.code(), responseBody, correlationId, requestedModel);
                 }
                 if (responseBody.isBlank()) {
                     throw providerFailure(
@@ -148,9 +198,10 @@ public class GeminiService implements AiService {
                             "EMPTY_HTTP_BODY",
                             correlationId,
                             response.code(),
-                            null);
+                            null,
+                            requestedModel);
                 }
-                return parseGeneratedText(responseBody, correlationId);
+                return parseProviderResponse(responseBody, correlationId, requestedModel);
             }
         } catch (AiProviderException exception) {
             throw exception;
@@ -160,21 +211,24 @@ public class GeminiService implements AiService {
                     "SOCKET_TIMEOUT",
                     correlationId,
                     -1,
-                    exception);
+                    exception,
+                    requestedModel);
         } catch (IOException exception) {
             throw providerFailure(
                     AiProviderException.Outcome.TRANSPORT_ERROR,
                     exception.getClass().getSimpleName(),
                     correlationId,
                     -1,
-                    exception);
+                    exception,
+                    requestedModel);
         } catch (RuntimeException exception) {
             throw providerFailure(
                     AiProviderException.Outcome.UNEXPECTED_ERROR,
                     exception.getClass().getSimpleName(),
                     correlationId,
                     -1,
-                    exception);
+                    exception,
+                    requestedModel);
         }
     }
 
@@ -182,6 +236,14 @@ public class GeminiService implements AiService {
             int httpStatus,
             String responseBody,
             String correlationId) {
+        return providerHttpFailure(httpStatus, responseBody, correlationId, modelName);
+    }
+
+    private AiProviderException providerHttpFailure(
+            int httpStatus,
+            String responseBody,
+            String correlationId,
+            String requestedModel) {
         String providerReason = readProviderErrorReason(responseBody);
         AiProviderException.Outcome outcome;
         if (httpStatus == 401 || httpStatus == 403) {
@@ -198,7 +260,7 @@ public class GeminiService implements AiService {
         String reason = "UNKNOWN".equals(providerReason)
                 ? "HTTP_" + httpStatus
                 : providerReason;
-        return providerFailure(outcome, reason, correlationId, httpStatus, null);
+        return providerFailure(outcome, reason, correlationId, httpStatus, null, requestedModel);
     }
 
     private String readProviderErrorReason(String responseBody) {
@@ -217,19 +279,30 @@ public class GeminiService implements AiService {
     }
 
     String parseGeneratedText(String responseBody, String correlationId) {
+        return parseProviderResponse(responseBody, correlationId, modelName).text();
+    }
+
+    private AiProviderResponse parseProviderResponse(
+            String responseBody,
+            String correlationId,
+            String requestedModel) {
         try {
-            return extractGeneratedText(objectMapper.readTree(responseBody), correlationId);
+            return extractProviderResponse(objectMapper.readTree(responseBody), correlationId, requestedModel);
         } catch (JsonProcessingException exception) {
             throw providerFailure(
                     AiProviderException.Outcome.MALFORMED_RESPONSE,
                     "INVALID_JSON",
                     correlationId,
                     -1,
-                    exception);
+                    exception,
+                    requestedModel);
         }
     }
 
-    private String extractGeneratedText(JsonNode response, String correlationId) {
+    private AiProviderResponse extractProviderResponse(
+            JsonNode response,
+            String correlationId,
+            String requestedModel) {
         String promptBlockReason = response.path("promptFeedback").path("blockReason").asText("");
         if (!promptBlockReason.isBlank()
                 && !"BLOCK_REASON_UNSPECIFIED".equals(promptBlockReason)) {
@@ -238,7 +311,8 @@ public class GeminiService implements AiService {
                     promptBlockReason,
                     correlationId,
                     -1,
-                    null);
+                    null,
+                    requestedModel);
         }
 
         JsonNode candidates = response.path("candidates");
@@ -248,7 +322,8 @@ public class GeminiService implements AiService {
                     "NO_CANDIDATES",
                     correlationId,
                     -1,
-                    null);
+                    null,
+                    requestedModel);
         }
 
         JsonNode candidate = candidates.get(0);
@@ -259,7 +334,8 @@ public class GeminiService implements AiService {
                     finishReason,
                     correlationId,
                     -1,
-                    null);
+                    null,
+                    requestedModel);
         }
 
         JsonNode parts = candidate.path("content").path("parts");
@@ -269,7 +345,8 @@ public class GeminiService implements AiService {
                     finishReason.isBlank() ? "NO_TEXT_PARTS" : finishReason,
                     correlationId,
                     -1,
-                    null);
+                    null,
+                    requestedModel);
         }
 
         String generatedText = parts.get(0).path("text").asText("").trim();
@@ -279,9 +356,18 @@ public class GeminiService implements AiService {
                     finishReason.isBlank() ? "BLANK_TEXT" : finishReason,
                     correlationId,
                     -1,
-                    null);
+                    null,
+                    requestedModel);
         }
-        return generatedText;
+        String actualModel = response.path("modelVersion").asText(requestedModel);
+        JsonNode usage = response.path("usageMetadata");
+        AiTokenUsage tokenUsage = usage.isMissingNode()
+                ? AiTokenUsage.UNKNOWN
+                : new AiTokenUsage(
+                        usage.path("promptTokenCount").asLong(-1),
+                        usage.path("candidatesTokenCount").asLong(-1),
+                        usage.path("totalTokenCount").asLong(-1));
+        return new AiProviderResponse(generatedText, actualModel, tokenUsage);
     }
 
     private AiProviderException providerFailure(
@@ -289,11 +375,12 @@ public class GeminiService implements AiService {
             String reason,
             String correlationId,
             int httpStatus,
-            Throwable cause) {
+            Throwable cause,
+            String requestedModel) {
         return new AiProviderException(
                 outcome,
-                getProviderName(),
-                modelName,
+                providerName(),
+                requestedModel,
                 reason,
                 correlationId,
                 httpStatus,

@@ -3,8 +3,10 @@ package com.linetranslate.bot.service.ai;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -137,7 +139,7 @@ class GeminiSafetyResponseTests {
     @Test
     void safetyBlockedDetectionFallsBackLocallyWithoutRetry() {
         AtomicInteger providerCalls = new AtomicInteger();
-        LanguageDetectionService detector = languageDetector(blockedAiService(providerCalls));
+        LanguageDetectionService detector = languageDetector(blockedModule(providerCalls));
 
         assertThat(detector.detectLanguage("這是一段中文內容")).isEqualTo("zh-tw");
         assertThat(providerCalls).hasValue(1);
@@ -146,16 +148,13 @@ class GeminiSafetyResponseTests {
     @Test
     void blockedDetectionStillAllowsTranslationThroughAllowedProvider() {
         AtomicInteger providerCalls = new AtomicInteger();
-        AiService blockedDetectionService = blockedAiService(providerCalls);
-
-        AiServiceFactory factory = Mockito.mock(AiServiceFactory.class);
-        when(factory.getService("gemini")).thenReturn(blockedDetectionService);
-        when(factory.translateText(
+        AiProviderExecutionModule module = blockedModule(providerCalls);
+        when(module.translateText(
                 Mockito.any(UserProfile.class),
                 Mockito.eq("這是一段中文內容"),
                 Mockito.eq("en")))
                 .thenReturn(new AiExecutionResult("translated", "openai", "gpt-test"));
-        LanguageDetectionService detector = languageDetector(factory);
+        LanguageDetectionService detector = languageDetector(module);
 
         UserProfileRepository userRepository = Mockito.mock(UserProfileRepository.class);
         TranslationRecordRepository recordRepository = Mockito.mock(TranslationRecordRepository.class);
@@ -171,7 +170,7 @@ class GeminiSafetyResponseTests {
 
         TranslationService translationService = new TranslationService(
                 detector,
-                factory,
+                module,
                 recordRepository,
                 userRepository,
                 appConfig);
@@ -190,13 +189,15 @@ class GeminiSafetyResponseTests {
 
     @Test
     void providerErrorTextCannotBecomePlausibleLanguageCode() {
-        AiService failingService = Mockito.mock(AiService.class);
-        when(failingService.generateText("prompt"))
-                .thenReturn("文本生成失敗: Gemini API 請求錯誤 404");
-        AiServiceFactory factory = Mockito.mock(AiServiceFactory.class);
-        when(factory.getService("gemini")).thenReturn(failingService);
-        AiLanguageDetectionService detector = new AiLanguageDetectionService(factory);
+        AiProviderExecutionModule module = Mockito.mock(AiProviderExecutionModule.class);
+        when(module.generateTextOutcome(anyString(), anyString(), anyString()))
+                .thenReturn(new AiExecutionOutcome.Success(new AiExecutionResult(
+                        "文本生成失敗: Gemini API 請求錯誤 404",
+                        "gemini",
+                        "gemini-test")));
+        AiLanguageDetectionService detector = new AiLanguageDetectionService(module);
         ReflectionTestUtils.setField(detector, "aiProvider", "gemini");
+        ReflectionTestUtils.setField(detector, "modelName", "gemini-test");
         ReflectionTestUtils.setField(detector, "defaultChineseType", "zh-tw");
 
         assertThat(detector.detectLanguage("prompt")).isEqualTo("unknown");
@@ -218,15 +219,10 @@ class GeminiSafetyResponseTests {
         assertThat(error.getMessage()).doesNotContain("raw-response");
     }
 
-    private LanguageDetectionService languageDetector(AiService aiService) {
-        AiServiceFactory factory = Mockito.mock(AiServiceFactory.class);
-        when(factory.getService("gemini")).thenReturn(aiService);
-        return languageDetector(factory);
-    }
-
-    private LanguageDetectionService languageDetector(AiServiceFactory factory) {
-        AiLanguageDetectionService aiDetector = new AiLanguageDetectionService(factory);
+    private LanguageDetectionService languageDetector(AiProviderExecutionModule module) {
+        AiLanguageDetectionService aiDetector = new AiLanguageDetectionService(module);
         ReflectionTestUtils.setField(aiDetector, "aiProvider", "gemini");
+        ReflectionTestUtils.setField(aiDetector, "modelName", "gemini-test");
         ReflectionTestUtils.setField(aiDetector, "defaultChineseType", "zh-tw");
 
         LanguageDetectionService detector = new LanguageDetectionService();
@@ -237,11 +233,11 @@ class GeminiSafetyResponseTests {
         return detector;
     }
 
-    private AiService blockedAiService(AtomicInteger calls) {
-        AiService service = Mockito.mock(AiService.class);
-        when(service.generateText(anyString())).thenAnswer(invocation -> {
+    private AiProviderExecutionModule blockedModule(AtomicInteger calls) {
+        AiProviderExecutionModule module = Mockito.mock(AiProviderExecutionModule.class);
+        when(module.generateTextOutcome(eq("gemini"), anyString(), anyString())).thenAnswer(invocation -> {
             calls.incrementAndGet();
-            throw new AiProviderException(
+            AiProviderException error = new AiProviderException(
                     AiProviderException.Outcome.SAFETY_BLOCKED,
                     "gemini",
                     "gemini-test",
@@ -249,7 +245,9 @@ class GeminiSafetyResponseTests {
                     "correlation-blocked",
                     -1,
                     null);
+            AiProviderAttempt attempt = AiProviderAttempt.failure(error, 1);
+            return new AiExecutionOutcome.Failure(AiExecutionFailure.from(error, List.of(attempt)));
         });
-        return service;
+        return module;
     }
 }

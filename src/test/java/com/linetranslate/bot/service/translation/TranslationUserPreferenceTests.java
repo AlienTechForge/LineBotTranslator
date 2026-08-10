@@ -22,7 +22,7 @@ import com.linetranslate.bot.model.UserProfile;
 import com.linetranslate.bot.repository.TranslationRecordRepository;
 import com.linetranslate.bot.repository.UserProfileRepository;
 import com.linetranslate.bot.service.ai.AiExecutionResult;
-import com.linetranslate.bot.service.ai.AiServiceFactory;
+import com.linetranslate.bot.service.ai.AiProviderExecutionModule;
 
 @ExtendWith(MockitoExtension.class)
 class TranslationUserPreferenceTests {
@@ -32,7 +32,7 @@ class TranslationUserPreferenceTests {
     @Mock
     private LanguageDetectionService languageDetectionService;
     @Mock
-    private AiServiceFactory aiServiceFactory;
+    private AiProviderExecutionModule aiServiceFactory;
     @Mock
     private TranslationRecordRepository translationRecordRepository;
     @Mock
