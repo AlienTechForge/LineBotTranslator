@@ -43,7 +43,7 @@ find_mongodb_container() {
 
     local candidates=()
     while IFS=$'\t' read -r name image; do
-        if [[ "${image,,}" == *mongo* ]]; then
+        if [[ "${image,,}" == *mongo* && "${image,,}" != *mongo-express* ]]; then
             candidates+=("$name")
         fi
     done < <(docker ps --format '{{.Names}}\t{{.Image}}')
