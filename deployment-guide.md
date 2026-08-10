@@ -13,6 +13,16 @@
 
 `/actuator/health/liveness` 只代表程序存活；`/actuator/health/readiness` 會檢查 LINE 設定、MongoDB、MinIO、OCR 與 AI provider 設定。必要依賴失敗時回 `DOWN`/HTTP 503；MinIO 或 OCR 等 optional dependency 失敗時回 `DEGRADED`/HTTP 200，因此不會造成部署 rollback。回應只公開 component status，不公開 details。
 
+## 測試與 quality gate
+
+`./mvnw clean verify -B` 是 PR 與 `master` 的必要 gate：
+
+- Surefire 執行 `*Tests` focused suite，涵蓋文字/圖片翻譯、provider failure、使用者偏好、管理員授權與 signed LINE webhook routing。
+- Failsafe 執行 `*IntegrationTests`，對隔離 MongoDB 與 MinIO 驗證 unavailable、recovery 與實際讀寫流程。
+- `verify` lifecycle 會 compile、執行兩層測試並建立 Spring Boot JAR；workflow 另行確認 packaged JAR 存在。
+- provider、LINE reply、OCR 與 storage 邊界在 focused tests 使用 mocks/adapters，不讀 production Secrets，也不呼叫付費 API。
+- 測試失敗時 Actions 會保留 Surefire 與 Failsafe reports 7 天；成功時不建立多餘 artifact。
+
 ## GitHub Repository 設定
 
 在 `Settings -> Actions -> General -> Workflow permissions` 啟用 `Read and write permissions`。Workflow 使用內建 `GITHUB_TOKEN` 推送 GHCR，不需要額外 PAT。

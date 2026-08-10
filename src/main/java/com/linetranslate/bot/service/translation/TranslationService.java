@@ -219,22 +219,7 @@ public class TranslationService {
         // 使用自動檢測語言並選擇目標語言
         String sourceText = text;
         String sourceLanguage = languageDetectionService.detectLanguage(sourceText);
-        String targetLanguage;
-
-        // 決定目標語言
-        if (userProfile.getPreferredLanguage() != null && !userProfile.getPreferredLanguage().isEmpty()) {
-            // 如果用戶有偏好設置，但輸入的語言與偏好語言相同，則使用默認規則
-            if (sourceLanguage.equals(userProfile.getPreferredLanguage()) ||
-                    (sourceLanguage.startsWith("zh") && userProfile.getPreferredLanguage().startsWith("zh"))) {
-                targetLanguage = getDefaultTargetLanguage(sourceLanguage, userProfile);
-            } else {
-                // 使用用戶的偏好語言
-                targetLanguage = userProfile.getPreferredLanguage();
-            }
-        } else {
-            // 如果沒有偏好，使用默認規則
-            targetLanguage = getDefaultTargetLanguage(sourceLanguage, userProfile);
-        }
+        String targetLanguage = getDefaultTargetLanguage(sourceLanguage, userProfile);
 
         log.info("自動檢測語言: {}, 目標語言: {}", sourceLanguage, targetLanguage);
 
@@ -260,7 +245,9 @@ public class TranslationService {
         } else {
             // 如果不是中文，使用用戶偏好的語言或默認設置
             String preferredLanguage = userProfile.getPreferredLanguage();
-            if (preferredLanguage != null && !preferredLanguage.isEmpty()) {
+            if (preferredLanguage != null
+                    && !preferredLanguage.isEmpty()
+                    && !preferredLanguage.equalsIgnoreCase(sourceLanguage)) {
                 return preferredLanguage;
             }
             return appConfig.getDefaultTargetLanguageForOthers();
