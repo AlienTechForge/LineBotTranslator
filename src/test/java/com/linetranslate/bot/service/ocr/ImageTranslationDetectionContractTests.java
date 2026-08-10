@@ -4,8 +4,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.lenient;
 
 import java.io.ByteArrayInputStream;
 import java.util.Optional;
@@ -28,7 +30,8 @@ import com.linetranslate.bot.model.TranslationRecord;
 import com.linetranslate.bot.model.UserProfile;
 import com.linetranslate.bot.repository.TranslationRecordRepository;
 import com.linetranslate.bot.repository.UserProfileRepository;
-import com.linetranslate.bot.service.ai.AiService;
+import com.linetranslate.bot.service.ai.AiExecutionResult;
+import com.linetranslate.bot.service.ai.AiProviderException;
 import com.linetranslate.bot.service.ai.AiServiceFactory;
 import com.linetranslate.bot.service.storage.MinioStorageService;
 import com.linetranslate.bot.service.translation.LanguageDetectionService;
@@ -58,13 +61,12 @@ class ImageTranslationDetectionContractTests {
     @Mock
     private MinioStorageService minioStorageService;
     @Mock
-    private AiService aiService;
-    @Mock
     private Result<BlobContent> blobResult;
     @Mock
     private BlobContent blobContent;
 
     private ImageTranslationService imageTranslationService;
+    private UserProfile userProfile;
 
     @BeforeEach
     void setUp() throws Exception {
@@ -81,11 +83,11 @@ class ImageTranslationDetectionContractTests {
                 minioStorageService);
         ReflectionTestUtils.setField(imageTranslationService, "ocrEnabled", true);
 
-        UserProfile profile = UserProfile.builder()
+        userProfile = UserProfile.builder()
                 .userId("U-test")
                 .preferredAiProvider("openai")
                 .build();
-        when(userProfileRepository.findByUserId("U-test")).thenReturn(Optional.of(profile));
+        when(userProfileRepository.findByUserId("U-test")).thenReturn(Optional.of(userProfile));
         when(userProfileRepository.save(any(UserProfile.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
         when(messagingApiBlobClient.getMessageContent("message-id"))
@@ -97,11 +99,8 @@ class ImageTranslationDetectionContractTests {
         when(ocrService.recognizeText(any(ByteArrayInputStream.class))).thenReturn("hello");
         when(languageDetectionService.detectLanguage("hello")).thenReturn("en");
         when(appConfig.getDefaultTargetLanguageForOthers()).thenReturn("zh-TW");
-        when(aiServiceFactory.getService("openai")).thenReturn(aiService);
-        when(aiService.getProviderName()).thenReturn("openai");
-        when(aiService.getModelName()).thenReturn("gpt-test");
-        when(translationService.translateWithService(aiService, "hello", "zh-TW"))
-                .thenReturn("翻譯結果");
+        lenient().when(translationService.translateWithService(any(UserProfile.class), anyString(), anyString()))
+                .thenReturn(new AiExecutionResult("翻譯結果", "openai", "gpt-test"));
     }
 
     @Test
@@ -113,5 +112,38 @@ class ImageTranslationDetectionContractTests {
         verify(translationRecordRepository).save(captor.capture());
         assertThat(captor.getValue().getSourceLanguage()).isEqualTo("en");
         assertThat(response).contains("偵測到:").contains("翻譯結果");
+    }
+
+    @Test
+    void imageFallbackPersistsTheProviderThatActuallyTranslated() {
+        when(translationService.translateWithService(any(UserProfile.class), anyString(), anyString()))
+                .thenReturn(new AiExecutionResult("翻譯結果", "gemini", "gemini-test"));
+
+        imageTranslationService.processImageTranslation("U-test", "message-id");
+
+        ArgumentCaptor<TranslationRecord> captor = ArgumentCaptor.forClass(TranslationRecord.class);
+        verify(translationRecordRepository).save(captor.capture());
+        assertThat(captor.getValue().getAiProvider()).isEqualTo("gemini");
+        assertThat(captor.getValue().getModelName()).isEqualTo("gemini-test");
+    }
+
+    @Test
+    void totalImageTranslationFailureDoesNotSaveOrCount() {
+        when(translationService.translateWithService(any(UserProfile.class), anyString(), anyString()))
+                .thenThrow(new AiProviderException(
+                        AiProviderException.Outcome.TRANSPORT_ERROR,
+                        "gemini",
+                        "gemini-test",
+                        "IO_FAILURE",
+                        "correlation-1",
+                        -1,
+                        null));
+
+        String response = imageTranslationService.processImageTranslation("U-test", "message-id");
+
+        assertThat(response).isEqualTo("圖片翻譯服務暫時無法使用，請稍後再試。");
+        verify(translationRecordRepository, never()).save(any(TranslationRecord.class));
+        assertThat(userProfile.getTotalTranslations()).isZero();
+        assertThat(userProfile.getImageTranslations()).isZero();
     }
 }

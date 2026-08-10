@@ -12,9 +12,9 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import com.linetranslate.bot.config.GeminiConfig;
-import com.linetranslate.bot.logging.SafeLog;
 
 import java.io.IOException;
+import java.net.SocketTimeoutException;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
@@ -58,138 +58,23 @@ public class GeminiService implements AiService {
 
     @Override
     public String translateText(String text, String targetLanguage) {
-        try {
-            // 建立提示
-            String prompt = "請將以下文本翻譯成" + targetLanguage + "。只需返回翻譯結果，不要添加任何解釋或額外信息：\n\n" + text;
-
-            // 建立請求體
-            ObjectNode requestBodyJson = objectMapper.createObjectNode();
-
-            // 添加內容部分
-            ArrayNode contentsArray = requestBodyJson.putArray("contents");
-            ObjectNode contentObject = contentsArray.addObject();
-            ArrayNode partsArray = contentObject.putArray("parts");
-            ObjectNode textPart = partsArray.addObject();
-            textPart.put("text", prompt);
-
-            // 添加生成配置
-            ObjectNode generationConfig = requestBodyJson.putObject("generationConfig");
-            generationConfig.put("temperature", 0.2);
-            generationConfig.put("topK", 40);
-            generationConfig.put("topP", 0.95);
-            generationConfig.put("maxOutputTokens", 1024);
-
-            String requestBody = objectMapper.writeValueAsString(requestBodyJson);
-
-            // 建立請求
-            Request request = new Request.Builder()
-                    .url("https://generativelanguage.googleapis.com/v1beta/models/" + modelName + ":generateContent?key=" + apiKey)
-                    .post(RequestBody.create(requestBody, MediaType.parse("application/json")))
-                    .build();
-
-            // 發送請求
-            try (Response response = httpClient.newCall(request).execute()) {
-                if (!response.isSuccessful()) {
-                    log.error("Gemini API 請求失敗: status={}", SafeLog.httpStatus(response.code()));
-                    return "翻譯失敗: Gemini API 請求錯誤 " + response.code();
-                }
-
-                String responseBody = response.body().string();
-                JsonNode jsonResponse = objectMapper.readTree(responseBody);
-
-                // 解析回應
-                JsonNode candidatesNode = jsonResponse.path("candidates");
-                if (candidatesNode.isArray() && candidatesNode.size() > 0) {
-                    JsonNode contentNode = candidatesNode.get(0).path("content");
-                    JsonNode partsNode = contentNode.path("parts");
-
-                    if (partsNode.isArray() && partsNode.size() > 0) {
-                        String translatedText = partsNode.get(0).path("text").asText();
-                        return translatedText.trim();
-                    }
-                }
-
-                log.error("無法從 Gemini 回應中解析翻譯結果: response={}", SafeLog.content(responseBody));
-                return "翻譯失敗: 無法解析回應";
-            }
-        } catch (IOException e) {
-            log.error("Gemini 翻譯失敗: failure={}", SafeLog.failure(e));
-            return "翻譯失敗，請稍後再試。";
-        }
+        String prompt = "請將以下文本翻譯成" + targetLanguage
+                + "。只需返回翻譯結果，不要添加任何解釋或額外信息：\n\n" + text;
+        ObjectNode requestBody = textRequest(prompt, 0.2, 40, 1024);
+        return executeRequest(requestBody, UUID.randomUUID().toString());
     }
 
     @Override
     public String processImage(String prompt, String imageUrl) {
-        try {
-            // 建立請求體
-            ObjectNode requestBodyJson = objectMapper.createObjectNode();
-
-            // 添加內容部分
-            ArrayNode contentsArray = requestBodyJson.putArray("contents");
-            ObjectNode contentObject = contentsArray.addObject();
-            ArrayNode partsArray = contentObject.putArray("parts");
-
-            // 添加文本提示
-            ObjectNode textPart = partsArray.addObject();
-            textPart.put("text", prompt);
-
-            // 添加圖片
-            ObjectNode imagePart = partsArray.addObject();
-            ObjectNode inlineData = imagePart.putObject("inlineData");
-
-            // 從 data:image/jpeg;base64, 格式中提取 base64 部分
-            String base64Data = imageUrl;
-            if (imageUrl.contains(";base64,")) {
-                base64Data = imageUrl.split(";base64,")[1];
-            }
-
-            inlineData.put("data", base64Data);
-            inlineData.put("mimeType", "image/jpeg");
-
-            // 添加生成配置
-            ObjectNode generationConfig = requestBodyJson.putObject("generationConfig");
-            generationConfig.put("temperature", 0.1);
-            generationConfig.put("topK", 32);
-            generationConfig.put("topP", 0.95);
-            generationConfig.put("maxOutputTokens", 1024);
-
-            String requestBody = objectMapper.writeValueAsString(requestBodyJson);
-
-            // 建立請求
-            Request request = new Request.Builder()
-                    .url("https://generativelanguage.googleapis.com/v1beta/models/" + modelName + ":generateContent?key=" + apiKey)
-                    .post(RequestBody.create(requestBody, MediaType.parse("application/json")))
-                    .build();
-
-            // 發送請求
-            try (Response response = httpClient.newCall(request).execute()) {
-                if (!response.isSuccessful()) {
-                    log.error("Gemini API 圖片處理請求失敗: status={}", SafeLog.httpStatus(response.code()));
-                    return "圖片處理失敗: Gemini API 請求錯誤 " + response.code();
-                }
-
-                String responseBody = response.body().string();
-                JsonNode jsonResponse = objectMapper.readTree(responseBody);
-
-                // 解析回應
-                JsonNode candidatesNode = jsonResponse.path("candidates");
-                if (candidatesNode.isArray() && candidatesNode.size() > 0) {
-                    JsonNode contentNode = candidatesNode.get(0).path("content");
-                    JsonNode partsNode = contentNode.path("parts");
-
-                    if (partsNode.isArray() && partsNode.size() > 0) {
-                        String extractedText = partsNode.get(0).path("text").asText();
-                        return extractedText.trim();
-                    }
-                }
-
-                log.error("無法從 Gemini 回應中解析圖片處理結果: response={}", SafeLog.content(responseBody));
-                return "圖片處理失敗: 無法解析回應";
-            }
-        } catch (IOException e) {
-            log.error("Gemini 圖片處理失敗: failure={}", SafeLog.failure(e));
-            return "圖片處理失敗，請稍後再試。";
-        }
+        ObjectNode requestBody = textRequest(prompt, 0.1, 32, 1024);
+        ArrayNode parts = (ArrayNode) requestBody.path("contents").get(0).path("parts");
+        ObjectNode inlineData = parts.addObject().putObject("inlineData");
+        String base64Data = imageUrl.contains(";base64,")
+                ? imageUrl.substring(imageUrl.indexOf(";base64,") + ";base64,".length())
+                : imageUrl;
+        inlineData.put("data", base64Data);
+        inlineData.put("mimeType", "image/jpeg");
+        return executeRequest(requestBody, UUID.randomUUID().toString());
     }
 
     @Override
@@ -219,56 +104,115 @@ public class GeminiService implements AiService {
 
     @Override
     public String generateText(String prompt) {
-        String correlationId = UUID.randomUUID().toString();
+        return executeRequest(
+                textRequest(prompt, 0.7, 40, 1024),
+                UUID.randomUUID().toString());
+    }
+
+    private ObjectNode textRequest(
+            String prompt,
+            double temperature,
+            int topK,
+            int maxOutputTokens) {
+        ObjectNode requestBody = objectMapper.createObjectNode();
+        ArrayNode contents = requestBody.putArray("contents");
+        ArrayNode parts = contents.addObject().putArray("parts");
+        parts.addObject().put("text", prompt);
+
+        ObjectNode generationConfig = requestBody.putObject("generationConfig");
+        generationConfig.put("temperature", temperature);
+        generationConfig.put("topK", topK);
+        generationConfig.put("topP", 0.95);
+        generationConfig.put("maxOutputTokens", maxOutputTokens);
+        return requestBody;
+    }
+
+    private String executeRequest(ObjectNode requestBodyJson, String correlationId) {
         try {
-            // 建立請求體
-            ObjectNode requestBodyJson = objectMapper.createObjectNode();
-
-            // 添加內容部分
-            ArrayNode contentsArray = requestBodyJson.putArray("contents");
-            ObjectNode contentObject = contentsArray.addObject();
-            ArrayNode partsArray = contentObject.putArray("parts");
-            ObjectNode textPart = partsArray.addObject();
-            textPart.put("text", prompt);
-
-            // 添加生成配置
-            ObjectNode generationConfig = requestBodyJson.putObject("generationConfig");
-            generationConfig.put("temperature", 0.7);
-            generationConfig.put("topK", 40);
-            generationConfig.put("topP", 0.95);
-            generationConfig.put("maxOutputTokens", 1024);
-
             String requestBody = objectMapper.writeValueAsString(requestBodyJson);
-
-            // 建立請求
             Request request = new Request.Builder()
-                    .url("https://generativelanguage.googleapis.com/v1beta/models/" + modelName + ":generateContent?key=" + apiKey)
+                    .url("https://generativelanguage.googleapis.com/v1beta/models/"
+                            + modelName + ":generateContent?key=" + apiKey)
                     .post(RequestBody.create(requestBody, MediaType.parse("application/json")))
                     .build();
 
-            // 發送請求
             try (Response response = httpClient.newCall(request).execute()) {
+                ResponseBody body = response.body();
+                String responseBody = body == null ? "" : body.string();
                 if (!response.isSuccessful()) {
+                    throw providerHttpFailure(response.code(), responseBody, correlationId);
+                }
+                if (responseBody.isBlank()) {
                     throw providerFailure(
-                            AiProviderException.Outcome.HTTP_ERROR,
-                            "HTTP_" + response.code(),
+                            AiProviderException.Outcome.EMPTY_RESPONSE,
+                            "EMPTY_HTTP_BODY",
                             correlationId,
                             response.code(),
                             null);
                 }
-
-                String responseBody = response.body().string();
                 return parseGeneratedText(responseBody, correlationId);
             }
         } catch (AiProviderException exception) {
             throw exception;
-        } catch (IOException e) {
+        } catch (SocketTimeoutException exception) {
             throw providerFailure(
-                    AiProviderException.Outcome.TRANSPORT_ERROR,
-                    e.getClass().getSimpleName(),
+                    AiProviderException.Outcome.TIMEOUT,
+                    "SOCKET_TIMEOUT",
                     correlationId,
                     -1,
-                    e);
+                    exception);
+        } catch (IOException exception) {
+            throw providerFailure(
+                    AiProviderException.Outcome.TRANSPORT_ERROR,
+                    exception.getClass().getSimpleName(),
+                    correlationId,
+                    -1,
+                    exception);
+        } catch (RuntimeException exception) {
+            throw providerFailure(
+                    AiProviderException.Outcome.UNEXPECTED_ERROR,
+                    exception.getClass().getSimpleName(),
+                    correlationId,
+                    -1,
+                    exception);
+        }
+    }
+
+    AiProviderException providerHttpFailure(
+            int httpStatus,
+            String responseBody,
+            String correlationId) {
+        String providerReason = readProviderErrorReason(responseBody);
+        AiProviderException.Outcome outcome;
+        if (httpStatus == 401 || httpStatus == 403) {
+            outcome = AiProviderException.Outcome.AUTHENTICATION_FAILED;
+        } else if (httpStatus == 408 || httpStatus == 504) {
+            outcome = AiProviderException.Outcome.TIMEOUT;
+        } else if (httpStatus == 429 && "RESOURCE_EXHAUSTED".equals(providerReason)) {
+            outcome = AiProviderException.Outcome.QUOTA_EXCEEDED;
+        } else if (httpStatus == 429) {
+            outcome = AiProviderException.Outcome.RATE_LIMITED;
+        } else {
+            outcome = AiProviderException.Outcome.HTTP_ERROR;
+        }
+        String reason = "UNKNOWN".equals(providerReason)
+                ? "HTTP_" + httpStatus
+                : providerReason;
+        return providerFailure(outcome, reason, correlationId, httpStatus, null);
+    }
+
+    private String readProviderErrorReason(String responseBody) {
+        if (responseBody == null || responseBody.isBlank()) {
+            return "UNKNOWN";
+        }
+        try {
+            String status = objectMapper.readTree(responseBody)
+                    .path("error")
+                    .path("status")
+                    .asText("");
+            return status.isBlank() ? "UNKNOWN" : status;
+        } catch (JsonProcessingException ignored) {
+            return "UNKNOWN";
         }
     }
 

@@ -1,6 +1,10 @@
 package com.linetranslate.bot.service.ai;
 
+import java.net.SocketTimeoutException;
 import java.util.List;
+import java.util.Locale;
+import java.util.Optional;
+import java.util.UUID;
 import java.util.stream.Collectors;
 
 import org.springframework.beans.factory.ObjectProvider;
@@ -8,9 +12,14 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
 import com.linetranslate.bot.config.OpenAiConfig;
-import com.linetranslate.bot.logging.SafeLog;
 import com.linetranslate.bot.model.UserProfile;
 import com.openai.client.OpenAIClient;
+import com.openai.errors.OpenAIInvalidDataException;
+import com.openai.errors.OpenAIIoException;
+import com.openai.errors.OpenAIServiceException;
+import com.openai.errors.PermissionDeniedException;
+import com.openai.errors.RateLimitException;
+import com.openai.errors.UnauthorizedException;
 import com.openai.models.responses.Response;
 import com.openai.models.responses.ResponseCreateParams;
 import com.openai.models.responses.ResponseInputImage;
@@ -48,9 +57,14 @@ public class OpenAiService implements AiService {
 
     @Override
     public String translateText(String text, String targetLanguage) {
+        String correlationId = UUID.randomUUID().toString();
         if (openAiClient == null) {
-            log.warn("OpenAI 客戶端未初始化，無法進行翻譯");
-            return "翻譯失敗: OpenAI API 未正確配置";
+            throw providerFailure(
+                    AiProviderException.Outcome.CONFIGURATION_ERROR,
+                    "CLIENT_UNAVAILABLE",
+                    correlationId,
+                    -1,
+                    null);
         }
 
         try {
@@ -60,18 +74,24 @@ public class OpenAiService implements AiService {
                     .input(text)
                     .temperature(0.3)
                     .build();
-            return createResponse(params);
-        } catch (Exception e) {
-            log.error("OpenAI 翻譯失敗: failure={}", SafeLog.failure(e));
-            return "翻譯失敗，請稍後再試。";
+            return createResponse(params, correlationId);
+        } catch (AiProviderException exception) {
+            throw exception;
+        } catch (Exception exception) {
+            throw normalizeFailure(exception, correlationId);
         }
     }
 
     @Override
     public String processImage(String prompt, String imageUrl) {
+        String correlationId = UUID.randomUUID().toString();
         if (openAiClient == null) {
-            log.warn("OpenAI 客戶端未初始化，無法處理圖片");
-            return "處理失敗: OpenAI API 未正確配置";
+            throw providerFailure(
+                    AiProviderException.Outcome.CONFIGURATION_ERROR,
+                    "CLIENT_UNAVAILABLE",
+                    correlationId,
+                    -1,
+                    null);
         }
 
         try {
@@ -91,10 +111,11 @@ public class OpenAiService implements AiService {
                     .temperature(0.3)
                     .maxOutputTokens(1024)
                     .build();
-            return createResponse(params);
-        } catch (Exception e) {
-            log.error("OpenAI 圖片處理失敗: failure={}", SafeLog.failure(e));
-            return "圖片處理失敗，請稍後再試。";
+            return createResponse(params, correlationId);
+        } catch (AiProviderException exception) {
+            throw exception;
+        } catch (Exception exception) {
+            throw normalizeFailure(exception, correlationId);
         }
     }
 
@@ -118,9 +139,14 @@ public class OpenAiService implements AiService {
 
     @Override
     public String generateText(String prompt) {
+        String correlationId = UUID.randomUUID().toString();
         if (openAiClient == null) {
-            log.warn("OpenAI 客戶端未初始化，無法生成文本");
-            return "生成失敗: OpenAI API 未正確配置";
+            throw providerFailure(
+                    AiProviderException.Outcome.CONFIGURATION_ERROR,
+                    "CLIENT_UNAVAILABLE",
+                    correlationId,
+                    -1,
+                    null);
         }
 
         try {
@@ -130,14 +156,15 @@ public class OpenAiService implements AiService {
                     .input(prompt)
                     .temperature(0.7)
                     .build();
-            return createResponse(params);
-        } catch (Exception e) {
-            log.error("OpenAI 文本生成失敗: failure={}", SafeLog.failure(e));
-            return "文本生成失敗，請稍後再試。";
+            return createResponse(params, correlationId);
+        } catch (AiProviderException exception) {
+            throw exception;
+        } catch (Exception exception) {
+            throw normalizeFailure(exception, correlationId);
         }
     }
 
-    private String createResponse(ResponseCreateParams params) {
+    private String createResponse(ResponseCreateParams params, String correlationId) {
         Response response = openAiClient.responses().create(params);
         String output = response.output().stream()
                 .flatMap(item -> item.message().stream())
@@ -147,8 +174,82 @@ public class OpenAiService implements AiService {
                 .collect(Collectors.joining())
                 .trim();
         if (output.isEmpty()) {
-            throw new IllegalStateException("OpenAI 回應不包含文字內容");
+            throw providerFailure(
+                    AiProviderException.Outcome.EMPTY_RESPONSE,
+                    "NO_OUTPUT_TEXT",
+                    correlationId,
+                    -1,
+                    null);
         }
         return output;
+    }
+
+    private AiProviderException normalizeFailure(Exception exception, String correlationId) {
+        AiProviderException.Outcome outcome = AiProviderException.Outcome.UNEXPECTED_ERROR;
+        int httpStatus = -1;
+        String reason = exception.getClass().getSimpleName();
+
+        if (hasCause(exception, SocketTimeoutException.class)) {
+            outcome = AiProviderException.Outcome.TIMEOUT;
+            reason = "SOCKET_TIMEOUT";
+        } else if (exception instanceof RateLimitException rateLimitException) {
+            httpStatus = rateLimitException.statusCode();
+            Optional<String> errorCode = rateLimitException.code();
+            String normalizedCode = errorCode == null ? "" : errorCode.orElse("");
+            outcome = normalizedCode.toLowerCase(Locale.ROOT).contains("quota")
+                    ? AiProviderException.Outcome.QUOTA_EXCEEDED
+                    : AiProviderException.Outcome.RATE_LIMITED;
+            reason = normalizedCode.isBlank() ? "RATE_LIMIT" : normalizedCode;
+        } else if (exception instanceof UnauthorizedException
+                || exception instanceof PermissionDeniedException) {
+            outcome = AiProviderException.Outcome.AUTHENTICATION_FAILED;
+            httpStatus = ((OpenAIServiceException) exception).statusCode();
+            reason = "AUTHENTICATION";
+        } else if (exception instanceof OpenAIIoException) {
+            outcome = AiProviderException.Outcome.TRANSPORT_ERROR;
+            reason = "IO_FAILURE";
+        } else if (exception instanceof OpenAIInvalidDataException) {
+            outcome = AiProviderException.Outcome.MALFORMED_RESPONSE;
+            reason = "INVALID_RESPONSE_DATA";
+        } else if (exception instanceof OpenAIServiceException serviceException) {
+            outcome = AiProviderException.Outcome.HTTP_ERROR;
+            httpStatus = serviceException.statusCode();
+            reason = "HTTP_" + httpStatus;
+        }
+
+        log.warn(
+                "OpenAI request failed: provider=openai, model={}, outcome={}, reason={}, correlation={}",
+                modelName,
+                outcome,
+                reason,
+                correlationId);
+        return providerFailure(outcome, reason, correlationId, httpStatus, exception);
+    }
+
+    private boolean hasCause(Throwable throwable, Class<? extends Throwable> causeType) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (causeType.isInstance(current)) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
+
+    private AiProviderException providerFailure(
+            AiProviderException.Outcome outcome,
+            String reason,
+            String correlationId,
+            int httpStatus,
+            Throwable cause) {
+        return new AiProviderException(
+                outcome,
+                getProviderName(),
+                modelName,
+                reason,
+                correlationId,
+                httpStatus,
+                cause);
     }
 }
