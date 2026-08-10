@@ -1,5 +1,9 @@
 package com.linetranslate.bot.service.ai;
 
+import java.util.Locale;
+import java.util.UUID;
+import java.util.function.Function;
+
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -113,6 +117,147 @@ public class AiServiceFactory {
     }
 
     /**
+     * Translate with the preferred provider and at most one configured fallback.
+     */
+    public AiExecutionResult translateText(
+            UserProfile userProfile,
+            String text,
+            String targetLanguage) {
+        return executeWithFallback(
+                "translate_text",
+                userProfile,
+                service -> service.translateText(text, targetLanguage));
+    }
+
+    /**
+     * Process an image with the preferred provider and at most one configured fallback.
+     */
+    public AiExecutionResult processImage(
+            UserProfile userProfile,
+            String prompt,
+            String imageUrl) {
+        return executeWithFallback(
+                "process_image",
+                userProfile,
+                service -> service.processImage(prompt, imageUrl));
+    }
+
+    private AiExecutionResult executeWithFallback(
+            String operation,
+            UserProfile userProfile,
+            Function<AiService, String> execution) {
+        String requestedProvider = normalizedProvider(userProfile);
+        AiService primary = getExactService(requestedProvider, userProfile);
+        AiService fallback = getExactService(alternateProvider(requestedProvider), userProfile);
+
+        if (primary == null) {
+            primary = fallback;
+            fallback = null;
+        }
+        if (primary == null) {
+            throw unavailableProviderFailure();
+        }
+
+        try {
+            return successfulResult(primary, execution.apply(primary));
+        } catch (AiProviderException primaryFailure) {
+            logProviderFailure("primary_failure", operation, primaryFailure);
+            if (!isFallbackEligible(primaryFailure) || fallback == null) {
+                logProviderFailure("total_failure", operation, primaryFailure);
+                throw primaryFailure;
+            }
+
+            try {
+                AiExecutionResult fallbackSuccess = successfulResult(fallback, execution.apply(fallback));
+                log.info(
+                        "AI provider fallback success: operation={}, provider={}, model={}, correlation={}",
+                        operation,
+                        fallbackSuccess.providerName(),
+                        fallbackSuccess.modelName(),
+                        primaryFailure.getCorrelationId());
+                return fallbackSuccess;
+            } catch (AiProviderException fallbackFailure) {
+                logProviderFailure("fallback_failure", operation, fallbackFailure);
+                log.error(
+                        "AI provider total failure: operation={}, primaryProvider={}, primaryOutcome={}, "
+                                + "fallbackProvider={}, fallbackOutcome={}, correlation={}",
+                        operation,
+                        primaryFailure.getProvider(),
+                        primaryFailure.getOutcome(),
+                        fallbackFailure.getProvider(),
+                        fallbackFailure.getOutcome(),
+                        primaryFailure.getCorrelationId());
+                throw fallbackFailure;
+            }
+        }
+    }
+
+    private AiExecutionResult successfulResult(AiService service, String result) {
+        if (result == null || result.isBlank()) {
+            throw new AiProviderException(
+                    AiProviderException.Outcome.EMPTY_RESPONSE,
+                    service.getProviderName(),
+                    service.getModelName(),
+                    "BLANK_RESULT",
+                    UUID.randomUUID().toString(),
+                    -1,
+                    null);
+        }
+        return new AiExecutionResult(result, service.getProviderName(), service.getModelName());
+    }
+
+    private AiService getExactService(String provider, UserProfile userProfile) {
+        if ("openai".equals(provider) && openAiService != null) {
+            return new UserPreferredAiService(openAiService, userProfile);
+        }
+        if ("gemini".equals(provider) && geminiService != null) {
+            return new UserPreferredAiService(geminiService, userProfile);
+        }
+        return null;
+    }
+
+    private String normalizedProvider(UserProfile userProfile) {
+        String preferred = userProfile == null ? null : userProfile.getPreferredAiProvider();
+        String candidate = preferred == null || preferred.isBlank() ? defaultProvider : preferred;
+        String normalized = candidate.toLowerCase(Locale.ROOT);
+        return "gemini".equals(normalized) ? "gemini" : "openai";
+    }
+
+    private String alternateProvider(String provider) {
+        return "openai".equals(provider) ? "gemini" : "openai";
+    }
+
+    private boolean isFallbackEligible(AiProviderException failure) {
+        return failure.getOutcome() != AiProviderException.Outcome.SAFETY_BLOCKED;
+    }
+
+    private void logProviderFailure(
+            String stage,
+            String operation,
+            AiProviderException failure) {
+        log.warn(
+                "AI provider failure: stage={}, operation={}, provider={}, model={}, outcome={}, reason={}, correlation={}",
+                stage,
+                operation,
+                failure.getProvider(),
+                failure.getModel(),
+                failure.getOutcome(),
+                failure.getReason(),
+                failure.getCorrelationId());
+    }
+
+    private AiProviderException unavailableProviderFailure() {
+        return new AiProviderException(
+                AiProviderException.Outcome.CONFIGURATION_ERROR,
+                "none",
+                "none",
+                "NO_CONFIGURED_PROVIDER",
+                UUID.randomUUID().toString(),
+                -1,
+                null);
+    }
+
+    /**
      * 獲取請求的服務
      */
     private AiService getRequestedService(String provider) {
@@ -188,12 +333,12 @@ public class AiServiceFactory {
     private static class FallbackAiService implements AiService {
         @Override
         public String translateText(String text, String targetLanguage) {
-            return "無法翻譯：所有 AI 服務都未正確配置。請檢查環境變數設置。";
+            throw unavailable();
         }
 
         @Override
         public String processImage(String prompt, String imageUrl) {
-            return "無法處理圖片：所有 AI 服務都未正確配置。請檢查環境變數設置。";
+            throw unavailable();
         }
 
         @Override
@@ -208,7 +353,18 @@ public class AiServiceFactory {
 
         @Override
         public String generateText(String prompt) {
-            return "無法生成文本：所有 AI 服務都未正確配置。請檢查環境變數設置。";
+            throw unavailable();
+        }
+
+        private static AiProviderException unavailable() {
+            return new AiProviderException(
+                    AiProviderException.Outcome.CONFIGURATION_ERROR,
+                    "none",
+                    "none",
+                    "NO_CONFIGURED_PROVIDER",
+                    UUID.randomUUID().toString(),
+                    -1,
+                    null);
         }
     }
 }

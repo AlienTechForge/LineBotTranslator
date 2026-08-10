@@ -21,7 +21,8 @@ import com.linetranslate.bot.model.TranslationRecord;
 import com.linetranslate.bot.model.UserProfile;
 import com.linetranslate.bot.repository.TranslationRecordRepository;
 import com.linetranslate.bot.repository.UserProfileRepository;
-import com.linetranslate.bot.service.ai.AiService;
+import com.linetranslate.bot.service.ai.AiExecutionResult;
+import com.linetranslate.bot.service.ai.AiProviderException;
 import com.linetranslate.bot.service.ai.AiServiceFactory;
 import com.linetranslate.bot.service.translation.LanguageDetectionService;
 import com.linetranslate.bot.util.LanguageUtils;
@@ -30,6 +31,9 @@ import lombok.extern.slf4j.Slf4j;
 @Service
 @Slf4j
 public class TranslationService {
+
+    private static final String PROVIDER_UNAVAILABLE_MESSAGE =
+            "翻譯服務暫時無法使用，請稍後再試。";
 
     private final LanguageDetectionService languageDetectionService;
     private final AiServiceFactory aiServiceFactory;
@@ -273,19 +277,22 @@ public class TranslationService {
             String sourceLanguage,
             String targetLanguage,
             Instant start) {
-        // 選擇 AI 服務
-        AiService aiService = aiServiceFactory.getService(userProfile.getPreferredAiProvider());
-        
-        // 執行翻譯
-        String translatedText = translateWithService(aiService, sourceText, targetLanguage);
+        AiExecutionResult executionResult;
+        try {
+            executionResult = translateWithService(userProfile, sourceText, targetLanguage);
+        } catch (AiProviderException failure) {
+            logTranslationFailure(userId, failure);
+            return PROVIDER_UNAVAILABLE_MESSAGE;
+        }
+        String translatedText = executionResult.text();
 
         // 計算處理時間
         long processingTimeMs = Duration.between(start, Instant.now()).toMillis();
 
         // 保存翻譯記錄
         saveTranslationRecord(userId, sourceText, sourceLanguage,
-                targetLanguage, translatedText, aiService.getProviderName(),
-                aiService.getModelName(), processingTimeMs, false, null);
+                targetLanguage, translatedText, executionResult.providerName(),
+                executionResult.modelName(), processingTimeMs, false, null);
 
         // 更新用戶資料
         updateUserProfileAfterTranslation(userProfile, translatedText, targetLanguage);
@@ -318,19 +325,22 @@ public class TranslationService {
 
         String sourceLanguage = languageDetectionService.detectLanguage(text);
 
-        // 選擇 AI 服務
-        AiService aiService = aiServiceFactory.getService(userProfile.getPreferredAiProvider());
-
-        // 執行翻譯
-        String translatedText = translateWithService(aiService, text, standardLanguageCode);
+        AiExecutionResult executionResult;
+        try {
+            executionResult = translateWithService(userProfile, text, standardLanguageCode);
+        } catch (AiProviderException failure) {
+            logTranslationFailure(userId, failure);
+            return PROVIDER_UNAVAILABLE_MESSAGE;
+        }
+        String translatedText = executionResult.text();
 
         // 計算處理時間
         long processingTimeMs = Duration.between(start, Instant.now()).toMillis();
 
         // 保存翻譯記錄
         saveTranslationRecord(userId, text, sourceLanguage,
-                standardLanguageCode, translatedText, aiService.getProviderName(),
-                aiService.getModelName(), processingTimeMs, false, null);
+                standardLanguageCode, translatedText, executionResult.providerName(),
+                executionResult.modelName(), processingTimeMs, false, null);
 
         // 更新用戶資料
         updateUserProfileAfterTranslation(userProfile, translatedText, standardLanguageCode);
@@ -377,19 +387,22 @@ public class TranslationService {
             targetLanguage = getDefaultTargetLanguage(sourceLanguage, userProfile);
         }
 
-        // 選擇 AI 服務
-        AiService aiService = aiServiceFactory.getService(userProfile.getPreferredAiProvider());
-
-        // 執行翻譯
-        String translatedText = translateWithService(aiService, text, targetLanguage);
+        AiExecutionResult executionResult;
+        try {
+            executionResult = translateWithService(userProfile, text, targetLanguage);
+        } catch (AiProviderException failure) {
+            logTranslationFailure(userId, failure);
+            return PROVIDER_UNAVAILABLE_MESSAGE;
+        }
+        String translatedText = executionResult.text();
 
         // 計算處理時間
         long processingTimeMs = Duration.between(start, Instant.now()).toMillis();
 
         // 保存翻譯記錄
         saveTranslationRecord(userId, text, sourceLanguage, targetLanguage,
-                translatedText, aiService.getProviderName(),
-                aiService.getModelName(), processingTimeMs, false, null);
+                translatedText, executionResult.providerName(),
+                executionResult.modelName(), processingTimeMs, false, null);
 
         // 更新用戶資料
         updateUserProfileAfterTranslation(userProfile, translatedText, targetLanguage);
@@ -400,15 +413,32 @@ public class TranslationService {
     /**
      * 使用指定的 AI 服務進行翻譯
      *
-     * @param aiService AI 服務
+     * @param userProfile user preferences used to select the primary provider
      * @param text 要翻譯的文本
      * @param targetLanguage 目標語言
      * @return 翻譯結果
      */
-    @Cacheable(value = "translations", key = "{#text, #targetLanguage, #aiService.providerName}")
-    public String translateWithService(AiService aiService, String text, String targetLanguage) {
-        log.info("使用 {} 翻譯成 {}", aiService.getProviderName(), targetLanguage);
-        return aiService.translateText(text, targetLanguage);
+    @Cacheable(
+            value = "translations",
+            key = "{#text, #targetLanguage, #userProfile.preferredAiProvider, "
+                    + "#userProfile.openaiPreferredModel, #userProfile.geminiPreferredModel}")
+    public AiExecutionResult translateWithService(
+            UserProfile userProfile,
+            String text,
+            String targetLanguage) {
+        log.info("執行 AI 翻譯: target={}", targetLanguage);
+        return aiServiceFactory.translateText(userProfile, text, targetLanguage);
+    }
+
+    private void logTranslationFailure(String userId, AiProviderException failure) {
+        log.warn(
+                "AI 翻譯未完成: user={}, provider={}, model={}, outcome={}, reason={}, correlation={}",
+                SafeLog.user(userId),
+                failure.getProvider(),
+                failure.getModel(),
+                failure.getOutcome(),
+                failure.getReason(),
+                failure.getCorrelationId());
     }
 
     /**

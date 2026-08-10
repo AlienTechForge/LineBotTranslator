@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -27,7 +28,8 @@ import com.linetranslate.bot.model.TranslationRecord;
 import com.linetranslate.bot.model.UserProfile;
 import com.linetranslate.bot.repository.TranslationRecordRepository;
 import com.linetranslate.bot.repository.UserProfileRepository;
-import com.linetranslate.bot.service.ai.AiService;
+import com.linetranslate.bot.service.ai.AiExecutionResult;
+import com.linetranslate.bot.service.ai.AiProviderException;
 import com.linetranslate.bot.service.ai.AiServiceFactory;
 import com.linetranslate.bot.util.LanguageUtils;
 
@@ -46,9 +48,6 @@ class TranslationDetectionContractTests {
     private UserProfileRepository userProfileRepository;
     @Mock
     private AppConfig appConfig;
-    @Mock
-    private AiService aiService;
-
     private TranslationService translationService;
 
     @BeforeEach
@@ -57,10 +56,8 @@ class TranslationDetectionContractTests {
         when(userProfileRepository.findByUserId(USER_ID)).thenReturn(Optional.of(profile()));
         when(userProfileRepository.save(any(UserProfile.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
-        when(aiServiceFactory.getService("openai")).thenReturn(aiService);
-        when(aiService.translateText(anyString(), anyString())).thenReturn("翻譯結果");
-        when(aiService.getProviderName()).thenReturn("openai");
-        when(aiService.getModelName()).thenReturn("gpt-test");
+        lenient().when(aiServiceFactory.translateText(any(UserProfile.class), anyString(), anyString()))
+                .thenReturn(new AiExecutionResult("翻譯結果", "openai", "gpt-test"));
         lenient().when(appConfig.getDefaultTargetLanguageForOthers()).thenReturn("zh-TW");
     }
 
@@ -137,6 +134,36 @@ class TranslationDetectionContractTests {
         verify(aiDetector, times(1)).detectLanguage("hello");
     }
 
+    @Test
+    void fallbackSuccessPersistsTheProviderThatActuallyTranslated() {
+        when(languageDetectionService.detectLanguage("hello")).thenReturn("en");
+        when(aiServiceFactory.translateText(any(UserProfile.class), anyString(), anyString()))
+                .thenReturn(new AiExecutionResult("翻譯結果", "gemini", "gemini-test"));
+
+        translationService.processTranslationRequest(USER_ID, "hello");
+
+        TranslationRecord saved = savedRecord();
+        assertThat(saved.getAiProvider()).isEqualTo("gemini");
+        assertThat(saved.getModelName()).isEqualTo("gemini-test");
+    }
+
+    @Test
+    void totalProviderFailureReturnsStableMessageWithoutSavingOrCounting() {
+        UserProfile profile = profile();
+        when(userProfileRepository.findByUserId(USER_ID)).thenReturn(Optional.of(profile));
+        when(languageDetectionService.detectLanguage("hello")).thenReturn("en");
+        when(aiServiceFactory.translateText(any(UserProfile.class), anyString(), anyString()))
+                .thenThrow(providerFailure());
+
+        String response = translationService.processTranslationRequest(USER_ID, "hello");
+
+        assertThat(response).isEqualTo("翻譯服務暫時無法使用，請稍後再試。");
+        verify(translationRecordRepository, never()).save(any(TranslationRecord.class));
+        assertThat(profile.getTotalTranslations()).isZero();
+        assertThat(profile.getTextTranslations()).isZero();
+        assertThat(profile.getRecentLanguagesList()).isEmpty();
+    }
+
     private TranslationService createService(LanguageDetectionService detector) {
         return new TranslationService(
                 detector,
@@ -157,6 +184,17 @@ class TranslationDetectionContractTests {
                 .userId(USER_ID)
                 .preferredAiProvider("openai")
                 .build();
+    }
+
+    private static AiProviderException providerFailure() {
+        return new AiProviderException(
+                AiProviderException.Outcome.TRANSPORT_ERROR,
+                "gemini",
+                "gemini-test",
+                "IO_FAILURE",
+                "correlation-1",
+                -1,
+                null);
     }
 
     private static Stream<Arguments> explicitTargetRequests() {

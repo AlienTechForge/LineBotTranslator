@@ -11,8 +11,14 @@ public final class AiProviderException extends RuntimeException {
         SAFETY_BLOCKED,
         EMPTY_RESPONSE,
         MALFORMED_RESPONSE,
+        CONFIGURATION_ERROR,
+        AUTHENTICATION_FAILED,
+        QUOTA_EXCEEDED,
+        RATE_LIMITED,
+        TIMEOUT,
         HTTP_ERROR,
-        TRANSPORT_ERROR
+        TRANSPORT_ERROR,
+        UNEXPECTED_ERROR
     }
 
     private final Outcome outcome;

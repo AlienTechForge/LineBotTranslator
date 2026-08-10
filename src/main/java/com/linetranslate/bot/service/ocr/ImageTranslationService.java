@@ -22,7 +22,8 @@ import com.linetranslate.bot.model.TranslationRecord;
 import com.linetranslate.bot.model.UserProfile;
 import com.linetranslate.bot.repository.TranslationRecordRepository;
 import com.linetranslate.bot.repository.UserProfileRepository;
-import com.linetranslate.bot.service.ai.AiService;
+import com.linetranslate.bot.service.ai.AiExecutionResult;
+import com.linetranslate.bot.service.ai.AiProviderException;
 import com.linetranslate.bot.service.ai.AiServiceFactory;
 import com.linetranslate.bot.service.storage.MinioStorageService;
 import com.linetranslate.bot.service.translation.LanguageDetectionService;
@@ -133,14 +134,14 @@ public class ImageTranslationService {
                     // 使用AI服務進行圖像識別
                     log.info("Google Vision不可用，使用AI模型識別圖片文字");
 
-                    // 選擇AI服務
-                    AiService aiService = aiServiceFactory.getService(userProfile.getPreferredAiProvider());
-
                     // 構建提示詞
                     String prompt = "請識別這張圖片中的所有文字，只返回文字內容，不要添加任何其他描述或解釋。";
 
-                    // 處理圖片
-                    recognizedText = aiService.processImage(prompt, "data:image/jpeg;base64," + base64Image);
+                    AiExecutionResult ocrResult = aiServiceFactory.processImage(
+                            userProfile,
+                            prompt,
+                            "data:image/jpeg;base64," + base64Image);
+                    recognizedText = ocrResult.text();
                 }
                 
                 // 保存圖片 URL 到 ThreadLocal 變量，以便在保存翻譯記錄時使用
@@ -184,11 +185,12 @@ public class ImageTranslationService {
                 targetLanguage = getDefaultTargetLanguage(sourceLanguage, userProfile);
             }
 
-            // 選擇 AI 服務
-            AiService aiService = aiServiceFactory.getService(userProfile.getPreferredAiProvider());
-
             // 翻譯文字
-            String translatedText = translationService.translateWithService(aiService, recognizedText, targetLanguage);
+            AiExecutionResult translationResult = translationService.translateWithService(
+                    userProfile,
+                    recognizedText,
+                    targetLanguage);
+            String translatedText = translationResult.text();
 
             // 計算處理時間
             long processingTimeMs = Duration.between(start, Instant.now()).toMillis();
@@ -198,11 +200,8 @@ public class ImageTranslationService {
             
             // 保存翻譯記錄
             saveTranslationRecord(userId, recognizedText, sourceLanguage, targetLanguage,
-                    translatedText, aiService.getProviderName(), aiService.getModelName(),
+                    translatedText, translationResult.providerName(), translationResult.modelName(),
                     processingTimeMs, true, storedImageUrl);
-            
-            // 清除圖片上下文
-            ImageContext.clear();
 
             // 更新用戶資料
             updateUserProfileAfterImageTranslation(userProfile);
@@ -221,10 +220,22 @@ public class ImageTranslationService {
 
             return resultBuilder.toString();
 
+        } catch (AiProviderException failure) {
+            log.warn(
+                    "AI 圖片翻譯未完成: user={}, provider={}, model={}, outcome={}, reason={}, correlation={}",
+                    SafeLog.user(userId),
+                    failure.getProvider(),
+                    failure.getModel(),
+                    failure.getOutcome(),
+                    failure.getReason(),
+                    failure.getCorrelationId());
+            return "圖片翻譯服務暫時無法使用，請稍後再試。";
         } catch (Exception e) {
             log.error("圖片翻譯失敗: user={}, failure={}",
                     SafeLog.user(userId), SafeLog.failure(e));
             return "圖片翻譯處理失敗，請稍後再試。";
+        } finally {
+            ImageContext.clear();
         }
     }
 

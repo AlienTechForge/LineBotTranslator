@@ -110,6 +110,31 @@ class GeminiSafetyResponseTests {
     }
 
     @Test
+    void resourceExhaustedHttpResponseBecomesQuotaOutcome() {
+        AiProviderException failure = geminiService.providerHttpFailure(
+                429,
+                "{\"error\":{\"status\":\"RESOURCE_EXHAUSTED\",\"message\":\"billing details\"}}",
+                "correlation-6");
+
+        assertThat(failure.getOutcome()).isEqualTo(AiProviderException.Outcome.QUOTA_EXCEEDED);
+        assertThat(failure.getReason()).isEqualTo("RESOURCE_EXHAUSTED");
+        assertThat(failure.getHttpStatus()).isEqualTo(429);
+        assertThat(failure.getMessage()).doesNotContain("billing details");
+    }
+
+    @Test
+    void unauthorizedHttpResponseBecomesAuthenticationOutcome() {
+        AiProviderException failure = geminiService.providerHttpFailure(
+                401,
+                "{\"error\":{\"status\":\"UNAUTHENTICATED\"}}",
+                "correlation-7");
+
+        assertThat(failure.getOutcome())
+                .isEqualTo(AiProviderException.Outcome.AUTHENTICATION_FAILED);
+        assertThat(failure.getReason()).isEqualTo("UNAUTHENTICATED");
+    }
+
+    @Test
     void safetyBlockedDetectionFallsBackLocallyWithoutRetry() {
         AtomicInteger providerCalls = new AtomicInteger();
         LanguageDetectionService detector = languageDetector(blockedAiService(providerCalls));
@@ -122,14 +147,14 @@ class GeminiSafetyResponseTests {
     void blockedDetectionStillAllowsTranslationThroughAllowedProvider() {
         AtomicInteger providerCalls = new AtomicInteger();
         AiService blockedDetectionService = blockedAiService(providerCalls);
-        AiService openAiService = Mockito.mock(AiService.class);
-        when(openAiService.translateText("這是一段中文內容", "en")).thenReturn("translated");
-        when(openAiService.getProviderName()).thenReturn("openai");
-        when(openAiService.getModelName()).thenReturn("gpt-test");
 
         AiServiceFactory factory = Mockito.mock(AiServiceFactory.class);
         when(factory.getService("gemini")).thenReturn(blockedDetectionService);
-        when(factory.getService("openai")).thenReturn(openAiService);
+        when(factory.translateText(
+                Mockito.any(UserProfile.class),
+                Mockito.eq("這是一段中文內容"),
+                Mockito.eq("en")))
+                .thenReturn(new AiExecutionResult("translated", "openai", "gpt-test"));
         LanguageDetectionService detector = languageDetector(factory);
 
         UserProfileRepository userRepository = Mockito.mock(UserProfileRepository.class);
