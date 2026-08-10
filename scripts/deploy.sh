@@ -37,23 +37,25 @@ wait_for_health() {
     local timeout="$2"
     local require_healthcheck="$3"
     local elapsed=0
+    local previous_state=''
 
     while (( elapsed < timeout )); do
         local running
         local health
+        local state
         running="$(docker inspect --format '{{.State.Running}}' "$container" 2>/dev/null || true)"
         health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$container" 2>/dev/null || true)"
+        state="running=${running:-missing}, health=${health:-missing}"
 
-        if [[ "$running" != "true" ]]; then
-            return 1
+        if [[ "$state" != "$previous_state" ]]; then
+            log "Waiting for readiness: $state, elapsed=${elapsed}s"
+            previous_state="$state"
         fi
-        if [[ "$health" == "healthy" ]]; then
+
+        if [[ "$running" == "true" && "$health" == "healthy" ]]; then
             return 0
         fi
-        if [[ "$health" == "unhealthy" ]]; then
-            return 1
-        fi
-        if [[ "$health" == "missing" && "$require_healthcheck" == "false" ]]; then
+        if [[ "$running" == "true" && "$health" == "missing" && "$require_healthcheck" == "false" ]]; then
             return 0
         fi
 
@@ -62,6 +64,23 @@ wait_for_health() {
     done
 
     return 1
+}
+
+report_container_diagnostics() {
+    local container="$1"
+
+    log 'Container status at readiness failure:'
+    docker ps -a \
+        --filter "name=^/${container}$" \
+        --format 'name={{.Names}} status={{.Status}} image={{.Image}}' || true
+
+    log 'Recent health checks:'
+    docker inspect \
+        --format '{{range .State.Health.Log}}{{.Start}} exit={{.ExitCode}} output={{printf "%q" .Output}}{{println}}{{end}}' \
+        "$container" 2>/dev/null || true
+
+    log 'Recent application logs:'
+    docker logs --tail 200 "$container" 2>&1 || true
 }
 
 require_command docker
@@ -213,6 +232,7 @@ docker run -d \
 
 if ! wait_for_health "$CONTAINER_NAME" "$HEALTH_TIMEOUT_SECONDS" true; then
     health_status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$CONTAINER_NAME" 2>/dev/null || true)"
+    report_container_diagnostics "$CONTAINER_NAME"
     fail "New container did not become ready (health=$health_status)"
 fi
 
