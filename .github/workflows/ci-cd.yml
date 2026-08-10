@@ -35,6 +35,9 @@ jobs:
           --health-retries 12
     env:
       MONGODB_URI: mongodb://localhost:27017/linebot_translator_test
+      MINIO_RECOVERY_UPSTREAM_ENDPOINT: http://127.0.0.1:9000
+      MINIO_ACCESS_KEY: linebot-test
+      MINIO_SECRET_KEY: linebot-test-secret
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -46,10 +49,30 @@ jobs:
           java-version: '17'
           cache: maven
 
+      - name: Start MinIO integration dependency
+        run: |
+          docker run -d --rm --name linebot-ci-minio \
+            -p 127.0.0.1:9000:9000 \
+            -e MINIO_ROOT_USER="$MINIO_ACCESS_KEY" \
+            -e MINIO_ROOT_PASSWORD="$MINIO_SECRET_KEY" \
+            minio/minio:RELEASE.2025-09-07T16-13-09Z server /data
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:9000/minio/health/ready >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs --tail=100 linebot-ci-minio
+          exit 1
+
       - name: Verify
         run: |
           chmod +x mvnw
           ./mvnw clean verify -B
+
+      - name: Stop MinIO integration dependency
+        if: always()
+        run: docker stop linebot-ci-minio || true
 
       - name: Upload test reports on failure
         if: failure()
@@ -138,6 +161,11 @@ jobs:
           MINIO_ACCESS_KEY: ${{ secrets.MINIO_ACCESS_KEY }}
           MINIO_SECRET_KEY: ${{ secrets.MINIO_SECRET_KEY }}
           MINIO_BUCKET_NAME: ${{ secrets.MINIO_BUCKET_NAME }}
+          MINIO_ENABLED: ${{ vars.MINIO_ENABLED || 'true' }}
+          MINIO_RETRY_INTERVAL_MS: ${{ vars.MINIO_RETRY_INTERVAL_MS || '30000' }}
+          MINIO_CONNECT_TIMEOUT_MS: ${{ vars.MINIO_CONNECT_TIMEOUT_MS || '3000' }}
+          MINIO_WRITE_TIMEOUT_MS: ${{ vars.MINIO_WRITE_TIMEOUT_MS || '5000' }}
+          MINIO_READ_TIMEOUT_MS: ${{ vars.MINIO_READ_TIMEOUT_MS || '5000' }}
           LANGUAGE_DETECTION_USE_AI: ${{ secrets.LANGUAGE_DETECTION_USE_AI }}
           LANGUAGE_DETECTION_AI_PROVIDER: ${{ secrets.LANGUAGE_DETECTION_AI_PROVIDER }}
           LANGUAGE_DETECTION_DEFAULT_CHINESE: ${{ secrets.LANGUAGE_DETECTION_DEFAULT_CHINESE }}

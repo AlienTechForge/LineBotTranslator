@@ -31,6 +31,7 @@ public class TranslationRecord {
     private double processingTimeMs;
     private boolean isImageTranslation;
     private String imageUrl; // 如果是圖片翻譯，則存儲圖片URL
+    private Boolean imageStored; // null = legacy record with unknown storage state
 
     @Builder.Default
     private LocalDateTime timestamp = LocalDateTime.now();

@@ -33,6 +33,7 @@ import com.linetranslate.bot.repository.UserProfileRepository;
 import com.linetranslate.bot.service.ai.AiExecutionResult;
 import com.linetranslate.bot.service.ai.AiProviderException;
 import com.linetranslate.bot.service.ai.AiServiceFactory;
+import com.linetranslate.bot.service.storage.ImageStorageResult;
 import com.linetranslate.bot.service.storage.MinioStorageService;
 import com.linetranslate.bot.service.translation.LanguageDetectionService;
 import com.linetranslate.bot.service.translation.TranslationService;
@@ -94,8 +95,8 @@ class ImageTranslationDetectionContractTests {
                 .thenReturn(CompletableFuture.completedFuture(blobResult));
         when(blobResult.body()).thenReturn(blobContent);
         when(blobContent.byteStream()).thenReturn(new ByteArrayInputStream(new byte[] {1, 2, 3}));
-        when(minioStorageService.uploadImage(any(byte[].class), anyString()))
-                .thenReturn("https://storage.example/image.jpg");
+        lenient().when(minioStorageService.uploadImage(any(byte[].class), anyString()))
+                .thenReturn(ImageStorageResult.stored("https://storage.example/image.jpg"));
         when(ocrService.recognizeText(any(ByteArrayInputStream.class))).thenReturn("hello");
         when(languageDetectionService.detectLanguage("hello")).thenReturn("en");
         when(appConfig.getDefaultTargetLanguageForOthers()).thenReturn("zh-TW");
@@ -125,6 +126,20 @@ class ImageTranslationDetectionContractTests {
         verify(translationRecordRepository).save(captor.capture());
         assertThat(captor.getValue().getAiProvider()).isEqualTo("gemini");
         assertThat(captor.getValue().getModelName()).isEqualTo("gemini-test");
+    }
+
+    @Test
+    void storageOutageStillReturnsTranslationAndRecordsThatImageWasNotStored() {
+        when(minioStorageService.uploadImage(any(byte[].class), anyString()))
+                .thenReturn(ImageStorageResult.notStored());
+
+        String response = imageTranslationService.processImageTranslation("U-test", "message-id");
+
+        assertThat(response).contains("翻譯結果");
+        ArgumentCaptor<TranslationRecord> captor = ArgumentCaptor.forClass(TranslationRecord.class);
+        verify(translationRecordRepository).save(captor.capture());
+        assertThat(captor.getValue().getImageStored()).isFalse();
+        assertThat(captor.getValue().getImageUrl()).isNull();
     }
 
     @Test
