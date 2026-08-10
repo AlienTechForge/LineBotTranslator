@@ -43,13 +43,17 @@ find_mongodb_container() {
 
     local candidates=()
     while IFS=$'\t' read -r name image; do
-        if [[ "${image,,}" == *mongo* ]]; then
+        if [[ "${image,,}" == *mongo* && "${image,,}" != *mongo-express* ]]; then
             candidates+=("$name")
         fi
     done < <(docker ps --format '{{.Names}}\t{{.Image}}')
 
     if (( ${#candidates[@]} != 1 )); then
-        fail "Expected exactly one running MongoDB container; found ${#candidates[@]}. Set MONGODB_CONTAINER_NAME explicitly."
+        local candidate_names='none'
+        if (( ${#candidates[@]} > 0 )); then
+            candidate_names="$(IFS=,; printf '%s' "${candidates[*]}")"
+        fi
+        fail "Expected exactly one running MongoDB container; found ${#candidates[@]} (${candidate_names}). Set MONGODB_CONTAINER_NAME explicitly."
     fi
 
     printf '%s\n' "${candidates[0]}"
