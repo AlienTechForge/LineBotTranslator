@@ -4,12 +4,14 @@
 
 ## 流程行為
 
-- Pull Request 到 `master`：在 GitHub-hosted runner 啟動隔離 MongoDB，執行 `./mvnw clean verify -B`。
+- Pull Request 到 `master`：在 GitHub-hosted runner 啟動隔離 MongoDB 與 MinIO，執行 `./mvnw clean verify -B`。
 - Push 到 `master`：CI 成功後，由 self-hosted runner 建立並推送 `${commit SHA}` 與 `latest` image，接著部署 SHA image。
 - Push `v*` tag：建立 SHA 與版本 tag image，不變更正式容器。
 - `workflow_dispatch`：可手動重跑；只有從 `master` 執行時會部署。
 
 部署會先保留目前容器。新容器通過 `/actuator/health/readiness` 後才移除舊容器；失敗或腳本中斷時會恢復舊容器。
+
+`/actuator/health/liveness` 只代表程序存活；`/actuator/health/readiness` 會檢查 LINE 設定、MongoDB、MinIO、OCR 與 AI provider 設定。必要依賴失敗時回 `DOWN`/HTTP 503；MinIO 或 OCR 等 optional dependency 失敗時回 `DEGRADED`/HTTP 200，因此不會造成部署 rollback。回應只公開 component status，不公開 details。
 
 ## GitHub Repository 設定
 

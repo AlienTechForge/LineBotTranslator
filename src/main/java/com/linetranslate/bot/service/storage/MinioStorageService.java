@@ -115,16 +115,19 @@ public class MinioStorageService {
 
     /** Read-only availability state for diagnostics; an eligible call also probes recovery. */
     public boolean isAvailable() {
-        State current = state.get();
-        if (current == State.AVAILABLE) {
-            return true;
-        }
         if (!beginAttempt()) {
             return false;
         }
 
         try {
-            ensureBucket();
+            boolean exists = minioClient.bucketExists(
+                    BucketExistsArgs.builder().bucket(bucketName).build());
+            if (!exists) {
+                bucketReady.set(false);
+                ensureBucket();
+            } else {
+                bucketReady.set(true);
+            }
             markAvailable();
             return true;
         } catch (Exception failure) {

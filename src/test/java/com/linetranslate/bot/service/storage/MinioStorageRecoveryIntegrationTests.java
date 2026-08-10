@@ -57,7 +57,7 @@ class MinioStorageRecoveryIntegrationTests {
         assertThat(recovered.stored()).isTrue();
         assertThat(recovered.url()).contains("https://storage.example/image.jpg");
         assertThat(service.isAvailable()).isTrue();
-        verify(minioClient, times(2)).bucketExists(any(BucketExistsArgs.class));
+        verify(minioClient, times(3)).bucketExists(any(BucketExistsArgs.class));
         verify(minioClient, times(1)).putObject(any(PutObjectArgs.class));
     }
 

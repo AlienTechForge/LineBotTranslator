@@ -1,118 +1,108 @@
 package com.linetranslate.bot.config;
 
-import org.springframework.beans.factory.ObjectProvider;
+import java.util.Arrays;
+
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.event.ApplicationStartedEvent;
+import org.springframework.boot.health.contributor.HealthIndicator;
+import org.springframework.boot.health.contributor.Status;
 import org.springframework.context.ApplicationListener;
 import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Component;
 
-import com.google.cloud.vision.v1.ImageAnnotatorClient;
-import com.linetranslate.bot.service.ai.AiService;
-import com.linetranslate.bot.service.ai.AiServiceFactory;
-import com.linetranslate.bot.logging.SafeLog;
+import com.linetranslate.bot.health.DependencyHealthConfig;
 
 import lombok.extern.slf4j.Slf4j;
-
-import java.util.Arrays;
-import java.util.Optional;
 
 @Component
 @Slf4j
 public class AppConfigurationSummary implements ApplicationListener<ApplicationStartedEvent> {
 
-    @Value("${line.bot.channel-token:未設置}")
-    private String lineBotToken;
-
-    @Value("${mongodb.uri:未設置}")
-    private String mongodbUri;
-
-    @Value("${app.ocr.enabled:false}")
-    private boolean ocrEnabled;
-
-    @Value("${app.ai.default-provider:openai}")
-    private String defaultAiProvider;
-
-    @Value("${server.port:8080}")
-    private int serverPort;
-
-    private final Optional<ImageAnnotatorClient> visionClient;
-    private final AiServiceFactory aiServiceFactory;
+    private final int serverPort;
     private final Environment environment;
+    private final HealthIndicator lineConfiguration;
+    private final HealthIndicator mongo;
+    private final HealthIndicator minio;
+    private final HealthIndicator ocrConfiguration;
+    private final HealthIndicator openAiConfiguration;
+    private final HealthIndicator geminiConfiguration;
 
     public AppConfigurationSummary(
-            ObjectProvider<ImageAnnotatorClient> visionClientProvider,
-            AiServiceFactory aiServiceFactory,
-            Environment environment) {
-        this.visionClient = Optional.ofNullable(visionClientProvider.getIfAvailable());
-        this.aiServiceFactory = aiServiceFactory;
+            @Value("${server.port:8080}") int serverPort,
+            Environment environment,
+            @Qualifier("lineConfigurationHealthIndicator") HealthIndicator lineConfiguration,
+            @Qualifier("mongoHealthIndicator") HealthIndicator mongo,
+            @Qualifier("minioHealthIndicator") HealthIndicator minio,
+            @Qualifier("ocrConfigurationHealthIndicator") HealthIndicator ocrConfiguration,
+            @Qualifier("openAiConfigurationHealthIndicator") HealthIndicator openAiConfiguration,
+            @Qualifier("geminiConfigurationHealthIndicator") HealthIndicator geminiConfiguration) {
+        this.serverPort = serverPort;
         this.environment = environment;
+        this.lineConfiguration = lineConfiguration;
+        this.mongo = mongo;
+        this.minio = minio;
+        this.ocrConfiguration = ocrConfiguration;
+        this.openAiConfiguration = openAiConfiguration;
+        this.geminiConfiguration = geminiConfiguration;
     }
 
     @Override
     public void onApplicationEvent(ApplicationStartedEvent event) {
-        boolean isProd = Arrays.asList(environment.getActiveProfiles()).contains("prod");
-
-        // 生產環境使用簡潔的日誌格式
-        if (isProd) {
-            printProductionStartupInfo();
+        String status = statusSummary();
+        boolean production = Arrays.asList(environment.getActiveProfiles()).contains("prod");
+        if (production) {
+            log.info("LINE Bot Translator running on port {}", serverPort);
+            log.info("Services: {}", status);
         } else {
-            printDevelopmentStartupInfo();
+            log.info("LINE Bot Translator started on port {}: {}", serverPort, status);
         }
     }
 
-    private void printProductionStartupInfo() {
-        // 在生產環境中只輸出最少的日誌信息
-        StringBuilder status = new StringBuilder();
-        status.append("Services: ");
-        status.append("LINE API=").append(statusSymbol(isConfigured(lineBotToken))).append(", ");
-        status.append("MongoDB=").append(statusSymbol(isConfigured(mongodbUri))).append(", ");
-        status.append("OCR=").append(statusSymbol(ocrEnabled && visionClient.isPresent()));
-        
-        log.info("LINE Bot Translator running on port {}", serverPort);
-        log.info(status.toString());
+    String statusSummary() {
+        return String.join(", ",
+                "LINE=" + configurationState(lineConfiguration),
+                "MongoDB=" + requiredState(mongo),
+                "MinIO=" + optionalState(minio),
+                "OCR=" + configurationOptionalState(ocrConfiguration),
+                "OpenAI=" + configurationState(openAiConfiguration),
+                "Gemini=" + configurationState(geminiConfiguration));
     }
 
-    private void printDevelopmentStartupInfo() {
-        log.info("---------------------------------------------");
-        log.info("LINE Bot 翻譯機器人啟動完成");
-        log.info("---------------------------------------------");
-        log.info("LINE Bot Token: {}", isConfigured(lineBotToken) ? "已配置" : "未配置");
-        log.info("MongoDB: {}", isConfigured(mongodbUri) ? "已連接" : "未連接");
-        log.info("OCR 功能: {}", ocrEnabled ? (visionClient.isPresent() ? "已啟用" : "配置不完整") : "已禁用");
-        log.info("預設 AI 提供者: {}", defaultAiProvider);
+    private String requiredState(HealthIndicator indicator) {
+        return Status.UP.equals(indicator.health().getStatus()) ? "ready" : "unavailable";
+    }
 
-        try {
-            AiService openAi = aiServiceFactory.getService("openai");
-            AiService gemini = aiServiceFactory.getService("gemini");
-
-            log.info("可用 AI 模型: ");
-
-            // 檢查 OpenAI 服務是否可用
-            if (!"fallback".equals(openAi.getProviderName())) {
-                log.info("  - OpenAI: {}", openAi.getModelName());
-            } else {
-                log.info("  - OpenAI: 未配置");
-            }
-
-            // 檢查 Gemini 服務是否可用
-            if (!"fallback".equals(gemini.getProviderName())) {
-                log.info("  - Gemini: {}", gemini.getModelName());
-            } else {
-                log.info("  - Gemini: 未配置");
-            }
-        } catch (Exception e) {
-            log.warn("無法獲取 AI 模型資訊: failure={}", SafeLog.failure(e));
+    private String optionalState(HealthIndicator indicator) {
+        Status status = indicator.health().getStatus();
+        if (Status.UP.equals(status)) {
+            return "ready";
         }
-
-        log.info("---------------------------------------------");
+        if (DependencyHealthConfig.DISABLED.equals(status)) {
+            return "disabled";
+        }
+        return "degraded";
     }
 
-    private String statusSymbol(boolean status) {
-        return status ? "OK" : "MISSING";
+    private String configurationOptionalState(HealthIndicator indicator) {
+        Status status = indicator.health().getStatus();
+        if (Status.UP.equals(status)) {
+            return "configured";
+        }
+        if (DependencyHealthConfig.DISABLED.equals(status)) {
+            return "disabled";
+        }
+        return "degraded";
     }
 
-    private boolean isConfigured(String value) {
-        return value != null && !value.isEmpty() && !value.equals("未設置");
+    private String configurationState(HealthIndicator indicator) {
+        Status status = indicator.health().getStatus();
+        if (Status.UP.equals(status)) {
+            return "configured";
+        }
+        if (DependencyHealthConfig.DISABLED.equals(status)) {
+            return "disabled";
+        }
+        return "unavailable";
     }
 }
