@@ -1,7 +1,7 @@
 package com.linetranslate.bot.service.ai;
 
-import com.theokanning.openai.completion.chat.*;
-import lombok.extern.slf4j.Slf4j;
+import java.util.List;
+import java.util.stream.Collectors;
 
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -9,23 +9,32 @@ import org.springframework.stereotype.Service;
 
 import com.linetranslate.bot.config.OpenAiConfig;
 import com.linetranslate.bot.logging.SafeLog;
-
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-
 import com.linetranslate.bot.model.UserProfile;
+import com.openai.client.OpenAIClient;
+import com.openai.models.responses.Response;
+import com.openai.models.responses.ResponseCreateParams;
+import com.openai.models.responses.ResponseInputImage;
+import com.openai.models.responses.ResponseInputItem;
+
+import lombok.extern.slf4j.Slf4j;
 
 @Service
 @Slf4j
 public class OpenAiService implements AiService {
 
-    private final com.theokanning.openai.service.OpenAiService openAiClient;
+    private static final String TRANSLATION_INSTRUCTIONS =
+            "你是一個專業的翻譯助手。請將用戶提供的文本翻譯成%s。只需返回翻譯結果，不要添加任何解釋或額外信息。";
+    private static final String OCR_INSTRUCTIONS =
+            "你是一個專業的OCR助手。請識別並提取圖片中的所有文字。只需返回文字內容，不要添加任何解釋或說明。";
+    private static final String GENERATION_INSTRUCTIONS =
+            "你是一個專業的語言助手。請根據用戶的提示生成回應。";
+
+    private final OpenAIClient openAiClient;
+    private final OpenAiConfig openAiConfig;
     private final String modelName;
 
     public OpenAiService(OpenAiConfig openAiConfig,
-            @Qualifier("openAiClient") ObjectProvider<com.theokanning.openai.service.OpenAiService> openAiClientProvider) {
+            @Qualifier("openAiClient") ObjectProvider<OpenAIClient> openAiClientProvider) {
         this.openAiClient = openAiClientProvider.getIfAvailable();
         this.openAiConfig = openAiConfig;
         this.modelName = openAiConfig.getModelName();
@@ -45,29 +54,13 @@ public class OpenAiService implements AiService {
         }
 
         try {
-            List<ChatMessage> messages = new ArrayList<>();
-
-            // 系統訊息設定翻譯任務
-            ChatMessage systemMessage = new ChatMessage(ChatMessageRole.SYSTEM.value(),
-                    "你是一個專業的翻譯助手。請將用戶提供的文本翻譯成" + targetLanguage + "。只需返回翻譯結果，不要添加任何解釋或額外信息。");
-            messages.add(systemMessage);
-
-            // 用戶訊息包含要翻譯的文本
-            ChatMessage userMessage = new ChatMessage(ChatMessageRole.USER.value(), text);
-            messages.add(userMessage);
-
-            // 建立請求
-            ChatCompletionRequest chatCompletionRequest = ChatCompletionRequest.builder()
+            ResponseCreateParams params = ResponseCreateParams.builder()
                     .model(modelName)
-                    .messages(messages)
-                    .temperature(0.3)  // 較低的溫度使輸出更加確定性和準確
+                    .instructions(TRANSLATION_INSTRUCTIONS.formatted(targetLanguage))
+                    .input(text)
+                    .temperature(0.3)
                     .build();
-
-            // 執行請求並獲取回應
-            String response = openAiClient.createChatCompletion(chatCompletionRequest)
-                    .getChoices().get(0).getMessage().getContent();
-
-            return response.trim();
+            return createResponse(params);
         } catch (Exception e) {
             log.error("OpenAI 翻譯失敗: failure={}", SafeLog.failure(e));
             return "翻譯失敗，請稍後再試。";
@@ -82,45 +75,23 @@ public class OpenAiService implements AiService {
         }
 
         try {
-            List<ChatMessage> messages = new ArrayList<>();
-
-            // 系統訊息設定OCR任務
-            ChatMessage systemMessage = new ChatMessage(ChatMessageRole.SYSTEM.value(),
-                    "你是一個專業的OCR助手。請識別並提取圖片中的所有文字。只需返回文字內容，不要添加任何解釋或說明。");
-            messages.add(systemMessage);
-
-            // 用戶訊息包含提示
-            ChatMessage promptMessage = new ChatMessage(ChatMessageRole.USER.value(), prompt);
-            messages.add(promptMessage);
-
-            // 創建包含圖片URL的消息
-            List<MessageContent> contents = new ArrayList<>();
-            contents.add(new MessageContent(ContentType.TEXT.value(), prompt));
-
-            Map<String, String> imageUrlMap = new HashMap<>();
-            imageUrlMap.put("url", imageUrl);
-
-            Map<String, Object> imageMap = new HashMap<>();
-            imageMap.put("image_url", imageUrlMap);
-
-            contents.add(new MessageContent(ContentType.IMAGE_URL.value(), imageMap));
-
-            ChatMessage userMessage = new ChatMessage(ChatMessageRole.USER.value(), contents.toString());
-            messages.add(userMessage);
-
-            // 建立請求
-            ChatCompletionRequest chatCompletionRequest = ChatCompletionRequest.builder()
-                    .model(modelName)
-                    .messages(messages)
-                    .temperature(0.3)
-                    .maxTokens(1024)
+            ResponseInputImage image = ResponseInputImage.builder()
+                    .detail(ResponseInputImage.Detail.AUTO)
+                    .imageUrl(imageUrl)
                     .build();
-
-            // 執行請求並獲取回應
-            String response = openAiClient.createChatCompletion(chatCompletionRequest)
-                    .getChoices().get(0).getMessage().getContent();
-
-            return response.trim();
+            ResponseInputItem.Message message = ResponseInputItem.Message.builder()
+                    .role(ResponseInputItem.Message.Role.USER)
+                    .addInputTextContent(prompt)
+                    .addContent(image)
+                    .build();
+            ResponseCreateParams params = ResponseCreateParams.builder()
+                    .model(modelName)
+                    .instructions(OCR_INSTRUCTIONS)
+                    .inputOfResponse(List.of(ResponseInputItem.ofMessage(message)))
+                    .temperature(0.3)
+                    .maxOutputTokens(1024)
+                    .build();
+            return createResponse(params);
         } catch (Exception e) {
             log.error("OpenAI 圖片處理失敗: failure={}", SafeLog.failure(e));
             return "圖片處理失敗，請稍後再試。";
@@ -132,27 +103,19 @@ public class OpenAiService implements AiService {
         return "openai";
     }
 
-    private final OpenAiConfig openAiConfig;
-    
     @Override
     public String getModelName() {
         return modelName;
     }
-    
-    /**
-     * 根據用戶資料取得模型名稱
-     * 
-     * @param userProfile 用戶資料
-     * @return 模型名稱
-     */
+
     public String getModelName(UserProfile userProfile) {
-        // 如果用戶有指定 OpenAI 模型，則使用用戶指定的模型
         String userModel = userProfile.getOpenaiPreferredModel();
         if (userModel != null && !userModel.isEmpty() && openAiConfig.getAvailableModels().contains(userModel)) {
             return userModel;
         }
         return openAiConfig.getModelName();
     }
+
     @Override
     public String generateText(String prompt) {
         if (openAiClient == null) {
@@ -161,66 +124,31 @@ public class OpenAiService implements AiService {
         }
 
         try {
-            List<ChatMessage> messages = new ArrayList<>();
-
-            // 系統訊息設定文本生成任務
-            ChatMessage systemMessage = new ChatMessage(ChatMessageRole.SYSTEM.value(),
-                    "你是一個專業的語言助手。請根據用戶的提示生成回應。");
-            messages.add(systemMessage);
-
-            // 用戶訊息包含提示
-            ChatMessage userMessage = new ChatMessage(ChatMessageRole.USER.value(), prompt);
-            messages.add(userMessage);
-
-            // 建立請求
-            ChatCompletionRequest chatCompletionRequest = ChatCompletionRequest.builder()
+            ResponseCreateParams params = ResponseCreateParams.builder()
                     .model(modelName)
-                    .messages(messages)
-                    .temperature(0.7)  // 適中的溫度使輸出更加多樣化
+                    .instructions(GENERATION_INSTRUCTIONS)
+                    .input(prompt)
+                    .temperature(0.7)
                     .build();
-
-            // 執行請求並獲取回應
-            String response = openAiClient.createChatCompletion(chatCompletionRequest)
-                    .getChoices().get(0).getMessage().getContent();
-
-            return response.trim();
+            return createResponse(params);
         } catch (Exception e) {
             log.error("OpenAI 文本生成失敗: failure={}", SafeLog.failure(e));
             return "文本生成失敗，請稍後再試。";
         }
     }
 
-    // 內部類用於處理消息內容
-    private static class MessageContent {
-        private String type;
-        private Object content;
-
-        public MessageContent(String type, Object content) {
-            this.type = type;
-            this.content = content;
+    private String createResponse(ResponseCreateParams params) {
+        Response response = openAiClient.responses().create(params);
+        String output = response.output().stream()
+                .flatMap(item -> item.message().stream())
+                .flatMap(message -> message.content().stream())
+                .flatMap(content -> content.outputText().stream())
+                .map(outputText -> outputText.text())
+                .collect(Collectors.joining())
+                .trim();
+        if (output.isEmpty()) {
+            throw new IllegalStateException("OpenAI 回應不包含文字內容");
         }
-
-        public String getType() {
-            return type;
-        }
-
-        public Object getContent() {
-            return content;
-        }
-    }
-
-    private enum ContentType {
-        TEXT("text"),
-        IMAGE_URL("image_url");
-
-        private final String value;
-
-        ContentType(String value) {
-            this.value = value;
-        }
-
-        public String value() {
-            return value;
-        }
+        return output;
     }
 }
