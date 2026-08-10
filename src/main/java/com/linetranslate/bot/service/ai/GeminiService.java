@@ -1,5 +1,6 @@
 package com.linetranslate.bot.service.ai;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -14,6 +15,8 @@ import com.linetranslate.bot.config.GeminiConfig;
 import com.linetranslate.bot.logging.SafeLog;
 
 import java.io.IOException;
+import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
 import com.linetranslate.bot.model.UserProfile;
@@ -21,6 +24,15 @@ import com.linetranslate.bot.model.UserProfile;
 @Service
 @Slf4j
 public class GeminiService implements AiService {
+
+    private static final Set<String> BLOCKED_FINISH_REASONS = Set.of(
+            "SAFETY",
+            "RECITATION",
+            "LANGUAGE",
+            "BLOCKLIST",
+            "PROHIBITED_CONTENT",
+            "SPII",
+            "IMAGE_SAFETY");
 
     private final String modelName;
     private final String apiKey;
@@ -34,13 +46,11 @@ public class GeminiService implements AiService {
         this.modelName = geminiConfig.getModelName();
         this.apiKey = geminiConfig.getApiKey();
 
-        // 初始化 HTTP 客戶端
         this.httpClient = new OkHttpClient.Builder()
                 .connectTimeout(30, TimeUnit.SECONDS)
                 .readTimeout(30, TimeUnit.SECONDS)
                 .writeTimeout(30, TimeUnit.SECONDS)
                 .build();
-
         this.objectMapper = new ObjectMapper();
 
         log.info("Gemini 服務初始化成功，使用模型: {}", modelName);
@@ -209,6 +219,7 @@ public class GeminiService implements AiService {
 
     @Override
     public String generateText(String prompt) {
+        String correlationId = UUID.randomUUID().toString();
         try {
             // 建立請求體
             ObjectNode requestBodyJson = objectMapper.createObjectNode();
@@ -238,31 +249,111 @@ public class GeminiService implements AiService {
             // 發送請求
             try (Response response = httpClient.newCall(request).execute()) {
                 if (!response.isSuccessful()) {
-                    log.error("Gemini API 請求失敗: status={}", SafeLog.httpStatus(response.code()));
-                    return "文本生成失敗: Gemini API 請求錯誤 " + response.code();
+                    throw providerFailure(
+                            AiProviderException.Outcome.HTTP_ERROR,
+                            "HTTP_" + response.code(),
+                            correlationId,
+                            response.code(),
+                            null);
                 }
 
                 String responseBody = response.body().string();
-                JsonNode jsonResponse = objectMapper.readTree(responseBody);
-
-                // 解析回應
-                JsonNode candidatesNode = jsonResponse.path("candidates");
-                if (candidatesNode.isArray() && candidatesNode.size() > 0) {
-                    JsonNode contentNode = candidatesNode.get(0).path("content");
-                    JsonNode partsNode = contentNode.path("parts");
-
-                    if (partsNode.isArray() && partsNode.size() > 0) {
-                        String generatedText = partsNode.get(0).path("text").asText();
-                        return generatedText.trim();
-                    }
-                }
-
-                log.error("無法從 Gemini 回應中解析生成結果: response={}", SafeLog.content(responseBody));
-                return "文本生成失敗: 無法解析回應";
+                return parseGeneratedText(responseBody, correlationId);
             }
+        } catch (AiProviderException exception) {
+            throw exception;
         } catch (IOException e) {
-            log.error("Gemini 文本生成失敗: failure={}", SafeLog.failure(e));
-            return "文本生成失敗，請稍後再試。";
+            throw providerFailure(
+                    AiProviderException.Outcome.TRANSPORT_ERROR,
+                    e.getClass().getSimpleName(),
+                    correlationId,
+                    -1,
+                    e);
         }
     }
+
+    String parseGeneratedText(String responseBody, String correlationId) {
+        try {
+            return extractGeneratedText(objectMapper.readTree(responseBody), correlationId);
+        } catch (JsonProcessingException exception) {
+            throw providerFailure(
+                    AiProviderException.Outcome.MALFORMED_RESPONSE,
+                    "INVALID_JSON",
+                    correlationId,
+                    -1,
+                    exception);
+        }
+    }
+
+    private String extractGeneratedText(JsonNode response, String correlationId) {
+        String promptBlockReason = response.path("promptFeedback").path("blockReason").asText("");
+        if (!promptBlockReason.isBlank()
+                && !"BLOCK_REASON_UNSPECIFIED".equals(promptBlockReason)) {
+            throw providerFailure(
+                    AiProviderException.Outcome.SAFETY_BLOCKED,
+                    promptBlockReason,
+                    correlationId,
+                    -1,
+                    null);
+        }
+
+        JsonNode candidates = response.path("candidates");
+        if (!candidates.isArray() || candidates.isEmpty()) {
+            throw providerFailure(
+                    AiProviderException.Outcome.EMPTY_RESPONSE,
+                    "NO_CANDIDATES",
+                    correlationId,
+                    -1,
+                    null);
+        }
+
+        JsonNode candidate = candidates.get(0);
+        String finishReason = candidate.path("finishReason").asText("");
+        if (BLOCKED_FINISH_REASONS.contains(finishReason)) {
+            throw providerFailure(
+                    AiProviderException.Outcome.SAFETY_BLOCKED,
+                    finishReason,
+                    correlationId,
+                    -1,
+                    null);
+        }
+
+        JsonNode parts = candidate.path("content").path("parts");
+        if (!parts.isArray() || parts.isEmpty()) {
+            throw providerFailure(
+                    AiProviderException.Outcome.EMPTY_RESPONSE,
+                    finishReason.isBlank() ? "NO_TEXT_PARTS" : finishReason,
+                    correlationId,
+                    -1,
+                    null);
+        }
+
+        String generatedText = parts.get(0).path("text").asText("").trim();
+        if (generatedText.isEmpty()) {
+            throw providerFailure(
+                    AiProviderException.Outcome.EMPTY_RESPONSE,
+                    finishReason.isBlank() ? "BLANK_TEXT" : finishReason,
+                    correlationId,
+                    -1,
+                    null);
+        }
+        return generatedText;
+    }
+
+    private AiProviderException providerFailure(
+            AiProviderException.Outcome outcome,
+            String reason,
+            String correlationId,
+            int httpStatus,
+            Throwable cause) {
+        return new AiProviderException(
+                outcome,
+                getProviderName(),
+                modelName,
+                reason,
+                correlationId,
+                httpStatus,
+                cause);
+    }
+
 }

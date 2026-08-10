@@ -6,6 +6,7 @@ import org.springframework.stereotype.Service;
 
 import com.linetranslate.bot.service.ai.AiService;
 import com.linetranslate.bot.service.ai.AiServiceFactory;
+import com.linetranslate.bot.service.ai.AiProviderException;
 import com.linetranslate.bot.logging.SafeLog;
 
 import lombok.extern.slf4j.Slf4j;
@@ -55,6 +56,15 @@ public class AiLanguageDetectionService {
             
             log.info("AI 語言檢測結果: {}", languageCode);
             return languageCode;
+        } catch (AiProviderException e) {
+            log.warn(
+                    "AI 語言檢測改用本地偵測: provider={}, model={}, outcome={}, reason={}, correlation={}",
+                    e.getProvider(),
+                    e.getModel(),
+                    e.getOutcome(),
+                    e.getReason(),
+                    e.getCorrelationId());
+            return "unknown";
         } catch (Exception e) {
             log.error("AI 語言檢測失敗: failure={}", SafeLog.failure(e));
             return "unknown";
@@ -77,13 +87,12 @@ public class AiLanguageDetectionService {
             cleaned = cleaned.split("\n")[0];
         }
         
-        // 如果回應超過 10 個字符，可能包含了解釋，只取前 10 個字符
-        if (cleaned.length() > 10) {
-            cleaned = cleaned.substring(0, 10);
+        cleaned = cleaned.replace("`", "").trim();
+
+        // 只接受完整的 ISO 語言碼，避免把供應商錯誤字串誤判成語言。
+        if (!cleaned.matches("(?i)^[a-z]{2,3}(?:-[a-z]{2,4})?$")) {
+            return "unknown";
         }
-        
-        // 移除任何非字母字符
-        cleaned = cleaned.replaceAll("[^a-zA-Z\\-]", "");
         
         // 轉換為小寫
         cleaned = cleaned.toLowerCase();

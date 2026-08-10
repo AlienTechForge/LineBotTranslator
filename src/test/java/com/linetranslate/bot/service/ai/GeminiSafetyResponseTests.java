@@ -1,0 +1,230 @@
+package com.linetranslate.bot.service.ai;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.when;
+
+import java.util.Optional;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
+import org.springframework.test.util.ReflectionTestUtils;
+
+import com.linetranslate.bot.config.AppConfig;
+import com.linetranslate.bot.config.GeminiConfig;
+import com.linetranslate.bot.model.TranslationRecord;
+import com.linetranslate.bot.model.UserProfile;
+import com.linetranslate.bot.repository.TranslationRecordRepository;
+import com.linetranslate.bot.repository.UserProfileRepository;
+import com.linetranslate.bot.service.translation.AiLanguageDetectionService;
+import com.linetranslate.bot.service.translation.LanguageDetectionService;
+import com.linetranslate.bot.service.translation.TranslationService;
+
+class GeminiSafetyResponseTests {
+
+    private GeminiService geminiService;
+
+    @BeforeEach
+    void setUp() {
+        GeminiConfig config = Mockito.mock(GeminiConfig.class);
+        when(config.getModelName()).thenReturn("gemini-test");
+        when(config.getApiKey()).thenReturn("test-key");
+        geminiService = new GeminiService(config);
+    }
+
+    @Test
+    void promptSafetyBlockBecomesTypedOutcome() {
+        String response = """
+                {
+                  "promptFeedback": { "blockReason": "PROHIBITED_CONTENT" },
+                  "usageMetadata": { "promptTokenCount": 46 }
+                }
+                """;
+
+        assertThatExceptionOfType(AiProviderException.class)
+                .isThrownBy(() -> geminiService.parseGeneratedText(response, "correlation-1"))
+                .satisfies(error -> {
+                    assertThat(error.getOutcome())
+                            .isEqualTo(AiProviderException.Outcome.SAFETY_BLOCKED);
+                    assertThat(error.getReason()).isEqualTo("PROHIBITED_CONTENT");
+                    assertThat(error.getProvider()).isEqualTo("gemini");
+                    assertThat(error.getModel()).isEqualTo("gemini-test");
+                    assertThat(error.getCorrelationId()).isEqualTo("correlation-1");
+                    assertThat(error.getMessage()).doesNotContain(response);
+                });
+    }
+
+    @Test
+    void candidateSafetyFinishReasonIsCheckedBeforeText() {
+        String response = """
+                {
+                  "candidates": [{
+                    "finishReason": "SAFETY",
+                    "content": { "parts": [{ "text": "must-not-be-returned" }] }
+                  }]
+                }
+                """;
+
+        assertThatExceptionOfType(AiProviderException.class)
+                .isThrownBy(() -> geminiService.parseGeneratedText(response, "correlation-2"))
+                .satisfies(error -> {
+                    assertThat(error.getOutcome())
+                            .isEqualTo(AiProviderException.Outcome.SAFETY_BLOCKED);
+                    assertThat(error.getReason()).isEqualTo("SAFETY");
+                });
+    }
+
+    @Test
+    void emptyCandidatesBecomeTypedEmptyOutcome() {
+        assertThatExceptionOfType(AiProviderException.class)
+                .isThrownBy(() -> geminiService.parseGeneratedText(
+                        "{ \"promptFeedback\": {}, \"candidates\": [] }",
+                        "correlation-3"))
+                .satisfies(error -> assertThat(error.getOutcome())
+                        .isEqualTo(AiProviderException.Outcome.EMPTY_RESPONSE));
+    }
+
+    @Test
+    void malformedJsonBecomesTypedMalformedOutcome() {
+        assertThatExceptionOfType(AiProviderException.class)
+                .isThrownBy(() -> geminiService.parseGeneratedText("not-json", "correlation-4"))
+                .satisfies(error -> assertThat(error.getOutcome())
+                        .isEqualTo(AiProviderException.Outcome.MALFORMED_RESPONSE));
+    }
+
+    @Test
+    void normalCandidateReturnsText() {
+        String response = """
+                {
+                  "candidates": [{
+                    "finishReason": "STOP",
+                    "content": { "parts": [{ "text": "en" }] }
+                  }]
+                }
+                """;
+
+        assertThat(geminiService.parseGeneratedText(response, "correlation-5")).isEqualTo("en");
+    }
+
+    @Test
+    void safetyBlockedDetectionFallsBackLocallyWithoutRetry() {
+        AtomicInteger providerCalls = new AtomicInteger();
+        LanguageDetectionService detector = languageDetector(blockedAiService(providerCalls));
+
+        assertThat(detector.detectLanguage("這是一段中文內容")).isEqualTo("zh-tw");
+        assertThat(providerCalls).hasValue(1);
+    }
+
+    @Test
+    void blockedDetectionStillAllowsTranslationThroughAllowedProvider() {
+        AtomicInteger providerCalls = new AtomicInteger();
+        AiService blockedDetectionService = blockedAiService(providerCalls);
+        AiService openAiService = Mockito.mock(AiService.class);
+        when(openAiService.translateText("這是一段中文內容", "en")).thenReturn("translated");
+        when(openAiService.getProviderName()).thenReturn("openai");
+        when(openAiService.getModelName()).thenReturn("gpt-test");
+
+        AiServiceFactory factory = Mockito.mock(AiServiceFactory.class);
+        when(factory.getService("gemini")).thenReturn(blockedDetectionService);
+        when(factory.getService("openai")).thenReturn(openAiService);
+        LanguageDetectionService detector = languageDetector(factory);
+
+        UserProfileRepository userRepository = Mockito.mock(UserProfileRepository.class);
+        TranslationRecordRepository recordRepository = Mockito.mock(TranslationRecordRepository.class);
+        AppConfig appConfig = Mockito.mock(AppConfig.class);
+        UserProfile profile = UserProfile.builder()
+                .userId("U-test")
+                .preferredAiProvider("openai")
+                .build();
+        when(userRepository.findByUserId("U-test")).thenReturn(Optional.of(profile));
+        when(userRepository.save(Mockito.any(UserProfile.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+        when(appConfig.getDefaultTargetLanguageForChinese()).thenReturn("en");
+
+        TranslationService translationService = new TranslationService(
+                detector,
+                factory,
+                recordRepository,
+                userRepository,
+                appConfig);
+
+        String translated = translationService.processTranslationRequest(
+                "U-test", "這是一段中文內容");
+
+        assertThat(translated).startsWith("translated");
+        assertThat(providerCalls).hasValue(1);
+        org.mockito.ArgumentCaptor<TranslationRecord> captor =
+                org.mockito.ArgumentCaptor.forClass(TranslationRecord.class);
+        Mockito.verify(recordRepository).save(captor.capture());
+        assertThat(captor.getValue().getSourceLanguage()).isEqualTo("zh-tw");
+        assertThat(captor.getValue().getAiProvider()).isEqualTo("openai");
+    }
+
+    @Test
+    void providerErrorTextCannotBecomePlausibleLanguageCode() {
+        AiService failingService = Mockito.mock(AiService.class);
+        when(failingService.generateText("prompt"))
+                .thenReturn("文本生成失敗: Gemini API 請求錯誤 404");
+        AiServiceFactory factory = Mockito.mock(AiServiceFactory.class);
+        when(factory.getService("gemini")).thenReturn(failingService);
+        AiLanguageDetectionService detector = new AiLanguageDetectionService(factory);
+        ReflectionTestUtils.setField(detector, "aiProvider", "gemini");
+        ReflectionTestUtils.setField(detector, "defaultChineseType", "zh-tw");
+
+        assertThat(detector.detectLanguage("prompt")).isEqualTo("unknown");
+    }
+
+    @Test
+    void providerMetadataIsSafeForStructuredLogs() {
+        AiProviderException error = new AiProviderException(
+                AiProviderException.Outcome.SAFETY_BLOCKED,
+                "gemini\nforged",
+                "gemini-test",
+                "PROHIBITED_CONTENT\nraw-response",
+                "correlation-1",
+                -1,
+                null);
+
+        assertThat(error.getProvider()).isEqualTo("gemini_forged");
+        assertThat(error.getReason()).isEqualTo("PROHIBITED_CONTENT_raw-response");
+        assertThat(error.getMessage()).doesNotContain("raw-response");
+    }
+
+    private LanguageDetectionService languageDetector(AiService aiService) {
+        AiServiceFactory factory = Mockito.mock(AiServiceFactory.class);
+        when(factory.getService("gemini")).thenReturn(aiService);
+        return languageDetector(factory);
+    }
+
+    private LanguageDetectionService languageDetector(AiServiceFactory factory) {
+        AiLanguageDetectionService aiDetector = new AiLanguageDetectionService(factory);
+        ReflectionTestUtils.setField(aiDetector, "aiProvider", "gemini");
+        ReflectionTestUtils.setField(aiDetector, "defaultChineseType", "zh-tw");
+
+        LanguageDetectionService detector = new LanguageDetectionService();
+        ReflectionTestUtils.setField(detector, "aiLanguageDetectionService", aiDetector);
+        ReflectionTestUtils.setField(detector, "useAiDetection", true);
+        ReflectionTestUtils.setField(detector, "defaultChineseType", "zh-tw");
+        detector.init();
+        return detector;
+    }
+
+    private AiService blockedAiService(AtomicInteger calls) {
+        AiService service = Mockito.mock(AiService.class);
+        when(service.generateText(anyString())).thenAnswer(invocation -> {
+            calls.incrementAndGet();
+            throw new AiProviderException(
+                    AiProviderException.Outcome.SAFETY_BLOCKED,
+                    "gemini",
+                    "gemini-test",
+                    "PROHIBITED_CONTENT",
+                    "correlation-blocked",
+                    -1,
+                    null);
+        });
+        return service;
+    }
+}
