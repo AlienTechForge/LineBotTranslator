@@ -56,6 +56,11 @@ Secrets 只作為容器環境變數傳入，不會寫入 image、Repository 或 
 | `SERVER_PORT` | `4040` | 容器內服務 port |
 | `HOST_PORT` | `4040` | 非 host network 時的宿主機 port |
 | `HEALTH_TIMEOUT_SECONDS` | `120` | 等待 readiness 的最長秒數 |
+| `MONGODB_CONNECT_TIMEOUT_MS` | `3000` | Mongo socket 連線 timeout |
+| `MONGODB_READ_TIMEOUT_MS` | `5000` | Mongo socket 讀取 timeout |
+| `MONGODB_SERVER_SELECTION_TIMEOUT_MS` | `3000` | 每次操作等待可用 Mongo 節點的上限 |
+| `MONGODB_HEARTBEAT_FREQUENCY_MS` | `5000` | Mongo background topology recheck 間隔 |
+| `MONGODB_MIN_HEARTBEAT_FREQUENCY_MS` | `500` | Mongo background recheck 的最小間隔 |
 
 ## 手動部署
 
