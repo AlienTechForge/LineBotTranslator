@@ -16,6 +16,7 @@ import org.springframework.stereotype.Service;
 import com.linecorp.bot.client.LineBlobClient;
 import com.linecorp.bot.client.MessageContentResponse;
 import com.linetranslate.bot.config.AppConfig;
+import com.linetranslate.bot.logging.SafeLog;
 import com.linetranslate.bot.model.TranslationRecord;
 import com.linetranslate.bot.model.UserProfile;
 import com.linetranslate.bot.repository.TranslationRecordRepository;
@@ -96,7 +97,8 @@ public class ImageTranslationService {
         }
 
         Instant start = Instant.now();
-        log.info("處理用戶 {} 的圖片翻譯請求, 圖片 ID: {}", userId, messageId);
+        log.info("處理圖片翻譯請求: user={}, message={}",
+                SafeLog.user(userId), SafeLog.content(messageId));
 
         try {
             // 獲取用戶資料
@@ -114,7 +116,7 @@ public class ImageTranslationService {
                 // LINE 平台的圖片通常是 JPEG 格式
                 String contentType = "image/jpeg";
                 String imageUrl = minioStorageService.uploadImage(imageBytes, contentType);
-                log.info("圖片已上傳到 MinIO，URL: {}", imageUrl);
+                log.info("圖片已上傳到 MinIO: stored={}", SafeLog.present(imageUrl));
 
                 // 準備OCR識別文字
                 if (ocrService != null) {
@@ -137,15 +139,16 @@ public class ImageTranslationService {
                 // 保存圖片 URL 到 ThreadLocal 變量，以便在保存翻譯記錄時使用
                 ImageContext.setCurrentImageUrl(imageUrl);
             } catch (Exception e) {
-                log.error("圖片處理失敗: {}", e.getMessage(), e);
-                return "圖片處理失敗: " + e.getMessage();
+                log.error("圖片處理失敗: user={}, failure={}",
+                        SafeLog.user(userId), SafeLog.failure(e));
+                return "圖片處理失敗，請稍後再試。";
             }
 
             if (recognizedText == null || recognizedText.trim().isEmpty()) {
                 return "未能識別到圖片中的文字。請確保圖片中包含清晰可見的文字。";
             }
 
-            log.info("識別到的文字: {}", recognizedText);
+            log.info("圖片文字識別完成: content={}", SafeLog.content(recognizedText));
 
             // 檢測文字語言
             String sourceLanguage = languageDetectionService.detectLanguage(recognizedText);
@@ -212,8 +215,9 @@ public class ImageTranslationService {
             return resultBuilder.toString();
 
         } catch (Exception e) {
-            log.error("圖片翻譯失敗: {}", e.getMessage(), e);
-            return "圖片翻譯處理失敗: " + e.getMessage();
+            log.error("圖片翻譯失敗: user={}, failure={}",
+                    SafeLog.user(userId), SafeLog.failure(e));
+            return "圖片翻譯處理失敗，請稍後再試。";
         }
     }
 
@@ -293,7 +297,7 @@ public class ImageTranslationService {
                 .build();
 
         translationRecordRepository.save(record);
-        log.info("已保存用戶 {} 的圖片翻譯記錄", userId);
+        log.info("已保存圖片翻譯記錄: user={}", SafeLog.user(userId));
     }
 
     /**

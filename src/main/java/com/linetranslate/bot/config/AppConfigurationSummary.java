@@ -10,6 +10,7 @@ import org.springframework.stereotype.Component;
 import com.google.cloud.vision.v1.ImageAnnotatorClient;
 import com.linetranslate.bot.service.ai.AiService;
 import com.linetranslate.bot.service.ai.AiServiceFactory;
+import com.linetranslate.bot.logging.SafeLog;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -102,7 +103,7 @@ public class AppConfigurationSummary implements ApplicationListener<ApplicationS
                 log.info("  - Gemini: 未配置");
             }
         } catch (Exception e) {
-            log.warn("無法獲取 AI 模型資訊: {}", e.getMessage());
+            log.warn("無法獲取 AI 模型資訊: failure={}", SafeLog.failure(e));
         }
 
         log.info("---------------------------------------------");

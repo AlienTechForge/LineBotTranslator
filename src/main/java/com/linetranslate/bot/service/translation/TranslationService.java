@@ -16,6 +16,7 @@ import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 
 import com.linetranslate.bot.config.AppConfig;
+import com.linetranslate.bot.logging.SafeLog;
 import com.linetranslate.bot.model.TranslationRecord;
 import com.linetranslate.bot.model.UserProfile;
 import com.linetranslate.bot.repository.TranslationRecordRepository;
@@ -75,7 +76,8 @@ public class TranslationService {
      */
     public String processTranslationRequest(String userId, String text) {
         Instant start = Instant.now();
-        log.info("收到用戶 {} 的翻譯請求: {}", userId, text);
+        log.info("收到翻譯請求: user={}, content={}",
+                SafeLog.user(userId), SafeLog.content(text));
 
         // 檢查用戶是否已存在，如果不存在則創建
         UserProfile userProfile = ensureUserProfileExists(userId);
@@ -103,7 +105,8 @@ public class TranslationService {
                 return "請提供要翻譯成" + languageName + "的文字。";
             }
 
-            log.info("多行格式翻譯，用戶指定翻譯成: {} ({}), 原文: {}", languageName, targetLanguage, sourceText);
+            log.info("多行格式翻譯: languageName={}, target={}, content={}",
+                    languageName, targetLanguage, SafeLog.content(sourceText));
         }
         else if (multilineMatcherCode.find()) {
             sourceText = multilineMatcherCode.group(1).trim();
@@ -120,7 +123,8 @@ public class TranslationService {
                 return "請提供要翻譯成" + languageCode + "的文字。";
             }
 
-            log.info("多行格式翻譯，用戶指定翻譯成: {} ({}), 原文: {}", languageCode, LanguageUtils.toChineseName(targetLanguage), sourceText);
+            log.info("多行格式翻譯: languageCode={}, targetName={}, content={}",
+                    languageCode, LanguageUtils.toChineseName(targetLanguage), SafeLog.content(sourceText));
         }
         // 處理「文本 翻譯成XX文」格式
         else if (text.contains("翻譯成")) {
@@ -139,7 +143,8 @@ public class TranslationService {
                     sourceText += " " + additionalText;
                 }
                 
-                log.info("文本後翻譯格式，用戶指定翻譯成: {} ({}), 原文: {}", languageName, targetLanguage, sourceText);
+                log.info("文本後翻譯格式: languageName={}, target={}, content={}",
+                        languageName, targetLanguage, SafeLog.content(sourceText));
             } else if (textThenTranslationMatcherCode.find()) {
                 // 使用用戶指定的語言代碼
                 sourceText = textThenTranslationMatcherCode.group(1).trim();
@@ -152,7 +157,8 @@ public class TranslationService {
                     sourceText += " " + additionalText;
                 }
                 
-                log.info("文本後翻譯格式，用戶指定翻譯成: {} ({}), 原文: {}", languageCode, LanguageUtils.toChineseName(targetLanguage), sourceText);
+                log.info("文本後翻譯格式: languageCode={}, targetName={}, content={}",
+                        languageCode, LanguageUtils.toChineseName(targetLanguage), SafeLog.content(sourceText));
             }
             // 檢查是否是單行翻譯指令格式 (例如：翻譯成日文 你好)
             else if (text.startsWith("翻譯成")) {
@@ -169,7 +175,8 @@ public class TranslationService {
                         return "請在「翻譯成" + languageName + "」後面輸入要翻譯的文字。";
                     }
 
-                    log.info("用戶指定翻譯成: {} ({}), 原文: {}", languageName, targetLanguage, sourceText);
+                    log.info("指定翻譯: languageName={}, target={}, content={}",
+                            languageName, targetLanguage, SafeLog.content(sourceText));
                 } else if (matcherCode.find()) {
                     // 使用用戶指定的語言代碼
                     String languageCode = matcherCode.group(1);
@@ -180,7 +187,8 @@ public class TranslationService {
                         return "請在「翻譯成" + languageCode + "」後面輸入要翻譯的文字。";
                     }
 
-                    log.info("用戶指定翻譯成: {} ({}), 原文: {}", languageCode, LanguageUtils.toChineseName(targetLanguage), sourceText);
+                    log.info("指定翻譯: languageCode={}, targetName={}, content={}",
+                            languageCode, LanguageUtils.toChineseName(targetLanguage), SafeLog.content(sourceText));
                 } else {
                     // 如果格式不正確，使用默認翻譯處理
                     return handleDefaultTranslation(userId, text, userProfile, start);
@@ -299,7 +307,8 @@ public class TranslationService {
         UserProfile userProfile = ensureUserProfileExists(userId);
 
         String standardLanguageCode = LanguageUtils.toLanguageCode(targetLanguageCode);
-        log.info("快速翻譯請求: 用戶 {}, 目標語言: {}, 文本長度: {}", userId, standardLanguageCode, text.length());
+        log.info("快速翻譯請求: user={}, target={}, content={}",
+                SafeLog.user(userId), standardLanguageCode, SafeLog.content(text));
 
         // 選擇 AI 服務
         AiService aiService = aiServiceFactory.getService(userProfile.getPreferredAiProvider());
@@ -439,7 +448,7 @@ public class TranslationService {
                 .build();
 
         translationRecordRepository.save(record);
-        log.info("已保存用戶 {} 的翻譯記錄", userId);
+        log.info("已保存翻譯記錄: user={}", SafeLog.user(userId));
     }
 
     /**

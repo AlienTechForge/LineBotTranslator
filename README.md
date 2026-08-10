@@ -82,6 +82,8 @@ java -jar target/linebot-translator-0.0.1-SNAPSHOT.jar
 2. **雲端平台**：如 AWS、Google Cloud、Heroku 等
 3. **專用伺服器**：在 VPS 或實體伺服器上運行
 
+維運日誌必須遵守[日誌資料安全政策](docs/logging-data-policy.md)，不得記錄 credentials、使用者原文、OCR 結果、signed URL 或第三方 API payload。
+
 ## 使用指南
 
 ### 文本翻譯

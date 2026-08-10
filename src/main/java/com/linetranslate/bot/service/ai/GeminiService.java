@@ -11,6 +11,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import com.linetranslate.bot.config.GeminiConfig;
+import com.linetranslate.bot.logging.SafeLog;
 
 import java.io.IOException;
 import java.util.concurrent.TimeUnit;
@@ -79,7 +80,7 @@ public class GeminiService implements AiService {
             // 發送請求
             try (Response response = httpClient.newCall(request).execute()) {
                 if (!response.isSuccessful()) {
-                    log.error("Gemini API 請求失敗: {}", response);
+                    log.error("Gemini API 請求失敗: status={}", SafeLog.httpStatus(response.code()));
                     return "翻譯失敗: Gemini API 請求錯誤 " + response.code();
                 }
 
@@ -98,12 +99,12 @@ public class GeminiService implements AiService {
                     }
                 }
 
-                log.error("無法從 Gemini 回應中解析翻譯結果: {}", responseBody);
+                log.error("無法從 Gemini 回應中解析翻譯結果: response={}", SafeLog.content(responseBody));
                 return "翻譯失敗: 無法解析回應";
             }
         } catch (IOException e) {
-            log.error("Gemini 翻譯失敗: {}", e.getMessage());
-            return "翻譯失敗: " + e.getMessage();
+            log.error("Gemini 翻譯失敗: failure={}", SafeLog.failure(e));
+            return "翻譯失敗，請稍後再試。";
         }
     }
 
@@ -153,7 +154,7 @@ public class GeminiService implements AiService {
             // 發送請求
             try (Response response = httpClient.newCall(request).execute()) {
                 if (!response.isSuccessful()) {
-                    log.error("Gemini API 圖片處理請求失敗: {}", response);
+                    log.error("Gemini API 圖片處理請求失敗: status={}", SafeLog.httpStatus(response.code()));
                     return "圖片處理失敗: Gemini API 請求錯誤 " + response.code();
                 }
 
@@ -172,12 +173,12 @@ public class GeminiService implements AiService {
                     }
                 }
 
-                log.error("無法從 Gemini 回應中解析圖片處理結果: {}", responseBody);
+                log.error("無法從 Gemini 回應中解析圖片處理結果: response={}", SafeLog.content(responseBody));
                 return "圖片處理失敗: 無法解析回應";
             }
         } catch (IOException e) {
-            log.error("Gemini 圖片處理失敗: {}", e.getMessage());
-            return "圖片處理失敗: " + e.getMessage();
+            log.error("Gemini 圖片處理失敗: failure={}", SafeLog.failure(e));
+            return "圖片處理失敗，請稍後再試。";
         }
     }
 
@@ -237,7 +238,7 @@ public class GeminiService implements AiService {
             // 發送請求
             try (Response response = httpClient.newCall(request).execute()) {
                 if (!response.isSuccessful()) {
-                    log.error("Gemini API 請求失敗: {}", response);
+                    log.error("Gemini API 請求失敗: status={}", SafeLog.httpStatus(response.code()));
                     return "文本生成失敗: Gemini API 請求錯誤 " + response.code();
                 }
 
@@ -256,12 +257,12 @@ public class GeminiService implements AiService {
                     }
                 }
 
-                log.error("無法從 Gemini 回應中解析生成結果: {}", responseBody);
+                log.error("無法從 Gemini 回應中解析生成結果: response={}", SafeLog.content(responseBody));
                 return "文本生成失敗: 無法解析回應";
             }
         } catch (IOException e) {
-            log.error("Gemini 文本生成失敗: {}", e.getMessage());
-            return "文本生成失敗: " + e.getMessage();
+            log.error("Gemini 文本生成失敗: failure={}", SafeLog.failure(e));
+            return "文本生成失敗，請稍後再試。";
         }
     }
 }

@@ -17,6 +17,7 @@ import com.linetranslate.bot.model.UserProfile;
 import com.linetranslate.bot.repository.UserProfileRepository;
 import com.linetranslate.bot.service.ocr.ImageTranslationService;
 import com.linetranslate.bot.service.translation.TranslationService;
+import com.linetranslate.bot.logging.SafeLog;
 import com.linetranslate.bot.service.line.LineUserProfileService;
 import com.linetranslate.bot.service.AdminService;
 import com.linetranslate.bot.util.LanguageUtils;
@@ -65,7 +66,8 @@ public class LineBotController {
         String userId = event.getSource().getUserId();
         String receivedText = event.getMessage().getText();
 
-        log.info("收到用戶 {} 的文字訊息: {}", userId, receivedText);
+        log.info("收到文字訊息: user={}, content={}",
+                SafeLog.user(userId), SafeLog.content(receivedText));
 
         // 檢查是否是系統命令
         if (receivedText.startsWith("/")) {
@@ -89,16 +91,17 @@ public class LineBotController {
     public Message handleImageMessageEvent(MessageEvent<ImageMessageContent> event) {
         String userId = event.getSource().getUserId();
         String messageId = event.getMessage().getId();
-        log.info("收到用戶 {} 的圖片訊息，ID: {}", userId, messageId);
+        log.info("收到圖片訊息: user={}, message={}",
+                SafeLog.user(userId), SafeLog.content(messageId));
 
         try {
             // 處理圖片翻譯
             String translationResult = imageTranslationService.processImageTranslation(userId, messageId);
             return new TextMessage(translationResult);
         } catch (Exception e) {
-            log.error("圖片翻譯處理失敗: {}", e.getMessage(), e);
-            return new TextMessage("圖片處理失敗: " + e.getMessage() +
-                    "\n請確保圖片清晰且包含可識別的文字，或稍後再試。");
+            log.error("圖片翻譯處理失敗: user={}, failure={}",
+                    SafeLog.user(userId), SafeLog.failure(e));
+            return new TextMessage("圖片處理失敗。\n請確保圖片清晰且包含可識別的文字，或稍後再試。");
         }
     }
 
@@ -107,7 +110,8 @@ public class LineBotController {
      */
     @EventMapping
     public void handleDefaultMessageEvent(Event event) {
-        log.info("收到未處理的事件: {}", event);
+        log.info("收到未處理的事件: type={}",
+                event == null ? "unknown" : event.getClass().getSimpleName());
     }
 
     /**

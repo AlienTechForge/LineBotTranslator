@@ -9,6 +9,7 @@ import org.springframework.stereotype.Component;
 import com.linecorp.bot.model.message.Message;
 import com.linecorp.bot.model.message.TextMessage;
 import com.linetranslate.bot.service.AdminService;
+import com.linetranslate.bot.logging.SafeLog;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -35,7 +36,8 @@ public class AdminController {
      * @return 回應消息
      */
     public Message handleCommand(String userId, String command) {
-        log.info("處理管理員命令: 用戶={}, 命令={}", userId, command);
+        log.info("處理管理員命令: user={}, command={}",
+                SafeLog.user(userId), SafeLog.content(command));
         
         if (!adminService.isAdmin(userId)) {
             return new TextMessage("您沒有管理員權限。");
@@ -212,14 +214,15 @@ public class AdminController {
      * 處理廣播命令
      */
     private Message handleBroadcastCommand(String userId, String message) {
-        log.info("廣播命令: 用戶={}, 消息={}", userId, message);
+        log.info("廣播命令: user={}, content={}",
+                SafeLog.user(userId), SafeLog.content(message));
         
         try {
             int count = adminService.broadcastMessage(message);
             return new TextMessage("📢 廣播成功\n\n已向 " + count + " 個用戶發送消息：\n" + message);
         } catch (Exception e) {
-            log.error("廣播消息失敗", e);
-            return new TextMessage("廣播消息失敗：" + e.getMessage());
+            log.error("廣播消息失敗: failure={}", SafeLog.failure(e));
+            return new TextMessage("廣播消息失敗，請稍後再試。");
         }
     }
     
@@ -227,7 +230,7 @@ public class AdminController {
      * 處理用戶列表命令
      */
     private Message handleUsersCommand(String userId) {
-        log.info("用戶列表命令: 用戶={}", userId);
+        log.info("用戶列表命令: user={}", SafeLog.user(userId));
         
         try {
             List<Map<String, Object>> users = adminService.getRecentUsers(10);
@@ -246,8 +249,8 @@ public class AdminController {
             
             return new TextMessage(sb.toString());
         } catch (Exception e) {
-            log.error("獲取用戶列表失敗", e);
-            return new TextMessage("獲取用戶列表失敗：" + e.getMessage());
+            log.error("獲取用戶列表失敗: failure={}", SafeLog.failure(e));
+            return new TextMessage("獲取用戶列表失敗，請稍後再試。");
         }
     }
     
@@ -255,7 +258,8 @@ public class AdminController {
      * 處理查詢用戶命令
      */
     private Message handleUserCommand(String userId, String targetUserId) {
-        log.info("查詢用戶命令: 管理員={}, 目標用戶={}", userId, targetUserId);
+        log.info("查詢用戶命令: admin={}, target={}",
+                SafeLog.user(userId), SafeLog.user(targetUserId));
         
         try {
             Map<String, Object> userInfo = adminService.getUserInfo(targetUserId);
@@ -281,8 +285,8 @@ public class AdminController {
             
             return new TextMessage(sb.toString());
         } catch (Exception e) {
-            log.error("獲取用戶信息失敗", e);
-            return new TextMessage("獲取用戶信息失敗：" + e.getMessage());
+            log.error("獲取用戶信息失敗: failure={}", SafeLog.failure(e));
+            return new TextMessage("獲取用戶信息失敗，請稍後再試。");
         }
     }
     
