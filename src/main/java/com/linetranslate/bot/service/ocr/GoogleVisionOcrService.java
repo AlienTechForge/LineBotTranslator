@@ -2,6 +2,7 @@ package com.linetranslate.bot.service.ocr;
 
 import com.google.cloud.vision.v1.*;
 import com.google.protobuf.ByteString;
+import com.linetranslate.bot.logging.SafeLog;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -74,12 +75,12 @@ public class GoogleVisionOcrService implements OcrService {
             }
 
             String result = textBuilder.toString();
-            log.info("OCR 識別結果: {}", result);
+            log.info("OCR 識別完成: content={}", SafeLog.content(result));
             return result;
 
         } catch (IOException e) {
-            log.error("OCR 識別失敗: {}", e.getMessage());
-            return "OCR 識別失敗: " + e.getMessage();
+            log.error("OCR 識別失敗: failure={}", SafeLog.failure(e));
+            return "OCR 識別失敗，請稍後再試。";
         }
     }
 
@@ -160,7 +161,7 @@ public class GoogleVisionOcrService implements OcrService {
             return textBlocks;
 
         } catch (IOException e) {
-            log.error("OCR 識別失敗: {}", e.getMessage());
+            log.error("OCR 識別失敗: failure={}", SafeLog.failure(e));
             return textBlocks;
         }
     }

@@ -8,6 +8,7 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
 import com.linetranslate.bot.config.OpenAiConfig;
+import com.linetranslate.bot.logging.SafeLog;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -68,8 +69,8 @@ public class OpenAiService implements AiService {
 
             return response.trim();
         } catch (Exception e) {
-            log.error("OpenAI 翻譯失敗: {}", e.getMessage());
-            return "翻譯失敗: " + e.getMessage();
+            log.error("OpenAI 翻譯失敗: failure={}", SafeLog.failure(e));
+            return "翻譯失敗，請稍後再試。";
         }
     }
 
@@ -121,8 +122,8 @@ public class OpenAiService implements AiService {
 
             return response.trim();
         } catch (Exception e) {
-            log.error("OpenAI 圖片處理失敗: {}", e.getMessage());
-            return "圖片處理失敗: " + e.getMessage();
+            log.error("OpenAI 圖片處理失敗: failure={}", SafeLog.failure(e));
+            return "圖片處理失敗，請稍後再試。";
         }
     }
 
@@ -184,8 +185,8 @@ public class OpenAiService implements AiService {
 
             return response.trim();
         } catch (Exception e) {
-            log.error("OpenAI 文本生成失敗: {}", e.getMessage());
-            return "文本生成失敗: " + e.getMessage();
+            log.error("OpenAI 文本生成失敗: failure={}", SafeLog.failure(e));
+            return "文本生成失敗，請稍後再試。";
         }
     }
 

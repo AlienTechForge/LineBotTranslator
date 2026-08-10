@@ -6,6 +6,7 @@ import org.springframework.stereotype.Service;
 
 import com.linetranslate.bot.service.ai.AiService;
 import com.linetranslate.bot.service.ai.AiServiceFactory;
+import com.linetranslate.bot.logging.SafeLog;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -55,7 +56,7 @@ public class AiLanguageDetectionService {
             log.info("AI 語言檢測結果: {}", languageCode);
             return languageCode;
         } catch (Exception e) {
-            log.error("AI 語言檢測失敗: {}", e.getMessage(), e);
+            log.error("AI 語言檢測失敗: failure={}", SafeLog.failure(e));
             return "unknown";
         }
     }

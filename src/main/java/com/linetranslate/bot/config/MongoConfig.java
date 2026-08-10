@@ -9,6 +9,7 @@ import com.mongodb.ConnectionString;
 import com.mongodb.MongoClientSettings;
 import com.mongodb.client.MongoClient;
 import com.mongodb.client.MongoClients;
+import com.linetranslate.bot.logging.SafeLog;
 import org.bson.Document;
 
 import lombok.extern.slf4j.Slf4j;
@@ -32,7 +33,7 @@ public class MongoConfig extends AbstractMongoClientConfiguration {
     @Override
     public MongoClient mongoClient() {
         try {
-            log.info("嘗試連接到 MongoDB: {}", mongoUri);
+            log.info("嘗試連接到 MongoDB: endpoint={}", SafeLog.endpoint(mongoUri));
             ConnectionString connectionString = new ConnectionString(mongoUri);
             MongoClientSettings mongoClientSettings = MongoClientSettings.builder()
                     .applyConnectionString(connectionString)
@@ -44,8 +45,9 @@ public class MongoConfig extends AbstractMongoClientConfiguration {
             log.info("MongoDB 連接成功");
             return client;
         } catch (Exception e) {
-            log.error("無法連接到 MongoDB: {}", e.getMessage(), e);
-            throw new RuntimeException("MongoDB 連接失敗: " + e.getMessage(), e);
+            log.error("無法連接到 MongoDB: endpoint={}, failure={}",
+                    SafeLog.endpoint(mongoUri), SafeLog.failure(e));
+            throw new IllegalStateException("MongoDB 連接失敗");
         }
     }
 }

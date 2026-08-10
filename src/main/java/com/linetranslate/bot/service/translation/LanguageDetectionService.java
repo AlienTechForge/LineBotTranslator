@@ -17,6 +17,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import com.linetranslate.bot.logging.SafeLog;
+
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.IOException;
@@ -54,7 +56,7 @@ public class LanguageDetectionService {
 
             log.info("語言檢測服務初始化成功");
         } catch (IOException e) {
-            log.error("語言檢測服務初始化失敗: {}", e.getMessage());
+            log.error("語言檢測服務初始化失敗: failure={}", SafeLog.failure(e));
         }
     }
 
@@ -106,7 +108,7 @@ public class LanguageDetectionService {
 
             return detectedLanguage;
         } catch (Exception e) {
-            log.error("語言檢測失敗: {}", e.getMessage());
+            log.error("語言檢測失敗: failure={}", SafeLog.failure(e));
             return "unknown";
         }
     }

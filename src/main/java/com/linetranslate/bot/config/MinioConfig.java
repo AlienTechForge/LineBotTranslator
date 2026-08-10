@@ -4,6 +4,8 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+import com.linetranslate.bot.logging.SafeLog;
+
 import io.minio.MinioClient;
 import lombok.extern.slf4j.Slf4j;
 
@@ -25,7 +27,7 @@ public class MinioConfig {
 
     @Bean
     public MinioClient minioClient() {
-        log.info("初始化 MinIO 客戶端，endpoint: {}", endpoint);
+        log.info("初始化 MinIO 客戶端，endpoint: {}", SafeLog.endpoint(endpoint));
         
         // 檢查 AccessKey 和 SecretKey 是否為空
         if (accessKey == null || accessKey.isEmpty() || secretKey == null || secretKey.isEmpty()) {

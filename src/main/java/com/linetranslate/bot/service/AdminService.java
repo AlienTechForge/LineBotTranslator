@@ -28,6 +28,7 @@ import com.linetranslate.bot.model.TranslationRecord;
 import com.linetranslate.bot.model.UserProfile;
 import com.linetranslate.bot.repository.TranslationRecordRepository;
 import com.linetranslate.bot.repository.UserProfileRepository;
+import com.linetranslate.bot.logging.SafeLog;
 import com.linetranslate.bot.service.line.LineUserProfileService;
 
 import lombok.extern.slf4j.Slf4j;
@@ -97,24 +98,24 @@ public class AdminService {
      * @return 操作結果訊息
      */
     public String addAdmin(String userId) {
-        log.info("嘗試添加管理員: {}", userId);
+        log.info("嘗試添加管理員: user={}", SafeLog.user(userId));
         
         // 檢查用戶 ID 是否有效
         Optional<UserProfile> userOpt = userProfileRepository.findByUserId(userId);
         if (!userOpt.isPresent()) {
-            log.warn("找不到用戶: {}", userId);
+            log.warn("找不到用戶: user={}", SafeLog.user(userId));
             return "添加管理員失敗：找不到用戶 " + userId;
         }
         
         // 檢查用戶是否已經是管理員
         if (adminUsers.contains(userId)) {
-            log.info("用戶 {} 已經是管理員", userId);
+            log.info("用戶已經是管理員: user={}", SafeLog.user(userId));
             return "用戶 " + userId + " 已經是管理員";
         }
         
         // 添加到管理員列表
         adminUsers.add(userId);
-        log.info("成功添加管理員: {}", userId);
+        log.info("成功添加管理員: user={}", SafeLog.user(userId));
         
         UserProfile user = userOpt.get();
         String displayName = user.getDisplayName() != null ? user.getDisplayName() : "用戶" + userId.substring(Math.max(0, userId.length() - 6));
@@ -129,18 +130,18 @@ public class AdminService {
      * @return 操作結果訊息
      */
     public String removeAdmin(String userId) {
-        log.info("嘗試移除管理員: {}", userId);
+        log.info("嘗試移除管理員: user={}", SafeLog.user(userId));
         
         // 檢查用戶 ID 是否有效
         Optional<UserProfile> userOpt = userProfileRepository.findByUserId(userId);
         if (!userOpt.isPresent()) {
-            log.warn("找不到用戶: {}", userId);
+            log.warn("找不到用戶: user={}", SafeLog.user(userId));
             return "移除管理員失敗：找不到用戶 " + userId;
         }
         
         // 檢查用戶是否為管理員
         if (!adminUsers.contains(userId)) {
-            log.info("用戶 {} 不是管理員", userId);
+            log.info("用戶不是管理員: user={}", SafeLog.user(userId));
             return "用戶 " + userId + " 不是管理員";
         }
         
@@ -152,7 +153,7 @@ public class AdminService {
         
         // 從管理員列表中移除
         adminUsers.remove(userId);
-        log.info("成功移除管理員: {}", userId);
+        log.info("成功移除管理員: user={}", SafeLog.user(userId));
         
         UserProfile user = userOpt.get();
         String displayName = user.getDisplayName() != null ? user.getDisplayName() : "用戶" + userId.substring(Math.max(0, userId.length() - 6));
@@ -167,19 +168,18 @@ public class AdminService {
      * @return 發送成功的用戶數量
      */
     public int broadcastMessage(String message) {
-        log.info("開始廣播消息: {}", message);
+        log.info("開始廣播消息: content={}", SafeLog.content(message));
         log.info("廣播測試模式: {}", broadcastTestMode ? "已啟用" : "未啟用");
         
         // 獲取所有用戶
         List<UserProfile> allUsers = userProfileRepository.findAll();
         log.info("總用戶數: {}", allUsers.size());
         
-        // 輸出所有用戶的 ID 和暱稱，以便調試
+        // 只輸出不可逆的使用者指紋與顯示名稱長度
         log.info("所有用戶列表：");
         for (UserProfile user : allUsers) {
-            log.info("- 用戶 ID: {}, 暱稱: {}", 
-                    user.getUserId() != null ? user.getUserId() : "null", 
-                    user.getDisplayName() != null ? user.getDisplayName() : "null");
+            log.info("- user={}, displayName={}",
+                    SafeLog.user(user.getUserId()), SafeLog.content(user.getDisplayName()));
         }
         
         // 過濾掉無效的用戶 ID
@@ -193,23 +193,23 @@ public class AdminService {
         
         for (UserProfile user : validUsers) {
             try {
-                log.info("嘗試向用戶 {} (暱稱: {}) 發送廣播消息", 
-                        user.getUserId(), 
-                        user.getDisplayName() != null ? user.getDisplayName() : "無暱稱");
+                log.info("嘗試發送廣播消息: user={}, displayName={}",
+                        SafeLog.user(user.getUserId()), SafeLog.content(user.getDisplayName()));
                 
                 if (broadcastTestMode) {
                     // 測試模式，不實際發送消息
-                    log.info("測試模式啟用，模擬向用戶 {} 發送廣播消息成功", user.getUserId());
+                    log.info("測試模式啟用，模擬廣播成功: user={}", SafeLog.user(user.getUserId()));
                     successCount++;
                 } else {
                     // 使用 LINE Messaging API 實際發送消息
                     PushMessage pushMessage = new PushMessage(user.getUserId(), textMessage);
                     lineMessagingClient.pushMessage(pushMessage).get();
-                    log.info("向用戶 {} 發送廣播消息成功", user.getUserId());
+                    log.info("廣播消息發送成功: user={}", SafeLog.user(user.getUserId()));
                     successCount++;
                 }
             } catch (Exception e) {
-                log.error("向用戶 {} 發送廣播消息時發生錯誤: {}", user.getUserId(), e.getMessage(), e);
+                log.error("廣播消息發送失敗: user={}, failure={}",
+                        SafeLog.user(user.getUserId()), SafeLog.failure(e));
             }
         }
         
@@ -259,11 +259,11 @@ public class AdminService {
      * @return 用戶詳細信息
      */
     public Map<String, Object> getUserInfo(String userId) {
-        log.info("獲取用戶詳細信息: {}", userId);
+        log.info("獲取用戶詳細信息: user={}", SafeLog.user(userId));
         
         Optional<UserProfile> userOpt = userProfileRepository.findByUserId(userId);
         if (!userOpt.isPresent()) {
-            log.warn("找不到用戶: {}", userId);
+            log.warn("找不到用戶: user={}", SafeLog.user(userId));
             return null;
         }
         
@@ -474,8 +474,8 @@ public class AdminService {
             log.info("已將中文翻譯默認目標語言從 {} 修改為 {}", oldValue, language);
             return "✅ 已將中文翻譯默認目標語言設置為: " + language;
         } catch (Exception e) {
-            log.error("設置中文翻譯默認目標語言失敗", e);
-            return "❌ 設置失敗: " + e.getMessage();
+            log.error("設置中文翻譯默認目標語言失敗: failure={}", SafeLog.failure(e));
+            return "❌ 設置失敗，請稍後再試";
         }
     }
     
@@ -496,8 +496,8 @@ public class AdminService {
             log.info("已將其他語言翻譯默認目標語言從 {} 修改為 {}", oldValue, language);
             return "✅ 已將其他語言翻譯默認目標語言設置為: " + language;
         } catch (Exception e) {
-            log.error("設置其他語言翻譯默認目標語言失敗", e);
-            return "❌ 設置失敗: " + e.getMessage();
+            log.error("設置其他語言翻譯默認目標語言失敗: failure={}", SafeLog.failure(e));
+            return "❌ 設置失敗，請稍後再試";
         }
     }
     
@@ -522,8 +522,8 @@ public class AdminService {
             log.info("已將默認 AI 提供者從 {} 修改為 {}", oldValue, provider.toLowerCase());
             return "✅ 已將默認 AI 提供者設置為: " + provider.toLowerCase();
         } catch (Exception e) {
-            log.error("設置默認 AI 提供者失敗", e);
-            return "❌ 設置失敗: " + e.getMessage();
+            log.error("設置默認 AI 提供者失敗: failure={}", SafeLog.failure(e));
+            return "❌ 設置失敗，請稍後再試";
         }
     }
     
@@ -554,8 +554,8 @@ public class AdminService {
             log.info("已將 OpenAI 默認模型從 {} 修改為 {}", oldValue, model);
             return "✅ 已將 OpenAI 默認模型設置為: " + model;
         } catch (Exception e) {
-            log.error("設置 OpenAI 默認模型失敗", e);
-            return "❌ 設置失敗: " + e.getMessage();
+            log.error("設置 OpenAI 默認模型失敗: failure={}", SafeLog.failure(e));
+            return "❌ 設置失敗，請稍後再試";
         }
     }
     
@@ -586,8 +586,8 @@ public class AdminService {
             log.info("已將 Gemini 默認模型從 {} 更改為 {}", oldValue, model);
             return "✅ 已將 Gemini 默認模型設置為: " + model;
         } catch (Exception e) {
-            log.error("設置 Gemini 默認模型失敗", e);
-            return "❌ 設置失敗: " + e.getMessage();
+            log.error("設置 Gemini 默認模型失敗: failure={}", SafeLog.failure(e));
+            return "❌ 設置失敗，請稍後再試";
         }
     }
     
@@ -608,8 +608,8 @@ public class AdminService {
             log.info("已將 OCR 功能從 {} 更改為 {}", oldValue, enabled);
             return "✅ 已" + (enabled ? "啟用" : "禁用") + " OCR 功能";
         } catch (Exception e) {
-            log.error("設置 OCR 功能失敗", e);
-            return "❌ 設置失敗: " + e.getMessage();
+            log.error("設置 OCR 功能失敗: failure={}", SafeLog.failure(e));
+            return "❌ 設置失敗，請稍後再試";
         }
     }
     
@@ -656,8 +656,8 @@ public String getApiUsageStatsByMonth(String month) {
         return calculateApiUsageStats(records, month);
         
     } catch (Exception e) {
-        log.error("獲取 API 使用量和費用統計失敗", e);
-        return "❌ 獲取 API 使用量和費用統計失敗: " + e.getMessage();
+        log.error("獲取 API 使用量和費用統計失敗: failure={}", SafeLog.failure(e));
+        return "❌ 獲取 API 使用量和費用統計失敗，請稍後再試";
     }
 }
 
@@ -685,8 +685,8 @@ public String getApiUsageStatsByProvider(String provider) {
         return calculateApiUsageStats(records, provider + " 提供者");
         
     } catch (Exception e) {
-        log.error("獲取 API 使用量和費用統計失敗", e);
-        return "❌ 獲取 API 使用量和費用統計失敗: " + e.getMessage();
+        log.error("獲取 API 使用量和費用統計失敗: failure={}", SafeLog.failure(e));
+        return "❌ 獲取 API 使用量和費用統計失敗，請稍後再試";
     }
 }
 
@@ -761,8 +761,8 @@ public String getApiUsageSummary() {
         return summary.toString();
         
     } catch (Exception e) {
-        log.error("獲取 API 使用量和費用摘要失敗", e);
-        return "❌ 獲取 API 使用量和費用摘要失敗: " + e.getMessage();
+        log.error("獲取 API 使用量和費用摘要失敗: failure={}", SafeLog.failure(e));
+        return "❌ 獲取 API 使用量和費用摘要失敗，請稍後再試";
     }
 }
 

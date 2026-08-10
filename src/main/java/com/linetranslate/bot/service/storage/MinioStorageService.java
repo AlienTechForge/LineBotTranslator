@@ -9,6 +9,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import com.linetranslate.bot.logging.SafeLog;
+
 import io.minio.BucketExistsArgs;
 import io.minio.GetPresignedObjectUrlArgs;
 import io.minio.MakeBucketArgs;
@@ -38,7 +40,8 @@ public class MinioStorageService {
         try {
             initializeBucket();
         } catch (Exception e) {
-            log.error("初始化 MinIO 存儲桶失敗，但應用程式將繼續運行: {}", e.getMessage());
+            log.error("初始化 MinIO 存儲桶失敗，但應用程式將繼續運行: failure={}",
+                    SafeLog.failure(e));
             // 不拋出異常，讓應用程式繼續運行
         }
     }
@@ -56,8 +59,8 @@ public class MinioStorageService {
                 log.info("MinIO 存儲桶已存在: {}", bucketName);
             }
         } catch (Exception e) {
-            log.error("初始化 MinIO 存儲桶失敗: {}", e.getMessage(), e);
-            throw new RuntimeException("初始化 MinIO 存儲桶失敗", e);
+            log.error("初始化 MinIO 存儲桶失敗: failure={}", SafeLog.failure(e));
+            throw new IllegalStateException("初始化 MinIO 存儲桶失敗");
         }
     }
 
@@ -89,12 +92,25 @@ public class MinioStorageService {
             }
             
             String imageUrl = getPresignedUrl(objectName);
-            log.info("圖片上傳成功，URL: {}", imageUrl);
+            log.info("圖片上傳成功: object={}", objectName);
             return imageUrl;
         } catch (Exception e) {
-            log.error("上傳圖片到 MinIO 失敗: {}", e.getMessage(), e);
+            log.error("上傳圖片到 MinIO 失敗: failure={}", SafeLog.failure(e));
             // 返回 null 而不是拋出異常，讓應用程式能夠繼續運行
             return null;
+        }
+    }
+
+    /** Performs a read-only bucket accessibility check for development diagnostics and health. */
+    public boolean isAvailable() {
+        if (minioClient == null) {
+            return false;
+        }
+        try {
+            return minioClient.bucketExists(BucketExistsArgs.builder().bucket(bucketName).build());
+        } catch (Exception exception) {
+            log.warn("MinIO availability check failed: failure={}", SafeLog.failure(exception));
+            return false;
         }
     }
 
@@ -121,7 +137,7 @@ public class MinioStorageService {
                             .expiry(7, TimeUnit.DAYS)
                             .build());
         } catch (Exception e) {
-            log.error("獲取預簽名 URL 失敗: {}", e.getMessage(), e);
+            log.error("獲取預簽名 URL 失敗: failure={}", SafeLog.failure(e));
             // 返回一個臨時 URL，讓應用程式能夠繼續運行
             return "http://192.168.0.10:9000/" + bucketName + "/" + objectName;
         }

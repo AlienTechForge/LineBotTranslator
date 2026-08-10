@@ -10,6 +10,7 @@ import com.linecorp.bot.model.profile.UserProfileResponse;
 import com.linetranslate.bot.model.UserProfile;
 import com.linetranslate.bot.repository.TranslationRecordRepository;
 import com.linetranslate.bot.repository.UserProfileRepository;
+import com.linetranslate.bot.logging.SafeLog;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -54,7 +55,7 @@ public class LineUserProfileService {
 
                 userProfile.setStatusMessage(lineProfile.getStatusMessage());
                 userProfileRepository.save(userProfile);
-                log.info("已更新用戶 {} 的資料", userId);
+                log.info("已更新用戶資料: user={}", SafeLog.user(userId));
             } else {
                 // 創建新用戶資料
                 UserProfile.UserProfileBuilder builder = UserProfile.builder()
@@ -72,10 +73,11 @@ public class LineUserProfileService {
 
                 UserProfile newProfile = builder.build();
                 userProfileRepository.save(newProfile);
-                log.info("已創建用戶 {} 的資料", userId);
+                log.info("已創建用戶資料: user={}", SafeLog.user(userId));
             }
         } catch (Exception e) {
-            log.error("同步用戶 {} 的資料失敗: {}", userId, e.getMessage());
+            log.error("同步用戶資料失敗: user={}, failure={}",
+                    SafeLog.user(userId), SafeLog.failure(e));
         }
     }
 
@@ -96,7 +98,7 @@ public class LineUserProfileService {
                 syncUserProfile(userId);
                 return userProfileRepository.findByUserId(userId).orElse(null);
             } catch (Exception e) {
-                log.error("無法獲取用戶資料: {}", e.getMessage());
+            log.error("無法獲取用戶資料: failure={}", SafeLog.failure(e));
                 return null;
             }
         }
@@ -123,7 +125,8 @@ public class LineUserProfileService {
             userProfile.setDisplayName(displayName.trim());
             userProfileRepository.save(userProfile);
             
-            log.info("已將用戶 {} 的顯示名稱從 '{}' 更改為 '{}'", userId, oldDisplayName, displayName.trim());
+                log.info("已更改用戶顯示名稱: user={}, old={}, new={}",
+                        SafeLog.user(userId), SafeLog.content(oldDisplayName), SafeLog.content(displayName.trim()));
             return "✅ 已將用戶 " + userId + " 的顯示名稱設置為: " + displayName.trim();
         } else {
             // 如果用戶不存在，嘗試先創建用戶資料
@@ -134,11 +137,13 @@ public class LineUserProfileService {
                         .build();
                 userProfileRepository.save(newProfile);
                 
-                log.info("已為用戶 {} 創建資料並設置顯示名稱為 '{}'", userId, displayName.trim());
+                log.info("已創建用戶資料並設置顯示名稱: user={}, displayName={}",
+                        SafeLog.user(userId), SafeLog.content(displayName.trim()));
                 return "✅ 已為用戶 " + userId + " 創建資料並設置顯示名稱為: " + displayName.trim();
             } catch (Exception e) {
-                log.error("設置用戶 {} 的顯示名稱失敗: {}", userId, e.getMessage());
-                return "❌ 設置顯示名稱失敗: " + e.getMessage();
+                log.error("設置用戶顯示名稱失敗: user={}, failure={}",
+                        SafeLog.user(userId), SafeLog.failure(e));
+                return "❌ 設置顯示名稱失敗，請稍後再試。";
             }
         }
     }
@@ -172,7 +177,7 @@ public class LineUserProfileService {
                         displayName = refreshedProfile.get().getDisplayName();
                     }
                 } catch (Exception e) {
-                    log.error("重新同步用戶資料失敗: {}", e.getMessage());
+            log.error("重新同步用戶資料失敗: failure={}", SafeLog.failure(e));
                 }
                 
                 // 如果仍然為 null，使用預設值
