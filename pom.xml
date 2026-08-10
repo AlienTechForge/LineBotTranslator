@@ -5,7 +5,7 @@
 	<parent>
 		<groupId>org.springframework.boot</groupId>
 		<artifactId>spring-boot-starter-parent</artifactId>
-		<version>3.4.3</version>
+		<version>4.1.0</version>
 		<relativePath/> <!-- lookup parent from repository -->
 	</parent>
 	<groupId>com.linetranslate</groupId>
@@ -16,6 +16,7 @@
 
 	<properties>
 		<java.version>17</java.version>
+		<line.bot.sdk.version>10.1.0</line.bot.sdk.version>
 	</properties>
 
 	<dependencies>
@@ -30,11 +31,15 @@
 		</dependency>
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
-			<artifactId>spring-boot-starter-web</artifactId>
+			<artifactId>spring-boot-starter-webmvc</artifactId>
 		</dependency>
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-actuator</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-cache</artifactId>
 		</dependency>
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
@@ -46,13 +51,18 @@
 		<!-- LINE Bot SDK -->
 		<dependency>
 			<groupId>com.linecorp.bot</groupId>
-			<artifactId>line-bot-spring-boot</artifactId>
-			<version>6.0.0</version>
+			<artifactId>line-bot-spring-boot-webmvc</artifactId>
+			<version>${line.bot.sdk.version}</version>
 		</dependency>
 		<dependency>
 			<groupId>com.linecorp.bot</groupId>
-			<artifactId>line-bot-model</artifactId>
-			<version>6.0.0</version>
+			<artifactId>line-bot-spring-boot-client</artifactId>
+			<version>${line.bot.sdk.version}</version>
+		</dependency>
+		<dependency>
+			<groupId>com.linecorp.bot</groupId>
+			<artifactId>line-bot-spring-boot-handler</artifactId>
+			<version>${line.bot.sdk.version}</version>
 		</dependency>
 
 		<!-- OpenAI API 客戶端 -->
@@ -135,7 +145,12 @@
 		<!-- 測試 -->
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
-			<artifactId>spring-boot-starter-test</artifactId>
+			<artifactId>spring-boot-starter-webmvc-test</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-restclient-test</artifactId>
 			<scope>test</scope>
 		</dependency>
 	</dependencies>

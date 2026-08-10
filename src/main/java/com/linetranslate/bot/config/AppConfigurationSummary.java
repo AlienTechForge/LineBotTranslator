@@ -1,6 +1,6 @@
 package com.linetranslate.bot.config;
 
-import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.event.ApplicationStartedEvent;
 import org.springframework.context.ApplicationListener;
@@ -40,12 +40,11 @@ public class AppConfigurationSummary implements ApplicationListener<ApplicationS
     private final AiServiceFactory aiServiceFactory;
     private final Environment environment;
 
-    @Autowired
     public AppConfigurationSummary(
-            @Autowired(required = false) ImageAnnotatorClient visionClient,
+            ObjectProvider<ImageAnnotatorClient> visionClientProvider,
             AiServiceFactory aiServiceFactory,
             Environment environment) {
-        this.visionClient = Optional.ofNullable(visionClient);
+        this.visionClient = Optional.ofNullable(visionClientProvider.getIfAvailable());
         this.aiServiceFactory = aiServiceFactory;
         this.environment = environment;
     }

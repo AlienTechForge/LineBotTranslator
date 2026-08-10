@@ -1,6 +1,7 @@
 package com.linetranslate.bot.config;
 
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.data.mongodb.config.AbstractMongoClientConfiguration;
 import org.springframework.data.mongodb.repository.config.EnableMongoRepositories;
@@ -31,6 +32,7 @@ public class MongoConfig extends AbstractMongoClientConfiguration {
     }
 
     @Override
+    @Bean
     public MongoClient mongoClient() {
         try {
             log.info("嘗試連接到 MongoDB: endpoint={}", SafeLog.endpoint(mongoUri));

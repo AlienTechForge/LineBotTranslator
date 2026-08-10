@@ -13,11 +13,11 @@
 
 ## 技術架構
 
-- **後端框架**：Spring Boot 3.x
+- **後端框架**：Spring Boot 4.1（Java 17+）
 - **數據庫**：MongoDB
 - **翻譯引擎**：OpenAI GPT-4o、Google Gemini
 - **OCR 技術**：Google Cloud Vision API
-- **消息平台**：LINE Messaging API
+- **消息平台**：LINE Messaging API（LINE Bot SDK for Java 10.1）
 
 ## 環境配置
 

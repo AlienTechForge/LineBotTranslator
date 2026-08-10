@@ -1,6 +1,6 @@
 package com.linetranslate.bot.service.ai;
 
-import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -19,11 +19,12 @@ public class AiServiceFactory {
     private final GeminiService geminiService;
     private final String defaultProvider;
 
-    @Autowired
     public AiServiceFactory(
-            @Autowired(required = false) OpenAiService openAiService,
-            @Autowired(required = false) GeminiService geminiService,
+            ObjectProvider<OpenAiService> openAiServiceProvider,
+            ObjectProvider<GeminiService> geminiServiceProvider,
             @Value("${app.ai.default-provider:openai}") String defaultProvider) {
+        OpenAiService openAiService = openAiServiceProvider.getIfAvailable();
+        GeminiService geminiService = geminiServiceProvider.getIfAvailable();
         this.openAiService = openAiService;
         this.geminiService = geminiService;
 
