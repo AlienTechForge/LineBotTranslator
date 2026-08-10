@@ -35,6 +35,13 @@ LINE_BOT_CHANNEL_SECRET=your_line_bot_channel_secret
 MONGODB_URI=mongodb://localhost:27017/linebot_translator
 MONGODB_DATABASE=linebot_translator
 
+# 有界翻譯快取與安全失效版本
+TRANSLATION_CACHE_TTL=PT30M
+TRANSLATION_CACHE_MAX_ENTRIES=1000
+TRANSLATION_STYLE=neutral
+TRANSLATION_GLOSSARY_VERSION=none
+TRANSLATION_PROMPT_VERSION=translation-v1
+
 # OpenAI 配置
 OPENAI_API_KEY=your_openai_api_key
 OPENAI_MODEL_NAME=gpt-4o
@@ -53,6 +60,8 @@ AI_DEFAULT_PROVIDER=openai
 # 管理員配置
 ADMIN_USERS=U123456789abcdef,U987654321abcdef
 ```
+
+翻譯快取採 `expire-after-write` TTL；超過 `TRANSLATION_CACHE_MAX_ENTRIES` 時，Caffeine 會依使用頻率與近期性淘汰項目。失敗、safety blocked、fallback 與 route mismatch 不會寫入；變更 style、glossary 或 prompt version 會自然切換到新的 cache identity。
 
 ## 建立與運行
 
