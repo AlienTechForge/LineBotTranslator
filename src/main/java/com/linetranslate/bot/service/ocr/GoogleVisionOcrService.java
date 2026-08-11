@@ -93,83 +93,94 @@ public class GoogleVisionOcrService implements OcrService {
 
     @Override
     public List<TextBlock> recognizeTextWithLocations(InputStream imageStream) {
-        List<TextBlock> textBlocks = new ArrayList<>();
-
         if (visionClient == null) {
-            log.error("Google Vision 客戶端未初始化");
-            return textBlocks;
+            throw new OcrProcessingException("Google Vision client is unavailable");
         }
 
         try {
-            // 讀取圖片數據
             byte[] imageData = imageStream.readAllBytes();
             ByteString imgBytes = ByteString.copyFrom(imageData);
-
-            // 創建圖片
             Image image = Image.newBuilder().setContent(imgBytes).build();
-
-            // 設置特徵類型為文本檢測
-            Feature feature = Feature.newBuilder().setType(Feature.Type.TEXT_DETECTION).build();
-
-            // 創建請求
+            Feature feature = Feature.newBuilder()
+                    .setType(Feature.Type.DOCUMENT_TEXT_DETECTION)
+                    .build();
             AnnotateImageRequest request = AnnotateImageRequest.newBuilder()
                     .addFeatures(feature)
                     .setImage(image)
                     .build();
-
-            // 執行 OCR 請求
             BatchAnnotateImagesResponse response = visionClient.batchAnnotateImages(List.of(request));
-
-            // 提取文本塊
-            if (response.getResponsesCount() > 0) {
-                // 跳過第一個結果，因為它是整個圖片的文本
-                boolean isFirst = true;
-
-                for (EntityAnnotation annotation : response.getResponses(0).getTextAnnotationsList()) {
-                    if (isFirst) {
-                        isFirst = false;
-                        continue;
-                    }
-
-                    // 獲取位置信息
-                    BoundingPoly boundingPoly = annotation.getBoundingPoly();
-
-                    // 計算邊界框的坐標
-                    int minX = Integer.MAX_VALUE;
-                    int minY = Integer.MAX_VALUE;
-                    int maxX = Integer.MIN_VALUE;
-                    int maxY = Integer.MIN_VALUE;
-
-                    for (Vertex vertex : boundingPoly.getVerticesList()) {
-                        minX = Math.min(minX, vertex.getX());
-                        minY = Math.min(minY, vertex.getY());
-                        maxX = Math.max(maxX, vertex.getX());
-                        maxY = Math.max(maxY, vertex.getY());
-                    }
-
-                    int width = maxX - minX;
-                    int height = maxY - minY;
-
-                    // 創建文本塊
-                    TextBlock textBlock = new TextBlock(
-                            annotation.getDescription(),
-                            minX,
-                            minY,
-                            width,
-                            height,
-                            annotation.getScore()
-                    );
-
-                    textBlocks.add(textBlock);
-                }
+            if (response.getResponsesCount() == 0) {
+                return List.of();
+            }
+            var annotationResponse = response.getResponses(0);
+            if (annotationResponse.hasError()) {
+                throw new OcrProcessingException("Google Vision returned an OCR error");
             }
 
+            List<TextBlock> textBlocks = new ArrayList<>();
+            TextAnnotation fullText = annotationResponse.getFullTextAnnotation();
+            for (var page : fullText.getPagesList()) {
+                for (var block : page.getBlocksList()) {
+                    for (var paragraph : block.getParagraphsList()) {
+                        String text = paragraph.getWordsList().stream()
+                                .map(word -> word.getSymbolsList().stream()
+                                        .map(symbol -> symbol.getText())
+                                        .reduce("", String::concat))
+                                .filter(value -> !value.isBlank())
+                                .reduce((left, right) -> left + " " + right)
+                                .orElse("");
+                        TextBlock located = located(text, paragraph.getBoundingBox(), paragraph.getConfidence());
+                        if (located != null) {
+                            textBlocks.add(located);
+                        }
+                    }
+                }
+            }
+            if (textBlocks.isEmpty()) {
+                boolean fullImageAnnotation = true;
+                for (EntityAnnotation annotation : annotationResponse.getTextAnnotationsList()) {
+                    if (fullImageAnnotation) {
+                        fullImageAnnotation = false;
+                        continue;
+                    }
+                    TextBlock located = located(
+                            annotation.getDescription(), annotation.getBoundingPoly(), annotation.getScore());
+                    if (located != null) {
+                        textBlocks.add(located);
+                    }
+                }
+            }
             log.info("識別到 {} 個文本塊", textBlocks.size());
-            return textBlocks;
-
+            return OcrReadingOrder.sort(textBlocks);
         } catch (IOException e) {
             log.error("OCR 識別失敗: failure={}", SafeLog.failure(e));
-            return textBlocks;
+            throw new OcrProcessingException("Google Vision could not read image bytes", e);
+        } catch (RuntimeException failure) {
+            if (failure instanceof OcrProcessingException ocrFailure) {
+                throw ocrFailure;
+            }
+            throw new OcrProcessingException("Google Vision located OCR failed", failure);
         }
+    }
+
+    private static TextBlock located(String text, BoundingPoly boundingPoly, float confidence) {
+        if (text == null || text.isBlank() || boundingPoly == null || boundingPoly.getVerticesCount() == 0) {
+            return null;
+        }
+        int minX = Integer.MAX_VALUE;
+        int minY = Integer.MAX_VALUE;
+        int maxX = Integer.MIN_VALUE;
+        int maxY = Integer.MIN_VALUE;
+        for (Vertex vertex : boundingPoly.getVerticesList()) {
+            minX = Math.min(minX, vertex.getX());
+            minY = Math.min(minY, vertex.getY());
+            maxX = Math.max(maxX, vertex.getX());
+            maxY = Math.max(maxY, vertex.getY());
+        }
+        int width = maxX - minX;
+        int height = maxY - minY;
+        return width <= 0 || height <= 0
+                ? null
+                : new TextBlock(text.strip(), minX, minY, width, height, confidence);
     }
 }

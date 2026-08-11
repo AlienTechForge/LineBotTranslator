@@ -1,5 +1,6 @@
 package com.linetranslate.bot.service.ocr;
 
+import java.net.URI;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.Optional;
@@ -82,13 +83,36 @@ public class ImageTranslationService {
     private TranslationResponse render(ImageTranslationPipelineResult result) {
         String recognizedText = result.context().recognizedText();
         TranslationWorkflowResult translation = result.translation();
-        String displayText = "【圖片文字辨識結果】\n\n"
-                + "識別的文字：\n" + recognizedText + "\n\n"
-                + "翻譯結果：\n" + translation.translatedText() + "\n\n"
-                + "[偵測到: " + LanguageUtils.toChineseName(translation.sourceLanguage())
-                + " | 翻譯成: " + LanguageUtils.toChineseName(translation.targetLanguage())
-                + "]";
-        return TranslationResponse.success(translation, displayText);
+        StringBuilder display = new StringBuilder();
+        Optional<String> renderedImageUrl = result.renderedImage().url()
+                .filter(ImageTranslationService::isSafeRenderedImageUrl);
+        renderedImageUrl.ifPresent(url -> display.append("【翻譯圖片（連結 1 小時內有效）】\n")
+                        .append(url)
+                        .append("\n\n"));
+        display.append("【圖片文字辨識結果】\n\n")
+                .append("識別的文字：\n").append(recognizedText).append("\n\n")
+                .append("翻譯結果：\n").append(translation.translatedText()).append("\n\n");
+        if (result.lowConfidenceBlockCount() > 0) {
+            display.append("⚠️ ").append(result.lowConfidenceBlockCount())
+                    .append(renderedImageUrl.isPresent()
+                            ? " 個低信心區塊已保留原文並以橘框標示。\n\n"
+                            : " 個低信心區塊未覆寫，已保留原文。\n\n");
+        }
+        display.append("[偵測到: ").append(LanguageUtils.toChineseName(translation.sourceLanguage()))
+                .append(" | 翻譯成: ").append(LanguageUtils.toChineseName(translation.targetLanguage()))
+                .append("]");
+        return TranslationResponse.success(translation, display.toString());
+    }
+
+    private static boolean isSafeRenderedImageUrl(String value) {
+        try {
+            URI uri = URI.create(value);
+            return "https".equalsIgnoreCase(uri.getScheme())
+                    && uri.getHost() != null
+                    && uri.getUserInfo() == null;
+        } catch (IllegalArgumentException ignored) {
+            return false;
+        }
     }
 
     private String renderFailure(String userId, ImageTranslationOutcome.Failure failure) {

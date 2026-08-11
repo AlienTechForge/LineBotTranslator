@@ -2,9 +2,11 @@ package com.linetranslate.bot.service.ocr;
 
 import java.io.InputStream;
 import java.util.Base64;
+import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 
@@ -47,7 +49,33 @@ public class ImageTranslationPipeline {
     private final UserPreferencesModule userPreferencesModule;
     private final MessagingApiBlobClient messagingApiBlobClient;
     private final MinioStorageService minioStorageService;
+    private final ImageInputValidator imageInputValidator;
+    private final ImageTranslationOverlayRenderer overlayRenderer;
+    private final ImageTranslationProperties properties;
 
+    @Autowired
+    public ImageTranslationPipeline(
+            ObjectProvider<OcrService> ocrServiceProvider,
+            TranslationWorkflowModule translationWorkflowModule,
+            AiProviderExecutionModule aiProviderExecutionModule,
+            UserPreferencesModule userPreferencesModule,
+            MessagingApiBlobClient messagingApiBlobClient,
+            MinioStorageService minioStorageService,
+            ImageInputValidator imageInputValidator,
+            ImageTranslationOverlayRenderer overlayRenderer,
+            ImageTranslationProperties properties) {
+        this.ocrService = ocrServiceProvider.getIfAvailable();
+        this.translationWorkflowModule = translationWorkflowModule;
+        this.aiProviderExecutionModule = aiProviderExecutionModule;
+        this.userPreferencesModule = userPreferencesModule;
+        this.messagingApiBlobClient = messagingApiBlobClient;
+        this.minioStorageService = minioStorageService;
+        this.imageInputValidator = imageInputValidator;
+        this.overlayRenderer = overlayRenderer;
+        this.properties = properties;
+    }
+
+    /** Compatibility constructor for focused workflow tests. */
     public ImageTranslationPipeline(
             ObjectProvider<OcrService> ocrServiceProvider,
             TranslationWorkflowModule translationWorkflowModule,
@@ -55,19 +83,23 @@ public class ImageTranslationPipeline {
             UserPreferencesModule userPreferencesModule,
             MessagingApiBlobClient messagingApiBlobClient,
             MinioStorageService minioStorageService) {
-        this.ocrService = ocrServiceProvider.getIfAvailable();
-        this.translationWorkflowModule = translationWorkflowModule;
-        this.aiProviderExecutionModule = aiProviderExecutionModule;
-        this.userPreferencesModule = userPreferencesModule;
-        this.messagingApiBlobClient = messagingApiBlobClient;
-        this.minioStorageService = minioStorageService;
+        this(
+                ocrServiceProvider,
+                translationWorkflowModule,
+                aiProviderExecutionModule,
+                userPreferencesModule,
+                messagingApiBlobClient,
+                minioStorageService,
+                ImageInputValidator.trustedTestSeam(ImageTranslationProperties.defaults()),
+                new ImageTranslationOverlayRenderer(),
+                ImageTranslationProperties.defaults());
     }
 
     public ImageTranslationOutcome execute(ImageTranslationRequest request) {
         if (request == null) {
             throw new IllegalArgumentException("Image translation request is required");
         }
-        DownloadedImage image;
+        ValidatedImage image;
         try {
             image = download(request.messageId());
         } catch (InterruptedException interrupted) {
@@ -80,28 +112,29 @@ public class ImageTranslationPipeline {
         }
 
         ImageStorageResult storage = store(image);
-        String recognizedText;
+        OcrRecognition recognition;
         try {
-            recognizedText = recognize(request, image);
+            recognition = recognize(request, image);
         } catch (RuntimeException failure) {
             log.warn("Image recognition failed: user={}, failure={}",
                     SafeLog.user(request.userProfile().getUserId()), SafeLog.failure(failure));
             return new ImageTranslationOutcome.Failure(ImageTranslationFailureStage.RECOGNITION);
         }
-        if (recognizedText == null || recognizedText.isBlank()) {
+        String translatableText = recognition.reliableText(properties.lowConfidenceThreshold());
+        if (translatableText.isBlank()) {
             return new ImageTranslationOutcome.Failure(ImageTranslationFailureStage.NO_TEXT);
         }
 
         ImageTranslationContext context = new ImageTranslationContext(
-                image,
+                new DownloadedImage(image.bytes(), image.contentType()),
                 storage,
-                recognizedText,
-                requestedTargetLanguage(recognizedText));
+                recognition.text(),
+                requestedTargetLanguage(translatableText));
         TranslationWorkflowOutcome workflowOutcome;
         try {
             workflowOutcome = translationWorkflowModule.execute(new TranslationWorkflowRequest(
                     request.userProfile(),
-                    context.recognizedText(),
+                    translatableText,
                     context.requestedTargetLanguage(),
                     TranslationRequestKind.IMAGE_OCR,
                     context.storage().url().orElse(null),
@@ -120,11 +153,16 @@ public class ImageTranslationPipeline {
 
         TranslationWorkflowResult translation =
                 ((TranslationWorkflowOutcome.Success) workflowOutcome).result();
+        OverlayOutcome overlay = renderAndStore(image, recognition, translation.translatedText());
         return new ImageTranslationOutcome.Success(
-                new ImageTranslationPipelineResult(context, translation));
+                new ImageTranslationPipelineResult(
+                        context,
+                        translation,
+                        overlay.storage(),
+                        overlay.lowConfidenceBlockCount()));
     }
 
-    private DownloadedImage download(String messageId) throws Exception {
+    private ValidatedImage download(String messageId) throws Exception {
         Result<BlobContent> response = messagingApiBlobClient.getMessageContent(messageId).get();
         BlobContent content = response == null ? null : response.body();
         if (content == null) {
@@ -134,11 +172,18 @@ public class ImageTranslationPipeline {
             if (stream == null) {
                 throw new IllegalStateException("LINE image response stream is empty");
             }
-            return new DownloadedImage(stream.readAllBytes(), content.mimeType());
+            int readLimit = (int) Math.min(
+                    Integer.MAX_VALUE,
+                    properties.maxFileSizeBytes() + 1L);
+            byte[] bytes = stream.readNBytes(readLimit);
+            if (bytes.length > properties.maxFileSizeBytes()) {
+                throw new InvalidImageException("Image exceeds the maximum file size");
+            }
+            return imageInputValidator.validate(bytes, content.mimeType());
         }
     }
 
-    private ImageStorageResult store(DownloadedImage image) {
+    private ImageStorageResult store(ValidatedImage image) {
         try {
             ImageStorageResult result = minioStorageService.uploadImage(
                     image.bytes(), image.contentType());
@@ -149,10 +194,19 @@ public class ImageTranslationPipeline {
         }
     }
 
-    private String recognize(ImageTranslationRequest request, DownloadedImage image) {
+    private OcrRecognition recognize(ImageTranslationRequest request, ValidatedImage image) {
         if (ocrService != null) {
-            try (InputStream stream = new java.io.ByteArrayInputStream(image.bytes())) {
-                return ocrService.recognizeText(stream);
+            try {
+                List<OcrService.TextBlock> blocks;
+                try (InputStream stream = new java.io.ByteArrayInputStream(image.bytes())) {
+                    blocks = ocrService.recognizeTextWithLocations(stream);
+                }
+                if (blocks != null && !blocks.isEmpty()) {
+                    return OcrRecognition.located(blocks);
+                }
+                try (InputStream stream = new java.io.ByteArrayInputStream(image.bytes())) {
+                    return OcrRecognition.plain(ocrService.recognizeText(stream));
+                }
             } catch (OcrProcessingException failure) {
                 log.info("Primary OCR unavailable; using AI image recognition: failure={}",
                         SafeLog.failure(failure));
@@ -168,7 +222,33 @@ public class ImageTranslationPipeline {
         if (result == null) {
             throw new OcrProcessingException("AI image recognition returned no result");
         }
-        return result.text();
+        return OcrRecognition.plain(result.text());
+    }
+
+    private OverlayOutcome renderAndStore(
+            ValidatedImage image,
+            OcrRecognition recognition,
+            String translatedText) {
+        if (recognition.blocks().isEmpty()) {
+            return OverlayOutcome.empty();
+        }
+        try {
+            List<ImageOverlayBlock> planned = TranslatedBlockMapper.map(
+                    recognition.blocks(), translatedText, properties.lowConfidenceThreshold());
+            RenderedImage rendered = overlayRenderer.render(
+                    image, planned, properties.lowConfidenceThreshold());
+            if (rendered.renderedBlockCount() == 0) {
+                return new OverlayOutcome(
+                        ImageStorageResult.notStored(), rendered.lowConfidenceBlockCount());
+            }
+            ImageStorageResult storage = minioStorageService.uploadTranslatedImage(rendered.pngBytes());
+            return new OverlayOutcome(
+                    storage == null ? ImageStorageResult.notStored() : storage,
+                    rendered.lowConfidenceBlockCount());
+        } catch (RuntimeException failure) {
+            log.warn("Translated image rendering degraded to text: failure={}", SafeLog.failure(failure));
+            return OverlayOutcome.empty();
+        }
     }
 
     private String requestedTargetLanguage(String recognizedText) {
@@ -180,5 +260,11 @@ public class ImageTranslationPipeline {
         return languageCode.find()
                 ? languageCode.group(1).toLowerCase(java.util.Locale.ROOT)
                 : null;
+    }
+
+    private record OverlayOutcome(ImageStorageResult storage, int lowConfidenceBlockCount) {
+        static OverlayOutcome empty() {
+            return new OverlayOutcome(ImageStorageResult.notStored(), 0);
+        }
     }
 }

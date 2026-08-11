@@ -13,6 +13,7 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import com.linetranslate.bot.logging.SafeLog;
@@ -20,15 +21,23 @@ import com.linetranslate.bot.logging.SafeLog;
 import io.minio.BucketExistsArgs;
 import io.minio.GetPresignedObjectUrlArgs;
 import io.minio.Http.Method;
+import io.minio.ListObjectsArgs;
 import io.minio.MakeBucketArgs;
 import io.minio.MinioClient;
 import io.minio.PutObjectArgs;
+import io.minio.RemoveObjectArgs;
+import io.minio.Result;
 import io.minio.errors.ErrorResponseException;
+import io.minio.messages.Item;
 import lombok.extern.slf4j.Slf4j;
 
 @Service
 @Slf4j
 public class MinioStorageService {
+
+    private static final String TRANSLATED_IMAGE_PREFIX = "translated-images/";
+    private static final int TRANSLATED_URL_EXPIRY_SECONDS = 3_600;
+    private static final long TRANSLATED_RETENTION_SECONDS = 86_400;
 
     private final MinioClient minioClient;
     private final MinioClient publicUrlSigner;
@@ -126,6 +135,73 @@ public class MinioStorageService {
         } catch (Exception failure) {
             markUnavailable(failure);
             return ImageStorageResult.notStored();
+        }
+    }
+
+    /** Stores a generated PNG behind a one-hour signed URL and a 24-hour retention key. */
+    public ImageStorageResult uploadTranslatedImage(byte[] imageBytes) {
+        if (imageBytes == null || imageBytes.length == 0 || !beginAttempt()) {
+            return ImageStorageResult.notStored();
+        }
+
+        String objectName = generateTranslatedObjectName();
+        try {
+            ensureBucket();
+            try (InputStream inputStream = new ByteArrayInputStream(imageBytes)) {
+                minioClient.putObject(
+                        PutObjectArgs.builder()
+                                .bucket(bucketName)
+                                .object(objectName)
+                                .stream(inputStream, Long.valueOf(imageBytes.length), Long.valueOf(-1))
+                                .contentType("image/png")
+                                .build());
+            }
+            try {
+                String url = publicUrlSigner.getPresignedObjectUrl(
+                        GetPresignedObjectUrlArgs.builder()
+                                .bucket(bucketName)
+                                .object(objectName)
+                                .method(Method.GET)
+                                .expiry(TRANSLATED_URL_EXPIRY_SECONDS, TimeUnit.SECONDS)
+                                .build());
+                markAvailable();
+                log.info("MinIO translated image stored: object={}", objectName);
+                return ImageStorageResult.stored(url);
+            } catch (Exception failure) {
+                markUnavailable(failure);
+                return ImageStorageResult.storedWithoutUrl();
+            }
+        } catch (Exception failure) {
+            markUnavailable(failure);
+            return ImageStorageResult.notStored();
+        }
+    }
+
+    /** Deletes generated-image objects after their retention timestamp encoded in the key. */
+    @Scheduled(fixedDelayString = "${app.image-translation.cleanup-interval:PT1H}")
+    public void deleteExpiredTranslatedImages() {
+        if (!beginAttempt()) {
+            return;
+        }
+        try {
+            ensureBucket();
+            long nowEpochSeconds = currentTimeMs.getAsLong() / 1_000;
+            Iterable<Result<Item>> objects = minioClient.listObjects(
+                    ListObjectsArgs.builder()
+                            .bucket(bucketName)
+                            .prefix(TRANSLATED_IMAGE_PREFIX)
+                            .recursive(true)
+                            .build());
+            for (Result<Item> result : objects) {
+                String objectName = result.get().objectName();
+                if (isExpiredTranslatedImage(objectName, nowEpochSeconds)) {
+                    minioClient.removeObject(
+                            RemoveObjectArgs.builder().bucket(bucketName).object(objectName).build());
+                }
+            }
+            markAvailable();
+        } catch (Exception failure) {
+            markUnavailable(failure);
         }
     }
 
@@ -240,6 +316,27 @@ public class MinioStorageService {
             default -> ".bin";
         };
         return "images/" + UUID.randomUUID() + extension;
+    }
+
+    private String generateTranslatedObjectName() {
+        long expiresAt = currentTimeMs.getAsLong() / 1_000 + TRANSLATED_RETENTION_SECONDS;
+        return TRANSLATED_IMAGE_PREFIX + expiresAt + "/" + UUID.randomUUID() + ".png";
+    }
+
+    private static boolean isExpiredTranslatedImage(String objectName, long nowEpochSeconds) {
+        if (objectName == null || !objectName.startsWith(TRANSLATED_IMAGE_PREFIX)) {
+            return false;
+        }
+        int timestampStart = TRANSLATED_IMAGE_PREFIX.length();
+        int timestampEnd = objectName.indexOf('/', timestampStart);
+        if (timestampEnd <= timestampStart) {
+            return false;
+        }
+        try {
+            return Long.parseLong(objectName.substring(timestampStart, timestampEnd)) <= nowEpochSeconds;
+        } catch (NumberFormatException ignored) {
+            return false;
+        }
     }
 
     private enum State {

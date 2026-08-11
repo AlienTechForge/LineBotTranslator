@@ -8,6 +8,7 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -20,8 +21,11 @@ import io.minio.BucketExistsArgs;
 import io.minio.GetPresignedObjectUrlArgs;
 import io.minio.MinioClient;
 import io.minio.PutObjectArgs;
+import io.minio.RemoveObjectArgs;
+import io.minio.Result;
 import io.minio.errors.ErrorResponseException;
 import io.minio.messages.ErrorResponse;
+import io.minio.messages.Item;
 import okhttp3.Response;
 
 @ExtendWith(MockitoExtension.class)
@@ -116,6 +120,57 @@ class MinioStorageRecoveryIntegrationTests {
         verify(minioClient).putObject(any(PutObjectArgs.class));
         verify(minioClient, never()).getPresignedObjectUrl(any(GetPresignedObjectUrlArgs.class));
         verify(publicUrlSigner).getPresignedObjectUrl(any(GetPresignedObjectUrlArgs.class));
+    }
+
+    @Test
+    void translatedImageUsesShortLivedUrlAndRetentionEncodedObjectName() throws Exception {
+        when(minioClient.bucketExists(any(BucketExistsArgs.class))).thenReturn(true);
+        when(publicUrlSigner.getPresignedObjectUrl(any(GetPresignedObjectUrlArgs.class)))
+                .thenReturn("https://s3.azndev.com/line-bot/translated-images/result.png?signature=safe");
+        MinioStorageService service = new MinioStorageService(
+                minioClient,
+                publicUrlSigner,
+                "line-bot",
+                true,
+                1_000,
+                clock::get);
+
+        ImageStorageResult result = service.uploadTranslatedImage(new byte[] {1, 2, 3});
+
+        assertThat(result.url()).hasValueSatisfying(
+                url -> assertThat(url).startsWith("https://s3.azndev.com/"));
+        var put = org.mockito.ArgumentCaptor.forClass(PutObjectArgs.class);
+        var signed = org.mockito.ArgumentCaptor.forClass(GetPresignedObjectUrlArgs.class);
+        verify(minioClient).putObject(put.capture());
+        verify(publicUrlSigner).getPresignedObjectUrl(signed.capture());
+        assertThat(put.getValue().object())
+                .startsWith("translated-images/86401/")
+                .endsWith(".png");
+        assertThat(signed.getValue().object()).isEqualTo(put.getValue().object());
+        assertThat(signed.getValue().expiry()).isEqualTo(3_600);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void retentionCleanupDeletesOnlyExpiredTranslatedArtifacts() throws Exception {
+        clock.set(200_000);
+        when(minioClient.bucketExists(any(BucketExistsArgs.class))).thenReturn(true);
+        Result<Item> expiredResult = mock(Result.class);
+        Result<Item> activeResult = mock(Result.class);
+        Item expired = mock(Item.class);
+        Item active = mock(Item.class);
+        when(expired.objectName()).thenReturn("translated-images/199/expired.png");
+        when(active.objectName()).thenReturn("translated-images/300/active.png");
+        when(expiredResult.get()).thenReturn(expired);
+        when(activeResult.get()).thenReturn(active);
+        when(minioClient.listObjects(any())).thenReturn(List.of(expiredResult, activeResult));
+        MinioStorageService service = service(1_000);
+
+        service.deleteExpiredTranslatedImages();
+
+        verify(minioClient).removeObject(org.mockito.ArgumentMatchers.argThat(
+                (RemoveObjectArgs args) -> args.object().equals("translated-images/199/expired.png")));
+        verify(minioClient, times(1)).removeObject(any(RemoveObjectArgs.class));
     }
 
     @Test
