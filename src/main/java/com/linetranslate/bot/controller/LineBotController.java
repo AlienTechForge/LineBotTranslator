@@ -58,7 +58,9 @@ public class LineBotController {
         String data = event.postback() == null ? null : event.postback().data();
         log.info("收到 postback: user={}, data={}",
                 SafeLog.user(userId), SafeLog.content(data));
-        return interactionModule.execute(userId, intentParser.parsePostback(data));
+        LineIntent intent = intentParser.parsePostback(data);
+        loadingFeedback.beforeText(event.source(), intent);
+        return interactionModule.execute(userId, intent);
     }
 
     public void handleDefaultMessageEvent(Event event) {

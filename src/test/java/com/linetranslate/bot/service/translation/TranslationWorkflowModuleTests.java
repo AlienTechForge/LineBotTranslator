@@ -47,6 +47,11 @@ class TranslationWorkflowModuleTests {
         preferences = new UserPreferences(
                 "zh-TW", "en", "zh-TW", "openai/gpt-4o-mini", List.of());
         when(userPreferencesModule.resolve(any(UserProfile.class))).thenReturn(preferences);
+        when(recordRepository.save(any(TranslationRecord.class))).thenAnswer(invocation -> {
+            TranslationRecord record = invocation.getArgument(0);
+            record.setId("record-1");
+            return record;
+        });
         module = new TranslationWorkflowModule(
                 languageDetection,
                 translationAdapter,
@@ -78,6 +83,7 @@ class TranslationWorkflowModuleTests {
         assertThat(result.translatedText()).isEqualTo("你好");
         assertThat(result.sourceLanguage()).isEqualTo("en");
         assertThat(result.targetLanguage()).isEqualTo("zh-TW");
+        assertThat(result.recordId()).isEqualTo("record-1");
         verify(languageDetection).detectLanguage("hello");
         verify(translationAdapter).translate(preferences, "hello", "zh-TW");
         verify(recordRepository).save(any(TranslationRecord.class));

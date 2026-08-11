@@ -1,19 +1,35 @@
 package com.linetranslate.bot.service.line;
 
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
+
 import org.springframework.stereotype.Component;
 
+import com.linecorp.bot.messaging.model.ClipboardAction;
 import com.linecorp.bot.messaging.model.Message;
+import com.linecorp.bot.messaging.model.PostbackAction;
+import com.linecorp.bot.messaging.model.QuickReply;
+import com.linecorp.bot.messaging.model.QuickReplyItem;
 import com.linecorp.bot.messaging.model.TextMessage;
 import com.linetranslate.bot.service.ai.AiModelCatalog;
 import com.linetranslate.bot.service.ai.AiModelDescriptor;
 import com.linetranslate.bot.service.ai.AiModelPage;
 import com.linetranslate.bot.service.line.intent.LineIntent;
+import com.linetranslate.bot.service.translation.TranslationResponse;
 
 /** Central LINE message renderer for user-facing interaction results. */
 @Component
 public class LineMessageRenderer {
 
     private static final int MODEL_PAGE_LIMIT = 20;
+    private static final int CLIPBOARD_TEXT_LIMIT = 1_000;
+    private static final List<TargetAction> COMMON_TARGETS = List.of(
+            new TargetAction("英文", "en"),
+            new TargetAction("日文", "ja"),
+            new TargetAction("韓文", "ko"),
+            new TargetAction("繁中", "zh-TW"));
     private final AiModelCatalog modelCatalog;
 
     public LineMessageRenderer(AiModelCatalog modelCatalog) {
@@ -95,10 +111,12 @@ public class LineMessageRenderer {
     }
 
     public Message translation(String result) { return text(result); }
+    public Message translation(TranslationResponse result) { return interactiveTranslation(result); }
     public Message status(String result) { return text(result); }
     public Message profile(String result) { return text(result); }
     public Message settingResult(String result) { return text(result); }
     public Message imageResult(String result) { return text(result); }
+    public Message imageResult(TranslationResponse result) { return interactiveTranslation(result); }
 
     public Message imageFailure() {
         return text("圖片處理失敗。\n請確保圖片清晰且包含可識別的文字，或稍後再試。");
@@ -109,6 +127,7 @@ public class LineMessageRenderer {
             case MODEL_REQUIRED -> "請指定完整 OpenRouter 模型 slug。例如：/model openai/gpt-4o-mini";
             case INVALID_MODEL -> "模型 slug 格式無效。請先用 /models [關鍵字] 查詢完整 slug。";
             case MODEL_QUERY_TOO_LONG -> "模型搜尋關鍵字過長；請縮短至 80 個字元內。";
+            case TRANSLATION_ACTION_FORMAT -> "翻譯操作已失效，請從新的翻譯結果重試。";
             case FOREIGN_LANGUAGE_REQUIRED ->
                     "請指定語言代碼或名稱。例如：/外文翻譯 en 或 /外文翻譯 日文";
             case CHINESE_LANGUAGE_REQUIRED ->
@@ -124,5 +143,49 @@ public class LineMessageRenderer {
 
     private static Message text(String value) {
         return new TextMessage(value == null ? "" : value);
+    }
+
+    private Message interactiveTranslation(TranslationResponse response) {
+        if (response == null || !response.actionable()) {
+            return text(response == null ? "" : response.displayText());
+        }
+
+        List<QuickReplyItem> items = new ArrayList<>();
+        String translatedText = response.translatedText();
+        if (translatedText.codePointCount(0, translatedText.length()) <= CLIPBOARD_TEXT_LIMIT) {
+            items.add(new QuickReplyItem(new ClipboardAction("複製譯文", translatedText)));
+        }
+        for (TargetAction target : COMMON_TARGETS) {
+            if (!target.language().equalsIgnoreCase(response.targetLanguage())) {
+                items.add(postbackItem(
+                        target.label(),
+                        "改翻譯為" + target.label(),
+                        response.recordId(),
+                        target.language()));
+            }
+        }
+        items.add(postbackItem(
+                "重新翻譯",
+                "重新翻譯",
+                response.recordId(),
+                response.targetLanguage()));
+
+        return new TextMessage.Builder(response.displayText())
+                .quickReply(new QuickReply(items))
+                .build();
+    }
+
+    private QuickReplyItem postbackItem(
+            String label,
+            String displayText,
+            String recordId,
+            String targetLanguage) {
+        String command = "/retranslate " + recordId + " " + targetLanguage;
+        String data = "command=" + URLEncoder.encode(command, StandardCharsets.UTF_8);
+        return new QuickReplyItem(new PostbackAction(
+                label, data, displayText, null, null, null));
+    }
+
+    private record TargetAction(String label, String language) {
     }
 }

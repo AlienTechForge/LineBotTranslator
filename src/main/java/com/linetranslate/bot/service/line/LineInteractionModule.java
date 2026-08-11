@@ -8,6 +8,7 @@ import com.linetranslate.bot.service.line.intent.AdminIntentParser;
 import com.linetranslate.bot.service.line.intent.LineIntent;
 import com.linetranslate.bot.service.ocr.ImageTranslationService;
 import com.linetranslate.bot.service.translation.TranslationService;
+import com.linetranslate.bot.service.translation.TranslationActionModule;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -17,6 +18,7 @@ import lombok.extern.slf4j.Slf4j;
 public class LineInteractionModule {
 
     private final TranslationService translationService;
+    private final TranslationActionModule translationActionModule;
     private final LineUserProfileService lineUserProfileService;
     private final ImageTranslationService imageTranslationService;
     private final AdminIntentParser adminIntentParser;
@@ -25,12 +27,14 @@ public class LineInteractionModule {
 
     public LineInteractionModule(
             TranslationService translationService,
+            TranslationActionModule translationActionModule,
             LineUserProfileService lineUserProfileService,
             ImageTranslationService imageTranslationService,
             AdminIntentParser adminIntentParser,
             AdminInteractionModule adminInteractionModule,
             LineMessageRenderer renderer) {
         this.translationService = translationService;
+        this.translationActionModule = translationActionModule;
         this.lineUserProfileService = lineUserProfileService;
         this.imageTranslationService = imageTranslationService;
         this.adminIntentParser = adminIntentParser;
@@ -41,11 +45,16 @@ public class LineInteractionModule {
     public Message execute(String userId, LineIntent intent) {
         if (intent instanceof LineIntent.TranslateText translation) {
             return renderer.translation(
-                    translationService.processTranslationRequest(userId, translation.text()));
+                    translationService.processTranslationResponse(userId, translation.text()));
         }
         if (intent instanceof LineIntent.QuickTranslate translation) {
             return renderer.translation(
-                    translationService.quickTranslate(userId, translation.text(), translation.language()));
+                    translationService.quickTranslateResponse(
+                            userId, translation.text(), translation.language()));
+        }
+        if (intent instanceof LineIntent.Retranslate translation) {
+            return renderer.translation(translationActionModule.execute(
+                    userId, translation.recordId(), translation.targetLanguage()));
         }
         if (intent instanceof LineIntent.UserCommand command) {
             return executeUserCommand(userId, command);
@@ -58,7 +67,8 @@ public class LineInteractionModule {
 
     public Message executeImage(String userId, String messageId) {
         try {
-            return renderer.imageResult(imageTranslationService.processImageTranslation(userId, messageId));
+            return renderer.imageResult(
+                    imageTranslationService.processImageTranslationResponse(userId, messageId));
         } catch (Exception exception) {
             log.error("圖片翻譯處理失敗: user={}, failure={}",
                     SafeLog.user(userId), SafeLog.failure(exception));

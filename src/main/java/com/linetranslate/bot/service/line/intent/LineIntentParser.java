@@ -20,6 +20,8 @@ public class LineIntentParser {
     private static final int MAX_MODEL_QUERY_CODE_POINTS = 80;
     private static final Pattern MODEL_SLUG = Pattern.compile(
             "^[A-Za-z0-9~][A-Za-z0-9._:~/\\-]{0,199}$");
+    private static final Pattern TRANSLATION_RECORD_ID = Pattern.compile(
+            "^[A-Za-z0-9_-]{1,64}$");
 
     public LineIntent parseText(String text) {
         String safeText = text == null ? "" : text;
@@ -64,6 +66,7 @@ public class LineIntentParser {
             case "models" -> argument.codePointCount(0, argument.length()) > MAX_MODEL_QUERY_CODE_POINTS
                     ? invalid(LineIntent.InvalidReason.MODEL_QUERY_TOO_LONG)
                     : user(LineIntent.UserAction.MODELS, argument);
+            case "retranslate" -> retranslate(argument);
             case "外文翻譯" -> argument.isEmpty()
                     ? invalid(LineIntent.InvalidReason.FOREIGN_LANGUAGE_REQUIRED)
                     : user(LineIntent.UserAction.SET_FOREIGN_LANGUAGE, argument);
@@ -97,6 +100,17 @@ public class LineIntentParser {
 
     private static LineIntent.UserCommand user(LineIntent.UserAction action) {
         return user(action, "");
+    }
+
+    private static LineIntent retranslate(String argument) {
+        String[] parts = argument.split("\\s+", 2);
+        if (parts.length != 2
+                || !TRANSLATION_RECORD_ID.matcher(parts[0]).matches()
+                || !LanguageUtils.isSupported(parts[1])) {
+            return invalid(LineIntent.InvalidReason.TRANSLATION_ACTION_FORMAT);
+        }
+        return new LineIntent.Retranslate(
+                parts[0], LanguageUtils.toLanguageCode(parts[1]));
     }
 
     private static LineIntent model(String argument) {

@@ -10,6 +10,8 @@ import org.junit.jupiter.api.Test;
 import com.linecorp.bot.messaging.model.TextMessage;
 import com.linecorp.bot.webhook.model.ImageMessageContent;
 import com.linecorp.bot.webhook.model.MessageEvent;
+import com.linecorp.bot.webhook.model.PostbackContent;
+import com.linecorp.bot.webhook.model.PostbackEvent;
 import com.linecorp.bot.webhook.model.TextMessageContent;
 import com.linecorp.bot.webhook.model.UserSource;
 import com.linetranslate.bot.service.line.LineInteractionModule;
@@ -61,5 +63,30 @@ class LineBotControllerLoadingTests {
         var order = inOrder(loading, interaction);
         order.verify(loading).beforeImage(source);
         order.verify(interaction).executeImage("user-1", "message-1");
+    }
+
+    @Test
+    void retranslationPostbackStartsLoadingBeforeExecution() {
+        LineIntentParser parser = mock(LineIntentParser.class);
+        LineInteractionModule interaction = mock(LineInteractionModule.class);
+        LineLoadingFeedback loading = mock(LineLoadingFeedback.class);
+        PostbackEvent event = mock(PostbackEvent.class);
+        PostbackContent content = mock(PostbackContent.class);
+        UserSource source = new UserSource("user-1");
+        LineIntent intent = new LineIntent.Retranslate(
+                "507f1f77bcf86cd799439011", "ja");
+        TextMessage response = new TextMessage("translated");
+        when(event.source()).thenReturn(source);
+        when(event.postback()).thenReturn(content);
+        when(content.data()).thenReturn("safe-postback");
+        when(parser.parsePostback("safe-postback")).thenReturn(intent);
+        when(interaction.execute("user-1", intent)).thenReturn(response);
+        var controller = new LineBotController(parser, interaction, loading);
+
+        assertThat(controller.handlePostbackEvent(event)).isSameAs(response);
+
+        var order = inOrder(loading, interaction);
+        order.verify(loading).beforeText(source, intent);
+        order.verify(interaction).execute("user-1", intent);
     }
 }

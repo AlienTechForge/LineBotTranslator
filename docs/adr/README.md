@@ -24,3 +24,4 @@ ADR 記錄已確立、會限制後續設計的決策。Domain 名稱與不變量
 | [0009](0009-explicit-image-translation-pipeline.md) | Accepted | 圖片 pipeline 使用 explicit request/result，移除 ThreadLocal state。 |
 | [0010](0010-model-aware-bounded-cache.md) | Accepted | 翻譯 cache 有界、model-aware，且只保存安全成功。 |
 | [0011](0011-openrouter-single-provider-adapter.md) | Accepted | 只保留 OpenRouter Adapter，模型由 catalog 動態探索與選擇。 |
+| [0012](0012-idempotent-translation-actions.md) | Accepted | 翻譯結果 actions 使用 opaque record reference、owner check 與 durable claim。 |

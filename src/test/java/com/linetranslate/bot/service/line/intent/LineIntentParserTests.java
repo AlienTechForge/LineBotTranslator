@@ -72,6 +72,22 @@ class LineIntentParserTests {
                 .isEqualTo(new LineIntent.Invalid(LineIntent.InvalidReason.UNSUPPORTED_POSTBACK, ""));
     }
 
+    @Test
+    void translationActionPostbackContainsOnlyTypedRecordReferenceAndTarget() {
+        String recordId = "507f1f77bcf86cd799439011";
+
+        assertThat(parser.parsePostback(
+                "command=%2Fretranslate+" + recordId + "+ja"))
+                .isEqualTo(new LineIntent.Retranslate(recordId, "ja"));
+        assertThat(parser.parsePostback("command=%2Fretranslate+bad%2Fid+ja"))
+                .isEqualTo(new LineIntent.Invalid(
+                        LineIntent.InvalidReason.TRANSLATION_ACTION_FORMAT, ""));
+        assertThat(parser.parsePostback(
+                "command=%2Fretranslate+" + recordId + "+xx"))
+                .isEqualTo(new LineIntent.Invalid(
+                        LineIntent.InvalidReason.TRANSLATION_ACTION_FORMAT, ""));
+    }
+
     private static Stream<Arguments> commands() {
         return Stream.of(
                 Arguments.of("/help", LineIntent.UserAction.HELP, ""),

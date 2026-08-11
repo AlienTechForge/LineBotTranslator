@@ -10,11 +10,14 @@ import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import com.linecorp.bot.messaging.model.ClipboardAction;
+import com.linecorp.bot.messaging.model.PostbackAction;
 import com.linecorp.bot.messaging.model.TextMessage;
 import com.linetranslate.bot.service.ai.AiModelCatalog;
 import com.linetranslate.bot.service.ai.AiModelDescriptor;
 import com.linetranslate.bot.service.ai.AiModelPage;
 import com.linetranslate.bot.service.line.intent.LineIntent;
+import com.linetranslate.bot.service.translation.TranslationResponse;
 
 class LineMessageRendererTests {
 
@@ -78,6 +81,45 @@ class LineMessageRendererTests {
 
         assertThat(rendered.length()).isLessThanOrEqualTo(5_000);
         assertThat(rendered).contains("只顯示前 20 個");
+    }
+
+    @Test
+    void actionableTranslationUsesClipboardAndOpaquePostbacks() {
+        var response = new TranslationResponse(
+                "完整翻譯訊息", "翻譯結果", "507f1f77bcf86cd799439011", "en", "ja");
+
+        TextMessage rendered = (TextMessage) renderer.translation(response);
+
+        assertThat(rendered.text()).isEqualTo("完整翻譯訊息");
+        assertThat(rendered.quickReply()).isNotNull();
+        var actions = rendered.quickReply().items().stream()
+                .map(item -> item.action())
+                .toList();
+        assertThat(actions).hasSizeLessThanOrEqualTo(13);
+        assertThat(actions).anySatisfy(action -> assertThat(action)
+                .isEqualTo(new ClipboardAction("複製譯文", "翻譯結果")));
+        assertThat(actions.stream()
+                .filter(PostbackAction.class::isInstance)
+                .map(PostbackAction.class::cast))
+                .isNotEmpty()
+                .allSatisfy(action -> {
+                    assertThat(action.data()).startsWith("command=").hasSizeLessThanOrEqualTo(300);
+                    assertThat(action.data()).doesNotContain("翻譯結果", "完整翻譯訊息");
+                });
+    }
+
+    @Test
+    void oversizedClipboardPayloadKeepsReadableTextFallback() {
+        String translated = "a".repeat(1_001);
+        var response = new TranslationResponse(
+                translated, translated, "507f1f77bcf86cd799439011", "en", "ja");
+
+        TextMessage rendered = (TextMessage) renderer.translation(response);
+
+        assertThat(rendered.text()).isEqualTo(translated);
+        assertThat(rendered.quickReply().items())
+                .noneSatisfy(item -> assertThat(item.action())
+                        .isInstanceOf(ClipboardAction.class));
     }
 
     private static String text(com.linecorp.bot.messaging.model.Message message) {

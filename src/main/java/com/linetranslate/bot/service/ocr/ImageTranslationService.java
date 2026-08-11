@@ -14,6 +14,7 @@ import com.linetranslate.bot.service.ai.AiExecutionFailure;
 import com.linetranslate.bot.service.settings.RuntimeSettings;
 import com.linetranslate.bot.service.settings.RuntimeSettingsSource;
 import com.linetranslate.bot.service.translation.TranslationWorkflowResult;
+import com.linetranslate.bot.service.translation.TranslationResponse;
 import com.linetranslate.bot.util.LanguageUtils;
 
 import lombok.extern.slf4j.Slf4j;
@@ -50,8 +51,12 @@ public class ImageTranslationService {
     }
 
     public String processImageTranslation(String userId, String messageId) {
+        return processImageTranslationResponse(userId, messageId).displayText();
+    }
+
+    public TranslationResponse processImageTranslationResponse(String userId, String messageId) {
         if (!isOcrEnabled()) {
-            return "OCR 功能目前已停用。請稍後再試。";
+            return TranslationResponse.plain("OCR 功能目前已停用。請稍後再試。");
         }
 
         Instant start = Instant.now();
@@ -65,23 +70,25 @@ public class ImageTranslationService {
             if (outcome instanceof ImageTranslationOutcome.Success success) {
                 return render(success.result());
             }
-            return renderFailure(userId, (ImageTranslationOutcome.Failure) outcome);
+            return TranslationResponse.plain(
+                    renderFailure(userId, (ImageTranslationOutcome.Failure) outcome));
         } catch (RuntimeException failure) {
             log.error("圖片翻譯失敗: user={}, failure={}",
                     SafeLog.user(userId), SafeLog.failure(failure));
-            return "圖片翻譯處理失敗，請稍後再試。";
+            return TranslationResponse.plain("圖片翻譯處理失敗，請稍後再試。");
         }
     }
 
-    private String render(ImageTranslationPipelineResult result) {
+    private TranslationResponse render(ImageTranslationPipelineResult result) {
         String recognizedText = result.context().recognizedText();
         TranslationWorkflowResult translation = result.translation();
-        return "【圖片文字辨識結果】\n\n"
+        String displayText = "【圖片文字辨識結果】\n\n"
                 + "識別的文字：\n" + recognizedText + "\n\n"
                 + "翻譯結果：\n" + translation.translatedText() + "\n\n"
                 + "[偵測到: " + LanguageUtils.toChineseName(translation.sourceLanguage())
                 + " | 翻譯成: " + LanguageUtils.toChineseName(translation.targetLanguage())
                 + "]";
+        return TranslationResponse.success(translation, displayText);
     }
 
     private String renderFailure(String userId, ImageTranslationOutcome.Failure failure) {
