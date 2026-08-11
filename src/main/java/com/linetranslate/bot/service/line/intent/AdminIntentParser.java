@@ -9,6 +9,7 @@ import org.springframework.stereotype.Component;
 public class AdminIntentParser {
 
     private static final int MAX_BROADCAST_CODE_POINTS = 5000;
+    private static final int MAX_MODEL_QUERY_CODE_POINTS = 80;
 
     public AdminIntent parse(String command) {
         String normalized = command == null ? "" : command.trim();
@@ -28,6 +29,9 @@ public class AdminIntentParser {
             case "users" -> action(AdminIntent.Action.USERS);
             case "user" -> required(parameter, AdminIntent.Action.USER, AdminIntent.Problem.USER_REQUIRED);
             case "nickname" -> nickname(parameter);
+            case "models" -> parameter.codePointCount(0, parameter.length()) > MAX_MODEL_QUERY_CODE_POINTS
+                    ? AdminIntent.invalid(AdminIntent.Problem.MODEL_QUERY_TOO_LONG)
+                    : AdminIntent.action(AdminIntent.Action.MODELS, parameter, "");
             case "config" -> config(parameter);
             case "usage" -> usage(parameter);
             case "add" -> required(parameter, AdminIntent.Action.ADD_ADMIN, AdminIntent.Problem.ADD_ADMIN_REQUIRED);

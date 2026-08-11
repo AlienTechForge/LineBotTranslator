@@ -39,8 +39,11 @@ class MinioDelayedAvailabilityIntegrationTests {
         try (DelayedTcpProxy proxy = DelayedTcpProxy.create()) {
             MinioClient proxiedClient = client(
                     "http://127.0.0.1:" + proxy.port(), accessKey, secretKey);
+            MinioClient publicUrlSigner = client(
+                    "https://s3.example.com", accessKey, secretKey);
             MinioStorageService service = new MinioStorageService(
                     proxiedClient,
+                    publicUrlSigner,
                     bucketName,
                     true,
                     1_000,
@@ -60,6 +63,8 @@ class MinioDelayedAvailabilityIntegrationTests {
 
             assertThat(recovered.stored()).isTrue();
             assertThat(recovered.url()).isPresent();
+            assertThat(URI.create(recovered.url().orElseThrow()).getHost())
+                    .isEqualTo("s3.example.com");
             assertThat(service.isAvailable()).isTrue();
 
             removeUploadedObject(upstreamEndpoint, accessKey, secretKey, bucketName, recovered);
@@ -69,6 +74,7 @@ class MinioDelayedAvailabilityIntegrationTests {
     private static MinioClient client(String endpoint, String accessKey, String secretKey) {
         MinioClient client = MinioClient.builder()
                 .endpoint(endpoint)
+                .region("us-east-1")
                 .credentials(accessKey, secretKey)
                 .build();
         client.setTimeout(300, 1_000, 1_000);

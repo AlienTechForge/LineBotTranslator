@@ -31,6 +31,7 @@ import com.linetranslate.bot.repository.TranslationRecordRepository;
 import com.linetranslate.bot.repository.UserProfileRepository;
 import com.linetranslate.bot.logging.SafeLog;
 import com.linetranslate.bot.service.ai.AiModelCatalog;
+import com.linetranslate.bot.service.ai.AiModelPage;
 import com.linetranslate.bot.service.line.LineUserProfileService;
 import com.linetranslate.bot.service.preference.UserPreferences;
 import com.linetranslate.bot.service.preference.UserPreferencesModule;
@@ -523,6 +524,14 @@ public class AdminService {
                 model,
                 operatorId,
                 "✅ 已將 OpenRouter 默認模型設置為: " + model);
+    }
+
+    public AiModelPage getAvailableModels(String query, int limit) {
+        return modelCatalog.list(query, limit);
+    }
+
+    public String getOpenRouterDefaultModel() {
+        return runtimeSettingsModule.current().openRouterDefaultModel();
     }
     
     /**

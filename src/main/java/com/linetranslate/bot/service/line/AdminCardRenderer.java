@@ -1,7 +1,11 @@
 package com.linetranslate.bot.service.line;
 
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 import org.springframework.stereotype.Component;
 
@@ -13,8 +17,10 @@ import com.linecorp.bot.messaging.model.FlexComponent;
 import com.linecorp.bot.messaging.model.FlexMessage;
 import com.linecorp.bot.messaging.model.FlexText;
 import com.linecorp.bot.messaging.model.Message;
-import com.linecorp.bot.messaging.model.MessageAction;
+import com.linecorp.bot.messaging.model.PostbackAction;
 import com.linecorp.bot.messaging.model.TextMessage;
+import com.linetranslate.bot.service.ai.AiModelDescriptor;
+import com.linetranslate.bot.service.ai.AiModelPage;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -28,11 +34,14 @@ public class AdminCardRenderer {
     private static final String INFO_COLOR = "#2457C5";
     private static final String SUCCESS_COLOR = "#16835D";
     private static final String ERROR_COLOR = "#B42318";
+    private static final Pattern MODEL_SELECTION_COMMAND = Pattern.compile(
+            "^/admin config model [A-Za-z0-9~][A-Za-z0-9._:~/\\-]{0,199}$");
     private static final Set<String> ALLOWED_COMMANDS = Set.of(
             "/admin",
             "/admin stats",
             "/admin today",
             "/admin users",
+            "/admin models",
             "/admin config",
             "/admin usage",
             "/admin usage summary");
@@ -41,6 +50,7 @@ public class AdminCardRenderer {
             new AdminCardAction("系統統計", "/admin stats"),
             new AdminCardAction("今日狀態", "/admin today"),
             new AdminCardAction("最近使用者", "/admin users"),
+            new AdminCardAction("選擇預設模型", "/admin models"),
             new AdminCardAction("系統設定", "/admin config"),
             new AdminCardAction("本月用量", "/admin usage"),
             new AdminCardAction("用量總覽", "/admin usage summary"));
@@ -85,6 +95,31 @@ public class AdminCardRenderer {
 
     public Message card(String title, String body, List<AdminCardAction> actions) {
         return renderCard(title, body, actions, INFO_COLOR);
+    }
+
+    public Message modelSelection(AiModelPage page, String query, String currentModel) {
+        AiModelPage safePage = page == null ? new AiModelPage(List.of(), 0, true) : page;
+        String safeQuery = query == null ? "" : sanitize(query, "");
+        String safeCurrent = sanitize(currentModel, "未設定");
+        String scope = safeQuery.isBlank() ? "全部模型" : "搜尋：「" + safeQuery + "」";
+        String body = scope + "\n"
+                + "顯示 " + safePage.models().size() + " / " + safePage.total() + " 個\n"
+                + "目前預設：" + safeCurrent
+                + (safePage.stale() ? "\n\n⚠️ 目前顯示快取／備援清單。" : "")
+                + "\n\n點選模型即可設為全域預設。"
+                + "\n需要篩選時輸入：/admin models [搜尋字]";
+
+        List<AdminCardAction> actions = new ArrayList<>();
+        for (AiModelDescriptor model : safePage.models()) {
+            String prefix = model.id().equals(currentModel) ? "✓ " : "";
+            String label = truncateByCodePoint(
+                    prefix + sanitize(model.displayName(), model.id()), 40);
+            actions.add(new AdminCardAction(
+                    label,
+                    "/admin config model " + model.id()));
+        }
+        actions.addAll(HOME_ACTION);
+        return renderCard("選擇 OpenRouter 模型", body, actions, INFO_COLOR);
     }
 
     private Message renderCard(String title, String body, List<AdminCardAction> actions, String accentColor) {
@@ -151,11 +186,10 @@ public class AdminCardRenderer {
     }
 
     private FlexButton button(AdminCardAction action) {
-        MessageAction messageAction = new MessageAction.Builder()
-                .label(action.label())
-                .text(action.command())
-                .build();
-        return new FlexButton.Builder(messageAction)
+        String data = "command=" + URLEncoder.encode(action.command(), StandardCharsets.UTF_8);
+        PostbackAction postbackAction = new PostbackAction(
+                action.label(), data, null, null, null, null);
+        return new FlexButton.Builder(postbackAction)
                 .style(FlexButton.Style.SECONDARY)
                 .height(FlexButton.Height.SM)
                 .color("#E8EEF9")
@@ -164,7 +198,7 @@ public class AdminCardRenderer {
 
     private void validateActions(List<AdminCardAction> actions) {
         for (AdminCardAction action : actions) {
-            if (action == null || !ALLOWED_COMMANDS.contains(action.command())) {
+            if (action == null || !isAllowedCommand(action.command())) {
                 throw new IllegalArgumentException("Admin card action is not on the allowlist");
             }
             if (action.label() == null || action.label().isBlank()
@@ -172,6 +206,12 @@ public class AdminCardRenderer {
                 throw new IllegalArgumentException("Admin card action label is invalid");
             }
         }
+    }
+
+    private static boolean isAllowedCommand(String command) {
+        return command != null
+                && (ALLOWED_COMMANDS.contains(command)
+                        || MODEL_SELECTION_COMMAND.matcher(command).matches());
     }
 
     private Message fallbackText(String title, String body) {

@@ -8,6 +8,7 @@ import org.springframework.stereotype.Service;
 import com.linecorp.bot.messaging.model.Message;
 import com.linetranslate.bot.logging.SafeLog;
 import com.linetranslate.bot.service.AdminService;
+import com.linetranslate.bot.service.ai.AiModelPage;
 import com.linetranslate.bot.service.line.intent.AdminIntent;
 
 import lombok.extern.slf4j.Slf4j;
@@ -47,7 +48,13 @@ public class AdminInteractionModule {
             case NICKNAME -> renderer.info(
                     "更新用戶暱稱",
                     adminService.setUserDisplayName(intent.value(), intent.secondary()));
-            case CONFIG_SHOW -> renderer.info("系統設定", systemConfig());
+            case MODELS -> models(intent.value());
+            case CONFIG_SHOW -> renderer.card(
+                    "系統設定",
+                    systemConfig(),
+                    List.of(
+                            new AdminCardRenderer.AdminCardAction("選擇預設模型", "/admin models"),
+                            new AdminCardRenderer.AdminCardAction("返回管理面板", "/admin")));
             case CONFIG_C2LANG -> configResult(
                     adminService.setDefaultTargetLanguageForChinese(intent.value(), userId));
             case CONFIG_LANGUAGE -> configResult(
@@ -152,6 +159,17 @@ public class AdminInteractionModule {
                 + "/admin config ocr [on|off]";
     }
 
+    private Message models(String query) {
+        try {
+            AiModelPage page = adminService.getAvailableModels(query, 8);
+            return renderer.modelSelection(
+                    page, query, adminService.getOpenRouterDefaultModel());
+        } catch (RuntimeException exception) {
+            log.error("取得 OpenRouter 模型列表失敗: failure={}", SafeLog.failure(exception));
+            return renderer.error("模型列表失敗", "無法取得模型列表，請稍後再試。");
+        }
+    }
+
     private Message configResult(String result) {
         return renderer.info("設定結果", result);
     }
@@ -165,6 +183,7 @@ public class AdminInteractionModule {
             case USER_REQUIRED -> "請指定要查詢的用戶 ID。例如：/admin user U123456789";
             case NICKNAME_FORMAT -> "格式：/admin nickname [用戶 ID] [新暱稱]";
             case NICKNAME_REQUIRED -> "請提供新暱稱。格式：/admin nickname [用戶 ID] [新暱稱]";
+            case MODEL_QUERY_TOO_LONG -> "模型搜尋字最多 80 個字元。";
             case CONFIG_VALUE_REQUIRED -> "設定指令缺少參數。請使用 /admin config 查看格式。";
             case USAGE_DAY_REQUIRED ->
                     "請指定日期，格式為 YYYY-MM-DD。例如：/admin usage day 2026-08-11";
