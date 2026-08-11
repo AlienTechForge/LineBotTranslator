@@ -8,7 +8,19 @@ public record TranslationWorkflowResult(
         String targetLanguage,
         AiExecutionResult execution,
         long processingTimeMillis,
-        TranslationRequestKind kind) {
+        TranslationRequestKind kind,
+        String recordId) {
+
+    public TranslationWorkflowResult(
+            String sourceText,
+            String sourceLanguage,
+            String targetLanguage,
+            AiExecutionResult execution,
+            long processingTimeMillis,
+            TranslationRequestKind kind) {
+        this(sourceText, sourceLanguage, targetLanguage, execution,
+                processingTimeMillis, kind, null);
+    }
 
     public String translatedText() {
         return execution.text();

@@ -40,6 +40,7 @@ import com.linetranslate.bot.service.storage.MinioStorageService;
 import com.linetranslate.bot.service.translation.CachedTranslationAdapter;
 import com.linetranslate.bot.service.translation.LanguageDetectionService;
 import com.linetranslate.bot.service.translation.TranslationWorkflowModule;
+import com.linetranslate.bot.service.translation.TranslationResponse;
 
 @ExtendWith(MockitoExtension.class)
 class ImageTranslationDetectionContractTests {
@@ -99,6 +100,12 @@ class ImageTranslationDetectionContractTests {
         when(userProfileRepository.findByUserId("U-test")).thenReturn(Optional.of(userProfile));
         when(userProfileRepository.save(any(UserProfile.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
+        lenient().when(translationRecordRepository.save(any(TranslationRecord.class)))
+                .thenAnswer(invocation -> {
+                    TranslationRecord record = invocation.getArgument(0);
+                    record.setId("image-record-1");
+                    return record;
+                });
         when(messagingApiBlobClient.getMessageContent("message-id"))
                 .thenReturn(CompletableFuture.completedFuture(blobResult));
         when(blobResult.body()).thenReturn(blobContent);
@@ -121,6 +128,17 @@ class ImageTranslationDetectionContractTests {
         verify(translationRecordRepository).save(captor.capture());
         assertThat(captor.getValue().getSourceLanguage()).isEqualTo("en");
         assertThat(response).contains("偵測到:").contains("翻譯結果");
+    }
+
+    @Test
+    void imageTranslationResponseCarriesSafeActionReference() {
+        TranslationResponse response = imageTranslationService
+                .processImageTranslationResponse("U-test", "message-id");
+
+        assertThat(response.actionable()).isTrue();
+        assertThat(response.recordId()).isEqualTo("image-record-1");
+        assertThat(response.translatedText()).isEqualTo("翻譯結果");
+        assertThat(response.displayText()).contains("識別的文字：", "翻譯結果");
     }
 
     @Test

@@ -63,6 +63,10 @@ public class TranslationService {
      * @return 翻譯結果
      */
     public String processTranslationRequest(String userId, String text) {
+        return processTranslationResponse(userId, text).displayText();
+    }
+
+    public TranslationResponse processTranslationResponse(String userId, String text) {
         Instant start = Instant.now();
         log.info("收到翻譯請求: user={}, content={}",
                 SafeLog.user(userId), SafeLog.content(text));
@@ -90,7 +94,7 @@ public class TranslationService {
             }
 
             if (sourceText.isEmpty()) {
-                return "請提供要翻譯成" + languageName + "的文字。";
+                return TranslationResponse.plain("請提供要翻譯成" + languageName + "的文字。");
             }
 
             log.info("多行格式翻譯: languageName={}, target={}, content={}",
@@ -108,7 +112,7 @@ public class TranslationService {
             }
 
             if (sourceText.isEmpty()) {
-                return "請提供要翻譯成" + languageCode + "的文字。";
+                return TranslationResponse.plain("請提供要翻譯成" + languageCode + "的文字。");
             }
 
             log.info("多行格式翻譯: languageCode={}, targetName={}, content={}",
@@ -160,7 +164,8 @@ public class TranslationService {
                     sourceText = matcherCN.group(2).trim();
 
                     if (sourceText.isEmpty()) {
-                        return "請在「翻譯成" + languageName + "」後面輸入要翻譯的文字。";
+                        return TranslationResponse.plain(
+                                "請在「翻譯成" + languageName + "」後面輸入要翻譯的文字。");
                     }
 
                     log.info("指定翻譯: languageName={}, target={}, content={}",
@@ -172,7 +177,8 @@ public class TranslationService {
                     sourceText = matcherCode.group(2).trim();
 
                     if (sourceText.isEmpty()) {
-                        return "請在「翻譯成" + languageCode + "」後面輸入要翻譯的文字。";
+                        return TranslationResponse.plain(
+                                "請在「翻譯成" + languageCode + "」後面輸入要翻譯的文字。");
                     }
 
                     log.info("指定翻譯: languageCode={}, targetName={}, content={}",
@@ -203,7 +209,11 @@ public class TranslationService {
     /**
      * 處理默認的翻譯情況（無指定目標語言）
      */
-    private String handleDefaultTranslation(String userId, String text, UserProfile userProfile, Instant start) {
+    private TranslationResponse handleDefaultTranslation(
+            String userId,
+            String text,
+            UserProfile userProfile,
+            Instant start) {
         return performTranslation(
                 userId,
                 userProfile,
@@ -217,7 +227,7 @@ public class TranslationService {
     /**
      * 執行翻譯並處理相關記錄
      */
-    private String performTranslation(
+    private TranslationResponse performTranslation(
             String userId,
             UserProfile userProfile,
             String sourceText,
@@ -236,18 +246,19 @@ public class TranslationService {
                         start));
         if (outcome instanceof TranslationWorkflowOutcome.Failure failure) {
             logTranslationFailure(userId, failure.failure());
-            return PROVIDER_UNAVAILABLE_MESSAGE;
+            return TranslationResponse.plain(PROVIDER_UNAVAILABLE_MESSAGE);
         }
         TranslationWorkflowResult result = ((TranslationWorkflowOutcome.Success) outcome).result();
         if (!includeLanguageSummary) {
-            return result.translatedText();
+            return TranslationResponse.success(result, result.translatedText());
         }
 
         // 在翻譯結果中添加偵測到的語言資訊和翻譯目標語言
         String sourceLanguageName = LanguageUtils.toChineseName(result.sourceLanguage());
         String targetLanguageName = LanguageUtils.toChineseName(result.targetLanguage());
-        return result.translatedText() + "\n\n[偵測到: " + sourceLanguageName
+        String displayText = result.translatedText() + "\n\n[偵測到: " + sourceLanguageName
                 + " | 翻譯成: " + targetLanguageName + "]";
+        return TranslationResponse.success(result, displayText);
     }
 
     /**
@@ -259,8 +270,15 @@ public class TranslationService {
      * @return 翻譯結果
      */
     public String quickTranslate(String userId, String text, String targetLanguageCode) {
+        return quickTranslateResponse(userId, text, targetLanguageCode).displayText();
+    }
+
+    public TranslationResponse quickTranslateResponse(
+            String userId,
+            String text,
+            String targetLanguageCode) {
         if (!LanguageUtils.isSupported(targetLanguageCode)) {
-            return "不支持的語言代碼：" + targetLanguageCode;
+            return TranslationResponse.plain("不支持的語言代碼：" + targetLanguageCode);
         }
 
         Instant start = Instant.now();
@@ -278,6 +296,23 @@ public class TranslationService {
                 TranslationRequestKind.QUICK_TEXT,
                 start,
                 false);
+    }
+
+    public TranslationResponse translateExisting(
+            String userId,
+            String sourceText,
+            String targetLanguageCode) {
+        if (!LanguageUtils.isSupported(targetLanguageCode)) {
+            return TranslationResponse.plain("不支持的語言代碼：" + targetLanguageCode);
+        }
+        return performTranslation(
+                userId,
+                ensureUserProfileExists(userId),
+                sourceText,
+                LanguageUtils.toLanguageCode(targetLanguageCode),
+                TranslationRequestKind.STANDARD_TEXT,
+                Instant.now(),
+                true);
     }
 
     /**
@@ -309,7 +344,7 @@ public class TranslationService {
                 null,
                 TranslationRequestKind.BATCH_TEXT,
                 start,
-                false);
+                false).displayText();
     }
 
     private void logTranslationFailure(String userId, AiExecutionFailure failure) {

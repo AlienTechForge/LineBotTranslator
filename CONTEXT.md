@@ -8,7 +8,7 @@
 
 本系統接收 LINE webhook，把文字、圖片、命令或 postback 轉成明確 intent，執行翻譯或管理操作，再以 LINE message 回覆。MongoDB 是必要的 durable state；MinIO 與 Google Cloud Vision 可 disabled/degraded；OpenRouter 是唯一 AI Provider，其設定狀態直接影響翻譯 readiness。
 
-目前產品範圍包含文字翻譯、指定目標語言、圖片 OCR/AI 辨識後翻譯、個人翻譯偏好、管理員卡片、runtime settings、使用量／成本報表與可靠 webhook ingestion。
+目前產品範圍包含文字翻譯、指定目標語言、圖片 OCR/AI 辨識後翻譯、翻譯結果 actions、個人翻譯偏好、管理員卡片、runtime settings、使用量／成本報表與可靠 webhook ingestion。
 
 下列項目明確不在目前範圍，不應從本文件推導為待實作功能：
 
@@ -31,6 +31,7 @@
 | **Admin Intent** | `AdminIntentParser` 驗證後的管理操作。敏感操作執行前必須重新授權。 | 不是「解析成功即已授權」。 |
 | **Translation Request** | 已正規化、可進入共用 workflow 的翻譯需求；包含 User Profile、原文、可選目標語言、request kind 與開始時間。 | 不是 provider-specific request body。 |
 | **Translation Result** | 成功 workflow 的結果；包含來源／目標語言、實際 provider/model、token metadata、latency 與翻譯文字。 | 不只是一段翻譯後字串。 |
+| **Translation Action** | 從 Translation Result 建立的複製、換目標語言或重新翻譯操作；provider action 只攜帶 opaque Translation Record ID 與 allowlisted target，執行時重新驗證 owner 並先取得 durable claim。 | 不可把原文／譯文放進 postback data，也不代表重複點擊可重複計費。 |
 | **Translation Workflow** | `TranslationWorkflowModule` 擁有的單次流程：Language Detection → resolve User Preferences → 選目標語言 → provider execution → 成功持久化。 | 不包含 LINE webhook 驗簽或 LINE message rendering。 |
 | **Translation Request Kind** | 翻譯來源類型：一般文字、快速文字、批次文字或圖片 OCR。 | 不等同 Usage Event 的 TEXT/IMAGE 維度。 |
 | **Language Detection** | 判定 Translation Request 的 source language；可由規則與 AI detection 組合。 | 不決定 provider，也不直接寫入使用者偏好。 |
@@ -69,6 +70,7 @@
 10. Runtime Settings 只保存 allowlisted 非敏感欄位，具有 schema version、revision、operator 與 timestamp；Mongo 讀取失敗時回 deployment defaults。
 11. 每個 Provider Attempt 產生一個 Usage Event；app 不做跨 provider fallback；accounting failure 採 fail-open，不可改變 provider outcome。
 12. Usage Event 與 logs 遵守 data minimization；credential、使用者原文、OCR 結果、signed URL 與第三方完整 payload 不得記錄。
+13. Translation Action 必須以 `recordId + userId` 驗證 ownership；同一來源紀錄與 target 的 durable claim 只允許一次 Provider Attempt。
 
 ## 端到端流程
 
@@ -89,7 +91,7 @@
 4. 以 explicit target language 或 preferences 決定 Target Language。
 5. `CachedTranslationAdapter` 查安全 cache identity；miss 時呼叫 `AiProviderExecutionModule`。
 6. provider execution 經 Model Selection 選出一個 OpenRouter model，執行單一 Provider Attempt 並寫 Usage Event。
-7. 成功時建立 Translation Result、Translation Record，更新 User Profile 活動與最近語言；失敗回 normalized failure。
+7. 成功時建立 Translation Result、Translation Record，更新 User Profile 活動與最近語言；LINE renderer 可用 record ID 建立安全 Translation Actions；失敗回 normalized failure。
 
 ### Image Translation
 
@@ -126,6 +128,7 @@
 | --- | --- | --- | --- |
 | `user_profiles` | User Preferences / profile services | LINE profile metadata、preferences、活動與計數 | API secrets；其他 Module 不直接重建 preference precedence。 |
 | `translation_records` | Translation Workflow | 成功翻譯內容、語言、actual provider/model、時間、image storage metadata | 精確 token/cost；失敗 attempt。 |
+| `translation_action_claims` | Translation Action Module | hashed action ID、owner、來源／結果 record ID、target、status、timestamps | 原文、譯文、LINE payload、postback data、provider payload 或 secret。 |
 | `runtime_settings` | Runtime Settings Module | allowlisted settings、schema/revision、operator/time | credential、token、API key、connection secret。 |
 | `ai_usage_events` | Usage Accounting Module | provider attempt metadata、token、pricing/cost snapshot | user ID、原文、譯文、correlation ID、secret。 |
 | `webhook_event_receipts` | Webhook ingestion | event ID、status、claim/attempt/time metadata | LINE message content、reply token。 |

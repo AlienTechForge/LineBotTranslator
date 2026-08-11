@@ -56,6 +56,20 @@ class LineLoadingAnimationAdapterTests {
     }
 
     @Test
+    void privateRetranslationDisplaysLoadingAnimation() {
+        var request = new ShowLoadingAnimationRequest("user-1", 20);
+        when(messagingApiClient.showLoadingAnimation(request))
+                .thenReturn(CompletableFuture.completedFuture(null));
+        var adapter = new LineLoadingAnimationAdapter(messagingApiClient);
+
+        adapter.beforeText(
+                new UserSource("user-1"),
+                new LineIntent.Retranslate("507f1f77bcf86cd799439011", "ja"));
+
+        verify(messagingApiClient).showLoadingAnimation(request);
+    }
+
+    @Test
     void privateImageDisplaysLoadingAnimation() {
         var request = new ShowLoadingAnimationRequest("user-1", 20);
         when(messagingApiClient.showLoadingAnimation(request))

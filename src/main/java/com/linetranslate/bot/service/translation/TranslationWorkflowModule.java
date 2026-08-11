@@ -61,7 +61,8 @@ public class TranslationWorkflowModule {
         long processingTimeMillis = Math.max(
                 0,
                 Duration.between(request.startedAt(), Instant.now()).toMillis());
-        persistSuccess(request, sourceLanguage, targetLanguage, execution, processingTimeMillis);
+        String recordId = persistSuccess(
+                request, sourceLanguage, targetLanguage, execution, processingTimeMillis);
 
         return new TranslationWorkflowOutcome.Success(new TranslationWorkflowResult(
                 request.sourceText(),
@@ -69,7 +70,8 @@ public class TranslationWorkflowModule {
                 targetLanguage,
                 execution,
                 processingTimeMillis,
-                request.kind()));
+                request.kind(),
+                recordId));
     }
 
     private String defaultTargetLanguage(String sourceLanguage, UserPreferences preferences) {
@@ -86,7 +88,7 @@ public class TranslationWorkflowModule {
         return preferences.fallbackTargetLanguage();
     }
 
-    private void persistSuccess(
+    private String persistSuccess(
             TranslationWorkflowRequest request,
             String sourceLanguage,
             String targetLanguage,
@@ -106,7 +108,7 @@ public class TranslationWorkflowModule {
                 .imageUrl(request.imageUrl())
                 .imageStored(request.imageStored())
                 .build();
-        translationRecordRepository.save(record);
+        TranslationRecord savedRecord = translationRecordRepository.save(record);
 
         UserProfile userProfile = request.userProfile();
         userProfile.setLastInteractionAt(LocalDateTime.now());
@@ -124,6 +126,7 @@ public class TranslationWorkflowModule {
                 request.kind(),
                 SafeLog.metadata(execution.providerName()),
                 SafeLog.metadata(execution.modelName()));
+        return savedRecord == null ? record.getId() : savedRecord.getId();
     }
 
     private void updateRecentActivity(

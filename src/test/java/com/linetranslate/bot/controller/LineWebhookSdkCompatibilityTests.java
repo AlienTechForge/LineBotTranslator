@@ -43,6 +43,7 @@ import com.linecorp.bot.messaging.model.TextMessage;
 import com.linetranslate.bot.service.ocr.ImageTranslationService;
 import com.linetranslate.bot.service.storage.MinioStorageService;
 import com.linetranslate.bot.service.translation.TranslationService;
+import com.linetranslate.bot.service.translation.TranslationResponse;
 import com.linetranslate.bot.service.webhook.WebhookClaim;
 import com.linetranslate.bot.service.webhook.WebhookEventReceiptStore;
 
@@ -163,9 +164,9 @@ class LineWebhookSdkCompatibilityTests {
                   ]
                 }
                 """;
-        when(imageTranslationService.processImageTranslation(
+        when(imageTranslationService.processImageTranslationResponse(
                 "U0123456789abcdef", "image-message-id"))
-                .thenReturn("圖片翻譯完成");
+                .thenReturn(TranslationResponse.plain("圖片翻譯完成"));
         when(messagingApiClient.replyMessage(any()))
                 .thenReturn(CompletableFuture.completedFuture(null));
 
@@ -175,7 +176,7 @@ class LineWebhookSdkCompatibilityTests {
                         .content(payload))
                 .andExpect(status().isOk());
 
-        verify(imageTranslationService).processImageTranslation(
+        verify(imageTranslationService).processImageTranslationResponse(
                 "U0123456789abcdef", "image-message-id");
         ArgumentCaptor<ReplyMessageRequest> captor = ArgumentCaptor.forClass(ReplyMessageRequest.class);
         verify(messagingApiClient, timeout(1_000)).replyMessage(captor.capture());
@@ -233,7 +234,7 @@ class LineWebhookSdkCompatibilityTests {
                 .andExpect(status().isBadRequest());
 
         verify(receiptStore, never()).claim(any());
-        verify(translationService, never()).processTranslationRequest(anyString(), anyString());
+        verify(translationService, never()).processTranslationResponse(anyString(), anyString());
     }
 
     @Test
@@ -245,8 +246,8 @@ class LineWebhookSdkCompatibilityTests {
         doReturn(WebhookClaim.claimed("event-duplicate", "claim-duplicate"))
                 .doReturn(WebhookClaim.duplicate("event-duplicate"))
                 .when(receiptStore).claim(any());
-        when(translationService.processTranslationRequest("U-user", "hello"))
-                .thenReturn("translated");
+        when(translationService.processTranslationResponse("U-user", "hello"))
+                .thenReturn(TranslationResponse.plain("translated"));
         when(messagingApiClient.replyMessage(any()))
                 .thenReturn(CompletableFuture.completedFuture(null));
 
@@ -261,9 +262,9 @@ class LineWebhookSdkCompatibilityTests {
                         .content(redelivery))
                 .andExpect(status().isOk());
 
-        verify(translationService, timeout(2_000)).processTranslationRequest("U-user", "hello");
+        verify(translationService, timeout(2_000)).processTranslationResponse("U-user", "hello");
         verify(messagingApiClient, timeout(2_000)).replyMessage(any());
-        verify(translationService, times(1)).processTranslationRequest("U-user", "hello");
+        verify(translationService, times(1)).processTranslationResponse("U-user", "hello");
         verify(messagingApiClient, times(1)).replyMessage(any());
     }
 
@@ -271,11 +272,11 @@ class LineWebhookSdkCompatibilityTests {
     void longTranslationDoesNotDelayWebhookAcknowledgement() throws Exception {
         CountDownLatch processingStarted = new CountDownLatch(1);
         CountDownLatch releaseProcessing = new CountDownLatch(1);
-        when(translationService.processTranslationRequest("U-slow", "slow"))
+        when(translationService.processTranslationResponse("U-slow", "slow"))
                 .thenAnswer(invocation -> {
                     processingStarted.countDown();
                     releaseProcessing.await(5, TimeUnit.SECONDS);
-                    return "done";
+                    return TranslationResponse.plain("done");
                 });
         when(messagingApiClient.replyMessage(any()))
                 .thenReturn(CompletableFuture.completedFuture(null));
@@ -302,11 +303,11 @@ class LineWebhookSdkCompatibilityTests {
     void fullBoundedQueueReturnsServiceUnavailableAndReleasesRejectedClaim() throws Exception {
         CountDownLatch processingStarted = new CountDownLatch(1);
         CountDownLatch releaseProcessing = new CountDownLatch(1);
-        when(translationService.processTranslationRequest(anyString(), anyString()))
+        when(translationService.processTranslationResponse(anyString(), anyString()))
                 .thenAnswer(invocation -> {
                     processingStarted.countDown();
                     releaseProcessing.await(5, TimeUnit.SECONDS);
-                    return "done";
+                    return TranslationResponse.plain("done");
                 });
         when(messagingApiClient.replyMessage(any()))
                 .thenReturn(CompletableFuture.completedFuture(null));

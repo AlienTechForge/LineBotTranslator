@@ -7,11 +7,14 @@ import com.linetranslate.bot.model.TranslationRecord;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Optional;
 
 @Repository
 public interface TranslationRecordRepository extends MongoRepository<TranslationRecord, String> {
 
     List<TranslationRecord> findByUserId(String userId);
+
+    Optional<TranslationRecord> findByIdAndUserId(String id, String userId);
 
     List<TranslationRecord> findByUserIdOrderByTimestampDesc(String userId);
 

@@ -57,6 +57,7 @@
 
 - **UserProfileRepository**：用戶資料存取
 - **TranslationRecordRepository**：翻譯記錄存取
+- **TranslationActionClaimRepository**：翻譯結果 action 的 durable idempotency claim
 
 #### 配置層
 
@@ -103,7 +104,7 @@ public class MongoConfig extends AbstractMongoClientConfiguration {
 - 預設連接字串：`mongodb://localhost:27017/linebot_translator`
 - 預設資料庫名稱：`linebot_translator`
 
-專案使用兩個主要的集合（Collection）來儲存資料：
+以下列出使用者與翻譯互動相關的主要集合（其他 runtime、usage 與 webhook 集合見 `CONTEXT.md`）：
 
 使用者資料（user_profiles）：
 {
@@ -140,6 +141,20 @@ public class MongoConfig extends AbstractMongoClientConfiguration {
   "imageUrl": "圖片URL(如果是圖片翻譯)",
   "timestamp": "時間戳"
 }
+
+翻譯 action claim（translation_action_claims）：
+{
+  "_id": "userId + sourceRecordId + targetLanguage 的 SHA-256",
+  "userId": "LINE 用戶 ID",
+  "sourceRecordId": "來源 Translation Record ID",
+  "targetLanguage": "目標語言",
+  "status": "PROCESSING | COMPLETED | FAILED",
+  "resultRecordId": "完成後的 Translation Record ID",
+  "createdAt": "建立時間",
+  "updatedAt": "更新時間"
+}
+
+此集合不保存原文、譯文、LINE payload、postback data 或 secrets；Mongo `_id` 唯一性在 provider 呼叫前阻止同一 action 重複執行。
 
 ### 資料模型
 
