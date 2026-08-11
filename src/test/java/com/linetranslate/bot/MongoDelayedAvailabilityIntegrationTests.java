@@ -55,7 +55,7 @@ class MongoDelayedAvailabilityIntegrationTests {
         registry.add("mongodb.heartbeat-frequency-ms", () -> 250);
         registry.add("mongodb.min-heartbeat-frequency-ms", () -> 100);
         registry.add("minio.enabled", () -> false);
-        registry.add("openai.api.key", () -> "test-openai-key");
+        registry.add("openrouter.api.key", () -> "test-openrouter-key");
     }
 
     @AfterAll

@@ -31,6 +31,7 @@ public class ProductionConfigurationValidator implements InitializingBean {
         requiredSettings.put("LINE_BOT_CHANNEL_SECRET", "line.bot.channel-secret");
         requiredSettings.put("MONGODB_URI", "mongodb.uri");
         requiredSettings.put("MONGODB_DATABASE", "mongodb.database");
+        requiredSettings.put("OPEN_ROUTE_API_KEY", "openrouter.api.key");
 
         List<String> missing = requiredSettings.entrySet().stream()
                 .filter(entry -> isBlank(environment.getProperty(entry.getValue())))

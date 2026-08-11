@@ -8,11 +8,11 @@ Accepted
 
 ## Context
 
-Provider、model 與目標語言曾由多個 caller 直接讀取 `UserProfile` nullable fields，再各自套 fallback。Legacy Mongo documents、runtime defaults 與 provider/model compatibility 會因此得到不一致結果。
+Model 與目標語言曾由多個 caller 直接讀取 `UserProfile` nullable fields，再各自套 fallback。Legacy Mongo documents、runtime defaults 與 model capability 會因此得到不一致結果。
 
 ## Decision
 
-`UserPreferencesModule` 是 validation、precedence、fallback、update 與 persistence 的唯一 owner。其他 Module 只消費 immutable `UserPreferences`，不直接從 `UserProfile` 重建規則。Provider-specific model 以 `modelsByProvider` 表示；legacy missing/invalid fields 由 Module 正規化為 readable effective values。
+`UserPreferencesModule` 是 validation、precedence、fallback、update 與 persistence 的唯一 owner。其他 Module 只消費 immutable `UserPreferences`，不直接從 `UserProfile` 重建規則。偏好只保存一個經 `AiModelCatalog` 驗證的 OpenRouter model slug；legacy missing/invalid fields 由 Module 正規化為 readable effective values。
 
 ## Consequences
 

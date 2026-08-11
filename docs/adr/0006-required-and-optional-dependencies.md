@@ -8,13 +8,13 @@ Accepted
 
 ## Context
 
-MongoDB、MinIO、OCR 與 AI providers 的 outage impact 不相同。把所有 dependency 失敗都當成 process startup failure，會讓 optional image storage/OCR 影響文字翻譯；全部忽略則會在必要 state 不可用時接收無法可靠處理的 traffic。
+MongoDB、MinIO、OCR 與 OpenRouter 的 outage impact 不相同。把所有 dependency 失敗都當成 process startup failure，會讓 optional image storage/OCR 影響文字翻譯；全部忽略則會在必要 state 不可用時接收無法可靠處理的 traffic。
 
 ## Decision
 
-MongoDB 是 required dependency，readiness 不可用時阻擋 traffic。MinIO 是 optional image-storage side effect，可為 disabled 或 degraded；storage failure 不阻止 OCR/translation。OCR 與 provider configuration 以 explicit health component 顯示 configured/disabled/degraded，AI 全部不可用時 readiness 反映 translation capability 不可用。
+MongoDB 是 required dependency，readiness 不可用時阻擋 traffic。MinIO 是 optional image-storage side effect，可為 disabled 或 degraded；storage failure 不阻止 OCR/translation。OCR 與 OpenRouter configuration 以 explicit health component 顯示 configured/disabled/degraded；OpenRouter 未配置時 readiness 反映 translation capability 不可用。
 
-Production configuration validator 驗證必要 LINE/Mongo settings；health endpoint 與 startup summary 不輸出 secret。
+Production configuration validator 驗證必要 LINE/Mongo/OpenRouter settings；deploy 在替換容器前以 `/models` 驗證 credential，health endpoint 與 startup summary 不輸出 secret。
 
 ## Consequences
 

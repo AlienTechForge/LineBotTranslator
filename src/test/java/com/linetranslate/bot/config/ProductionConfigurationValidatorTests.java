@@ -35,6 +35,7 @@ class ProductionConfigurationValidatorTests {
                 .withProperty(
                         "mongodb.uri",
                         "mongodb://seeded-user:seeded-mongo-password@mongo.example:27017/app")
-                .withProperty("mongodb.database", "linebot-translator");
+                .withProperty("mongodb.database", "linebot-translator")
+                .withProperty("openrouter.api.key", "seeded-openrouter-key");
     }
 }

@@ -8,7 +8,7 @@ Accepted
 
 ## Context
 
-管理員需在不中斷服務的情況下調整預設語言、provider/model 與 OCR flag。只改 singleton field 會在 restart 遺失；把任意環境設定寫入資料庫則可能擴大 secret exposure。
+管理員需在不中斷服務的情況下調整預設語言、OpenRouter default model 與 OCR flag。只改 singleton field 會在 restart 遺失；把任意環境設定寫入資料庫則可能擴大 secret exposure。
 
 ## Decision
 

@@ -25,7 +25,7 @@ public class TranslationRecord {
     private String sourceLanguage;
     private String targetLanguage;
     private String translatedText;
-    private String aiProvider; // openai 或 gemini
+    private String aiProvider; // openrouter（歷史資料可能保留舊維度）
     private String modelName;
     private LocalDateTime createdAt;
     private double processingTimeMs;

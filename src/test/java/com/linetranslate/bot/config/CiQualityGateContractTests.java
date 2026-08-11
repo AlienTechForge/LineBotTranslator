@@ -72,4 +72,20 @@ class CiQualityGateContractTests {
                 .contains("WEBHOOK_REPLY_MAX_ATTEMPTS")
                 .contains("WEBHOOK_REPLY_RETRY_BACKOFF");
     }
+
+    @Test
+    void deploymentUsesOnlyTheAuthorizedOpenRouterSecretAndValidatesItBeforeMutation()
+            throws IOException {
+        String workflow = Files.readString(Path.of(".github", "workflows", "ci-cd.yml"));
+        String deployScript = Files.readString(Path.of("scripts", "deploy.sh"));
+
+        assertThat(workflow)
+                .contains("OPEN_ROUTE_API_KEY: ${{ secrets.OPEN_ROUTE_API_KEY }}")
+                .doesNotContain("OPENAI_API_KEY", "GEMINI_API_KEY", "AI_DEFAULT_PROVIDER");
+        assertThat(deployScript)
+                .contains("require_value OPEN_ROUTE_API_KEY")
+                .contains("validate_openrouter")
+                .contains("/models?output_modalities=text")
+                .doesNotContain("OPENAI_API_KEY", "GEMINI_API_KEY", "AI_DEFAULT_PROVIDER");
+    }
 }

@@ -20,10 +20,7 @@ public class AiLanguageDetectionService {
 
     private final AiProviderExecutionModule aiProviderExecutionModule;
     
-    @Value("${app.language-detection.ai-provider:gemini}")
-    private String aiProvider;
-    
-    @Value("${app.language-detection.model-name:gemini-1.5-flash-001}")
+    @Value("${app.language-detection.model-name:${OPEN_ROUTE_MODEL_NAME:openai/gpt-4o-mini}}")
     private String modelName;
     
     @Value("${app.language-detection.default-chinese:zh-tw}")
@@ -45,10 +42,7 @@ public class AiLanguageDetectionService {
             // 構建提示詞
             String prompt = "請檢測以下文本的語言，只返回 ISO 639-1 語言代碼（如 zh, ja, en, ko 等），不要添加任何解釋或其他內容。\n\n" + text;
 
-            AiExecutionOutcome outcome = aiProviderExecutionModule.generateTextOutcome(
-                    aiProvider,
-                    modelName,
-                    prompt);
+            AiExecutionOutcome outcome = aiProviderExecutionModule.generateTextOutcome(modelName, prompt);
             if (outcome instanceof AiExecutionOutcome.Failure failure) {
                 log.warn(
                         "AI 語言檢測改用本地偵測: provider={}, model={}, outcome={}, reason={}, correlation={}",

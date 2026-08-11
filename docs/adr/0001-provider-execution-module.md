@@ -4,7 +4,7 @@
 
 ## Status
 
-Accepted
+Superseded by [ADR-0011](0011-openrouter-single-provider-adapter.md)
 
 ## Context
 

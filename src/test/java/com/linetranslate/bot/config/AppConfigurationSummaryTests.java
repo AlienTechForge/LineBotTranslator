@@ -22,12 +22,11 @@ class AppConfigurationSummaryTests {
                 indicator(Health.down().build()),
                 indicator(Health.status(DependencyHealthConfig.DEGRADED).build()),
                 indicator(Health.status(DependencyHealthConfig.DISABLED).build()),
-                indicator(Health.up().build()),
-                indicator(Health.status(DependencyHealthConfig.DISABLED).build()));
+                indicator(Health.up().build()));
 
         assertThat(summary.statusSummary()).isEqualTo(
                 "LINE=configured, MongoDB=unavailable, MinIO=degraded, OCR=disabled, "
-                        + "OpenAI=configured, Gemini=disabled");
+                        + "OpenRouter=configured");
     }
 
     private HealthIndicator indicator(Health health) {

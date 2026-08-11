@@ -19,7 +19,8 @@ public interface AiProviderAdapter {
     AiProviderResponse execute(AiProviderRequest request);
 
     default boolean supports(AiProviderRequest request) {
-        return capabilities().contains(request.operation())
+        return request != null
+                && capabilities().contains(request.operation())
                 && availableModels().contains(request.model());
     }
 }

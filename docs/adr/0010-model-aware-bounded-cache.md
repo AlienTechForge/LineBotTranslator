@@ -8,11 +8,11 @@ Accepted
 
 ## Context
 
-只以原文／目標語言建立 cache key 會在 provider、model、style、glossary 或 prompt 改變後回傳錯誤語意；無界 cache 會持續成長。Failure 或 fallback result 被 cache 也會隱藏 provider recovery。
+只以原文／目標語言建立 cache key 會在 provider、model、style、glossary 或 prompt 改變後回傳錯誤語意；無界 cache 會持續成長。Failure 或 model-mismatched result 被 cache 也會延長錯誤結果。
 
 ## Decision
 
-使用 Caffeine bounded cache Adapter，採 expire-after-write TTL 與 maximum entries。Cache identity 包含 source digest、target、planned/actual provider/model、style、glossary version 與 prompt version。只保存 direct、route-matched success；failure、safety blocked、fallback 與 route mismatch 不寫入。
+使用 Caffeine bounded cache Adapter，採 expire-after-write TTL 與 maximum entries。Cache identity 包含 source digest、target、planned/actual provider/model、style、glossary version 與 prompt version。只保存 model identity 一致的 success；failure、safety blocked 與 model mismatch 不寫入。
 
 Metrics 只使用 low-cardinality hit/miss/write/eviction tags，不含使用者原文。
 
@@ -21,7 +21,7 @@ Metrics 只使用 low-cardinality hit/miss/write/eviction tags，不含使用者
 ### Positive
 
 - Output-affecting dimension 變更自然失效，memory 使用有界。
-- Provider recovery 不會被 fallback/failure cache 遮蔽。
+- Provider recovery 不會被 failure cache 遮蔽。
 
 ### Negative / trade-offs
 
@@ -31,7 +31,7 @@ Metrics 只使用 low-cardinality hit/miss/write/eviction tags，不含使用者
 ## Alternatives considered
 
 - Annotation-based unbounded cache：拒絕，缺少容量與完整 identity 控制。
-- Cache 所有成功（含 fallback）：拒絕，會延長 degraded route 的可見時間。
+- Cache 所有回應：拒絕，failure 或 model mismatch 會延長 degraded state 的可見時間。
 
 ## Related
 

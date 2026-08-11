@@ -4,9 +4,7 @@ package com.linetranslate.bot.service.settings;
 public enum RuntimeSettingKey {
     DEFAULT_CHINESE_TARGET_LANGUAGE("defaultTargetLanguageForChinese"),
     DEFAULT_OTHER_TARGET_LANGUAGE("defaultTargetLanguageForOthers"),
-    DEFAULT_AI_PROVIDER("defaultAiProvider"),
-    OPENAI_DEFAULT_MODEL("openAiDefaultModel"),
-    GEMINI_DEFAULT_MODEL("geminiDefaultModel"),
+    OPENROUTER_DEFAULT_MODEL("openRouterDefaultModel"),
     OCR_ENABLED("ocrEnabled");
 
     private final String fieldName;

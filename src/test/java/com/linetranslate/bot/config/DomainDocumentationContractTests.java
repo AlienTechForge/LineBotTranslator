@@ -46,9 +46,11 @@ class DomainDocumentationContractTests {
         }
         assertThat(decisions).hasSizeGreaterThanOrEqualTo(10);
         for (Path decision : decisions) {
-            assertThat(Files.readString(decision))
+            String content = Files.readString(decision).replace("\r\n", "\n");
+            assertThat(content)
                     .as(decision.toString())
-                    .contains("## Status", "Accepted", "## Context", "## Decision", "## Consequences");
+                    .contains("## Status", "## Context", "## Decision", "## Consequences")
+                    .containsAnyOf("## Status\n\nAccepted", "## Status\n\nSuperseded by");
         }
     }
 
@@ -61,7 +63,8 @@ class DomainDocumentationContractTests {
                 .contains("[Architecture Decision Records](docs/adr/README.md)")
                 .contains("/外文翻譯 [語言]")
                 .contains("/中文翻譯 [語言]")
-                .contains("/setmodel [模型]")
-                .doesNotContain("/setlang");
+                .contains("/models [關鍵字]")
+                .contains("/model [完整模型 slug]")
+                .doesNotContain("/setlang", "/setai");
     }
 }

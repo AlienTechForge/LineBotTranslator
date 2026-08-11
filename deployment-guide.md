@@ -11,7 +11,9 @@
 
 部署會先保留目前容器。新容器通過 `/actuator/health/readiness` 後才移除舊容器；失敗或腳本中斷時會恢復舊容器。
 
-`/actuator/health/liveness` 只代表程序存活；`/actuator/health/readiness` 會檢查 LINE 設定、MongoDB、MinIO、OCR 與 AI provider 設定。必要依賴失敗時回 `DOWN`/HTTP 503；MinIO 或 OCR 等 optional dependency 失敗時回 `DEGRADED`/HTTP 200，因此不會造成部署 rollback。回應只公開 component status，不公開 details。
+在停止舊容器前，部署腳本會用 `OPEN_ROUTE_API_KEY` 呼叫 OpenRouter `/models`，只檢查 HTTP 狀態且不輸出回應內容。credential 無效時部署立即停止。隔離的 local smoke 可設 `VALIDATE_OPENROUTER_REMOTE=false`，正式 workflow 不應關閉。
+
+`/actuator/health/liveness` 只代表程序存活；`/actuator/health/readiness` 會檢查 LINE 設定、MongoDB、MinIO、OCR 與 OpenRouter 設定。必要依賴失敗時回 `DOWN`/HTTP 503；MinIO 或 OCR 等 optional dependency 失敗時回 `DEGRADED`/HTTP 200，因此不會造成部署 rollback。回應只公開 component status，不公開 details。
 
 ## 測試與 quality gate
 
@@ -42,17 +44,15 @@ Self-hosted runner 必須：
 - `LINE_BOT_CHANNEL_SECRET`
 - `MONGODB_URI`
 - `MONGODB_DATABASE`
-- `OPENAI_API_KEY` 或 `GEMINI_API_KEY`，依 `AI_DEFAULT_PROVIDER` 而定
+- `OPEN_ROUTE_API_KEY`
 - `GOOGLE_CREDENTIALS_JSON`，當 `OCR_ENABLED=true` 時必要
 
 依功能設定：
 
-- `OPENAI_MODEL_NAME`、`OPENAI_AVAILABLE_MODELS`、`OPENAI_API_URL`
-- `GEMINI_MODEL_NAME`、`GEMINI_AVAILABLE_MODELS`
-- `OCR_ENABLED`、`AI_DEFAULT_PROVIDER`
+- `OCR_ENABLED`
 - `ADMIN_USERS`
 - `MINIO_ENDPOINT`、`MINIO_ACCESS_KEY`、`MINIO_SECRET_KEY`、`MINIO_BUCKET_NAME`
-- `LANGUAGE_DETECTION_USE_AI`、`LANGUAGE_DETECTION_AI_PROVIDER`、`LANGUAGE_DETECTION_DEFAULT_CHINESE`
+- `LANGUAGE_DETECTION_USE_AI`、`LANGUAGE_DETECTION_DEFAULT_CHINESE`
 - `APP_BROADCAST_TEST_MODE`
 
 Secrets 只作為容器環境變數傳入，不會寫入 image、Repository 或 Actions artifact。Google service account JSON 會以權限 `0400` 儲存在 Docker volume，掛載至 `/run/secrets/linebot.json`。
@@ -80,6 +80,8 @@ Secrets 只作為容器環境變數傳入，不會寫入 image、Repository 或 
 | `SERVER_PORT` | `4040` | 容器內服務 port |
 | `HOST_PORT` | `4040` | 非 host network 時的宿主機 port |
 | `HEALTH_TIMEOUT_SECONDS` | `120` | 等待 readiness 的最長秒數 |
+| `OPEN_ROUTE_MODEL_NAME` | `openai/gpt-4o-mini` | OpenRouter 全域預設模型 slug |
+| `OPEN_ROUTE_API_URL` | `https://openrouter.ai/api/v1` | OpenRouter API base URL |
 | `MONGODB_CONNECT_TIMEOUT_MS` | `3000` | Mongo socket 連線 timeout |
 | `MONGODB_READ_TIMEOUT_MS` | `5000` | Mongo socket 讀取 timeout |
 | `MONGODB_SERVER_SELECTION_TIMEOUT_MS` | `3000` | 每次操作等待可用 Mongo 節點的上限 |

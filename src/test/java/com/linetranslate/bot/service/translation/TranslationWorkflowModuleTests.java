@@ -9,7 +9,6 @@ import static org.mockito.Mockito.when;
 
 import java.time.Instant;
 import java.util.List;
-import java.util.Map;
 import java.util.stream.Stream;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -46,8 +45,7 @@ class TranslationWorkflowModuleTests {
         recordRepository = Mockito.mock(TranslationRecordRepository.class);
         userPreferencesModule = Mockito.mock(UserPreferencesModule.class);
         preferences = new UserPreferences(
-                "zh-TW", "en", "zh-TW", "openai", "gpt-default",
-                Map.of("openai", "gpt-default"), List.of());
+                "zh-TW", "en", "zh-TW", "openai/gpt-4o-mini", List.of());
         when(userPreferencesModule.resolve(any(UserProfile.class))).thenReturn(preferences);
         module = new TranslationWorkflowModule(
                 languageDetection,
@@ -160,7 +158,7 @@ class TranslationWorkflowModuleTests {
     private static UserProfile profile() {
         return UserProfile.builder()
                 .userId("U-test")
-                .preferredAiProvider("openai")
+                .preferredModel("openai/gpt-4o-mini")
                 .build();
     }
 

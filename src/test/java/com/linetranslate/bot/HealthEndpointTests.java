@@ -23,7 +23,7 @@ import com.linetranslate.bot.service.storage.MinioStorageService;
 
 @SpringBootTest(
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
-        properties = "openai.api.key=test-openai-key")
+        properties = "openrouter.api.key=test-openrouter-key")
 @AutoConfigureTestRestTemplate
 @ActiveProfiles("test")
 class HealthEndpointTests {
@@ -67,9 +67,7 @@ class HealthEndpointTests {
         assertComponentStatus(response, "mongo", "UP");
         assertComponentStatus(response, "minio", "UP");
         assertComponentStatus(response, "ocrConfiguration", "DISABLED");
-        assertComponentStatus(response, "aiProvidersConfigured", "UP");
-        assertComponentStatus(response, "openAiConfiguration", "UP");
-        assertComponentStatus(response, "geminiConfiguration", "DISABLED");
+        assertComponentStatus(response, "openRouterConfiguration", "UP");
         assertNoDetails(response.getBody());
     }
 

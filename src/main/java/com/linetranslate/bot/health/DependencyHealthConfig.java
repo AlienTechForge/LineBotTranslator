@@ -54,25 +54,10 @@ public class DependencyHealthConfig {
         };
     }
 
-    @Bean(name = "openAiConfigurationHealthIndicator")
-    HealthIndicator openAiConfigurationHealthIndicator(
-            @Value("${openai.api.key:${OPENAI_API_KEY:}}") String apiKey) {
-        return configuredIndicator(apiKey);
-    }
-
-    @Bean(name = "geminiConfigurationHealthIndicator")
-    HealthIndicator geminiConfigurationHealthIndicator(
-            @Value("${gemini.api.key:${GEMINI_API_KEY:}}") String apiKey) {
-        return configuredIndicator(apiKey);
-    }
-
-    @Bean(name = "aiProvidersConfiguredHealthIndicator")
-    HealthIndicator aiProvidersConfiguredHealthIndicator(
-            @Value("${openai.api.key:${OPENAI_API_KEY:}}") String openAiApiKey,
-            @Value("${gemini.api.key:${GEMINI_API_KEY:}}") String geminiApiKey) {
-        return () -> configured(openAiApiKey) || configured(geminiApiKey)
-                ? Health.up().build()
-                : Health.down().build();
+    @Bean(name = "openRouterConfigurationHealthIndicator")
+    HealthIndicator openRouterConfigurationHealthIndicator(
+            @Value("${openrouter.api.key:${OPEN_ROUTE_API_KEY:}}") String apiKey) {
+        return () -> configured(apiKey) ? Health.up().build() : Health.down().build();
     }
 
     private HealthIndicator configuredIndicator(String value) {
