@@ -89,6 +89,9 @@ public class ImageTranslationService {
         renderedImageUrl.ifPresent(url -> display.append("【翻譯圖片（連結 1 小時內有效）】\n")
                         .append(url)
                         .append("\n\n"));
+        if (result.overlayDisposition() == ImageOverlayDisposition.SAFETY_DEGRADED) {
+            display.append("⚠️ 為避免錯誤覆寫，本次只提供文字翻譯；原圖未被修改。\n\n");
+        }
         display.append("【圖片文字辨識結果】\n\n")
                 .append("識別的文字：\n").append(recognizedText).append("\n\n")
                 .append("翻譯結果：\n").append(translation.translatedText()).append("\n\n");

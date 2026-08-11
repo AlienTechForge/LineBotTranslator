@@ -74,6 +74,13 @@ jobs:
       - name: Verify packaged application
         run: test -n "$(find target -maxdepth 1 -type f -name '*.jar' ! -name '*.original' -print -quit)"
 
+      - name: Verify production renderer runtime
+        run: |
+          docker build --tag linebot-translator:ci-renderer .
+          docker run --rm --entrypoint sh linebot-translator:ci-renderer -c \
+            'fc-match "Noto Sans CJK TC" | grep -qi "NotoSansCJK" && test -r /app/app.jar'
+          docker image rm linebot-translator:ci-renderer
+
       - name: Stop MinIO integration dependency
         if: always()
         run: docker stop linebot-ci-minio || true
@@ -86,6 +93,7 @@ jobs:
           path: |
             target/surefire-reports/
             target/failsafe-reports/
+            target/image-translation-replay/
           if-no-files-found: ignore
           retention-days: 7
 
@@ -183,6 +191,9 @@ jobs:
           IMAGE_TRANSLATION_MAX_DIMENSION: ${{ vars.IMAGE_TRANSLATION_MAX_DIMENSION || '4096' }}
           IMAGE_TRANSLATION_MAX_PIXELS: ${{ vars.IMAGE_TRANSLATION_MAX_PIXELS || '16000000' }}
           IMAGE_TRANSLATION_LOW_CONFIDENCE_THRESHOLD: ${{ vars.IMAGE_TRANSLATION_LOW_CONFIDENCE_THRESHOLD || '0.60' }}
+          IMAGE_TRANSLATION_OVERLAY_ENABLED: ${{ vars.IMAGE_TRANSLATION_OVERLAY_ENABLED || 'true' }}
+          IMAGE_TRANSLATION_MAX_REGION_AREA_RATIO: ${{ vars.IMAGE_TRANSLATION_MAX_REGION_AREA_RATIO || '0.12' }}
+          IMAGE_TRANSLATION_MAX_TOTAL_MASK_RATIO: ${{ vars.IMAGE_TRANSLATION_MAX_TOTAL_MASK_RATIO || '0.35' }}
           IMAGE_TRANSLATION_CLEANUP_INTERVAL: ${{ vars.IMAGE_TRANSLATION_CLEANUP_INTERVAL || 'PT1H' }}
           LANGUAGE_DETECTION_USE_AI: ${{ secrets.LANGUAGE_DETECTION_USE_AI }}
           LANGUAGE_DETECTION_DEFAULT_CHINESE: ${{ secrets.LANGUAGE_DETECTION_DEFAULT_CHINESE }}

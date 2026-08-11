@@ -4,5 +4,6 @@ public enum TranslationCacheSkipReason {
     FAILURE,
     SAFETY_BLOCKED,
     FALLBACK,
-    ROUTE_MISMATCH
+    ROUTE_MISMATCH,
+    INVALID_RESPONSE
 }

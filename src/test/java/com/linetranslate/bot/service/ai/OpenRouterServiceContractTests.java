@@ -94,6 +94,36 @@ class OpenRouterServiceContractTests {
     }
 
     @Test
+    void structuredImageTranslationUsesStrictJsonSchemaResponseFormat() throws Exception {
+        OpenRouterConfig config = config();
+        OkHttpClient httpClient = mock(OkHttpClient.class);
+        Call call = mock(Call.class);
+        AtomicReference<Request> captured = new AtomicReference<>();
+        when(httpClient.newCall(any(Request.class))).thenAnswer(invocation -> {
+            captured.set(invocation.getArgument(0));
+            return call;
+        });
+        when(call.execute()).thenReturn(response(200, """
+                {"model":"openai/gpt-4o-mini","choices":[{"message":{"content":"{\\\"schemaVersion\\\":\\\"image-regions-v1\\\",\\\"regions\\\":[{\\\"regionId\\\":\\\"r1\\\",\\\"translatedText\\\":\\\"你好\\\"}]}"}}]}
+                """));
+        OpenRouterService adapter = new OpenRouterService(
+                config, httpClient, objectMapper, catalog("openai/gpt-4o-mini", Set.of("text")));
+        String wire = "{\"schemaVersion\":\"image-regions-v1\",\"targetLanguage\":\"zh-TW\",\"regions\":[]}";
+
+        adapter.execute(AiProviderRequest.translate("openai/gpt-4o-mini", wire, "zh-TW"));
+
+        JsonNode body = objectMapper.readTree(requestBody(captured.get()));
+        assertThat(body.path("response_format").path("type").asText()).isEqualTo("json_schema");
+        JsonNode schema = body.path("response_format").path("json_schema");
+        assertThat(schema.path("strict").asBoolean()).isTrue();
+        assertThat(schema.path("schema").path("properties").path("regions").path("type").asText())
+                .isEqualTo("array");
+        assertThat(body.path("temperature").asDouble()).isZero();
+        assertThat(body.path("messages").get(0).path("content").asText())
+                .contains("regionId", "protectedTokens");
+    }
+
+    @Test
     void providerErrorsBecomeTypedFailuresWithoutLeakingResponseText() throws IOException {
         OpenRouterConfig config = config();
         OkHttpClient httpClient = mock(OkHttpClient.class);

@@ -16,6 +16,8 @@ Accepted
 
 不同入口只負責正規化 request；圖片與文字不各自重建 domain workflow。只有 success 寫入 record/counters，failure 不留下假成功 state。
 
+圖片入口可提供由 structured OCR metadata 驗證的 explicit Source Language，避免再呼叫獨立 detector。圖片 Region 使用 versioned structured request/result，但 provider execution、model/style preferences、validated cache、success-only persistence 與 counters 仍由 shared workflow 擁有；Translation Record 只保存 reading-order human-readable text，不保存 provider wire JSON。
+
 ## Consequences
 
 ### Positive

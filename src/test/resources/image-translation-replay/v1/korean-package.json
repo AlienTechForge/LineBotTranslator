@@ -1,0 +1,26 @@
+{
+  "schemaVersion": "image-replay-v1",
+  "fixtureId": "synthetic-korean-rotated-package",
+  "license": "synthetic-test-data",
+  "dominantLanguage": "ko",
+  "input": {"kind":"synthetic","width":900,"height":580},
+  "regions": [
+    {"id":"ko-product","text":"불닭볶음면 치즈의 풍미","polygon":[[400,160],[760,250],[740,330],[380,240]],"confidence":0.98,"language":"ko","decision":"TRANSLATE"},
+    {"id":"en-brand","text":"Cheese","polygon":[[600,50],[850,95],[835,145],[585,100]],"confidence":0.97,"language":"en","decision":"TRANSLATE"},
+    {"id":"date","text":"2021.05.28","polygon":[[650,10],[800,10],[800,35],[650,35]],"confidence":0.99,"language":"und","decision":"PRESERVE"},
+    {"id":"percent","text":"2.52%","polygon":[[180,520],[270,520],[270,545],[180,545]],"confidence":0.96,"language":"und","decision":"PRESERVE"},
+    {"id":"decoration","text":"~","polygon":[[120,190],[145,185],[150,205],[125,210]],"confidence":0.91,"language":"und","decision":"REJECT"}
+  ],
+  "structuredTranslationResponse": {
+    "schemaVersion":"image-regions-v1",
+    "regions":[
+      {"regionId":"en-brand","translatedText":"起司"},
+      {"regionId":"ko-product","translatedText":"火辣雞肉起司炒麵"}
+    ]
+  },
+  "expected": {
+    "translatedRegionIds":["ko-product","en-brand"],
+    "preservedRegionIds":["date","percent"],
+    "rejectedRegionIds":["decoration"]
+  }
+}

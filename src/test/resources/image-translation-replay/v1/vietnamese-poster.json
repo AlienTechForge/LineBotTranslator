@@ -1,0 +1,19 @@
+{
+  "schemaVersion": "image-replay-v1",
+  "fixtureId": "synthetic-vietnamese-dense-poster",
+  "license": "synthetic-test-data",
+  "dominantLanguage": "vi",
+  "input": {"kind":"synthetic","width":680,"height":240},
+  "regions": [
+    {"id":"vi-title","text":"BẢO VỆ BẢN THÂN KHỎI CHẤN THƯƠNG NHIỆT","polygon":[[20,20],[620,20],[620,70],[20,70]],"confidence":0.98,"language":"vi","decision":"TRANSLATE"},
+    {"id":"vi-body","text":"Nhiệt độ cao có thể gây nguy hiểm","polygon":[[20,100],[360,100],[360,145],[20,145]],"confidence":0.94,"language":"vi","decision":"TRANSLATE"}
+  ],
+  "structuredTranslationResponse": {
+    "schemaVersion":"image-regions-v1",
+    "regions":[
+      {"regionId":"vi-body","translatedText":"高溫可能造成危險"},
+      {"regionId":"vi-title","translatedText":"保護自己免受熱傷害"}
+    ]
+  },
+  "expected": {"translatedRegionIds":["vi-title","vi-body"],"preservedRegionIds":[],"rejectedRegionIds":[]}
+}

@@ -9,6 +9,7 @@ import com.linetranslate.bot.service.ai.AiProviderException;
 import com.linetranslate.bot.service.ai.AiProviderExecutionModule;
 import com.linetranslate.bot.service.ai.AiProviderRoute;
 import com.linetranslate.bot.service.preference.UserPreferences;
+import java.util.function.Predicate;
 
 /**
  * Cache Adapter around provider execution. Failures are never cached.
@@ -48,7 +49,21 @@ public class CachedTranslationAdapter {
                 ? TranslationStylePreset.defaultPreset()
                 : preset;
         return translate(preferences, text, targetLanguage,
-                properties.currentVariant(effective), effective);
+                properties.currentVariant(effective), effective, result -> true);
+    }
+
+    AiExecutionOutcome translateValidated(
+            UserPreferences preferences,
+            String text,
+            String targetLanguage,
+            TranslationStylePreset preset,
+            String contractVersion,
+            Predicate<AiExecutionResult> validator) {
+        TranslationStylePreset effective = preset == null ? TranslationStylePreset.defaultPreset() : preset;
+        TranslationCacheVariant base = properties.currentVariant(effective);
+        TranslationCacheVariant structured = new TranslationCacheVariant(
+                base.style(), base.glossaryVersion(), base.promptVersion() + "+" + contractVersion);
+        return translate(preferences, text, targetLanguage, structured, effective, validator);
     }
 
     /** Compatibility seam retained for focused cache identity tests. */
@@ -59,7 +74,7 @@ public class CachedTranslationAdapter {
             TranslationCacheVariant variant) {
         TranslationStylePreset preset = TranslationStylePreset.find(variant.style())
                 .orElse(TranslationStylePreset.defaultPreset());
-        return translate(preferences, text, targetLanguage, variant, preset);
+        return translate(preferences, text, targetLanguage, variant, preset, result -> true);
     }
 
     private AiExecutionOutcome translate(
@@ -67,7 +82,8 @@ public class CachedTranslationAdapter {
             String text,
             String targetLanguage,
             TranslationCacheVariant variant,
-            TranslationStylePreset preset) {
+            TranslationStylePreset preset,
+            Predicate<AiExecutionResult> validator) {
         AiProviderRoute route = providerExecutionModule.planText(preferences);
         TranslationCacheKey key = TranslationCacheKeyFactory.create(
                 text,
@@ -75,7 +91,9 @@ public class CachedTranslationAdapter {
                 route,
                 variant);
 
-        return cacheStore.find(key).<AiExecutionOutcome>map(value -> value)
+        return cacheStore.find(key)
+                .filter(value -> validator.test(value.result()))
+                .<AiExecutionOutcome>map(value -> value)
                 .orElseGet(() -> executeAndMaybeCache(
                         preferences,
                         text,
@@ -83,7 +101,8 @@ public class CachedTranslationAdapter {
                         variant,
                         preset,
                         route,
-                        key));
+                        key,
+                        validator));
     }
 
     private AiExecutionOutcome executeAndMaybeCache(
@@ -93,7 +112,8 @@ public class CachedTranslationAdapter {
             TranslationCacheVariant variant,
             TranslationStylePreset preset,
             AiProviderRoute route,
-            TranslationCacheKey plannedKey) {
+            TranslationCacheKey plannedKey,
+            Predicate<AiExecutionResult> validator) {
         AiExecutionOutcome outcome = providerExecutionModule.translateTextOutcome(
                 preferences,
                 text,
@@ -106,7 +126,9 @@ public class CachedTranslationAdapter {
 
         AiExecutionOutcome.Success success = (AiExecutionOutcome.Success) outcome;
         AiExecutionResult result = success.result();
-        if (result.fallbackUsed()) {
+        if (!validator.test(result)) {
+            cacheStore.recordSkipped(TranslationCacheSkipReason.INVALID_RESPONSE);
+        } else if (result.fallbackUsed()) {
             cacheStore.recordSkipped(TranslationCacheSkipReason.FALLBACK);
         } else if (!route.providerMatches(result)) {
             cacheStore.recordSkipped(TranslationCacheSkipReason.ROUTE_MISMATCH);

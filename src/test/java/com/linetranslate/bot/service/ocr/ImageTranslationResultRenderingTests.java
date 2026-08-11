@@ -84,4 +84,30 @@ class ImageTranslationResultRenderingTests {
         assertThat(response.displayText()).doesNotContain("user:secret", "internal/result.png");
         assertThat(response.displayText()).contains("翻譯結果：\n你好");
     }
+
+    @Test
+    void safetyDegradationIsReportedAsSuccessfulTextOnlyTranslation() {
+        ImageTranslationPipeline pipeline = mock(ImageTranslationPipeline.class);
+        UserProfileRepository repository = mock(UserProfileRepository.class);
+        UserProfile profile = UserProfile.builder().userId("U-safe").build();
+        when(repository.findByUserId("U-safe")).thenReturn(Optional.of(profile));
+        when(repository.save(any(UserProfile.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        ImageTranslationContext context = new ImageTranslationContext(
+                new DownloadedImage(new byte[] {1}, "image/png"), ImageStorageResult.notStored(), "hello", null);
+        TranslationWorkflowResult translation = new TranslationWorkflowResult(
+                "hello", "en", "zh-TW", new AiExecutionResult("你好", "openrouter", "model"),
+                20, TranslationRequestKind.IMAGE_OCR);
+        when(pipeline.execute(any())).thenReturn(new ImageTranslationOutcome.Success(
+                new ImageTranslationPipelineResult(context, translation, ImageStorageResult.notStored(), 1,
+                        ImageOverlayDisposition.SAFETY_DEGRADED)));
+
+        TranslationResponse response = new ImageTranslationService(pipeline, repository)
+                .processImageTranslationResponse("U-safe", "message");
+
+        assertThat(response.displayText())
+                .contains("為避免錯誤覆寫")
+                .contains("只提供文字翻譯")
+                .contains("翻譯結果：\n你好");
+        assertThat(response.translatedText()).isEqualTo("你好");
+    }
 }

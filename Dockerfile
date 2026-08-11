@@ -29,6 +29,7 @@ WORKDIR /app
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         curl fonts-noto-cjk tzdata && \
+    fc-match "Noto Sans CJK TC" | grep -qi "NotoSansCJK" && \
     ln -fs /usr/share/zoneinfo/Asia/Taipei /etc/localtime && \
     dpkg-reconfigure -f noninteractive tzdata && \
     apt-get clean && \

@@ -180,6 +180,53 @@ class TranslationWorkflowModuleTests {
         assertThat(profile.getRecentTranslations()).isEmpty();
     }
 
+    @Test
+    void explicitImageSourceLanguageSkipsIndependentDetection() {
+        UserProfile profile = profile();
+        when(translationAdapter.translate(preferences, "BẢO VỆ", "zh-TW"))
+                .thenReturn(success("保護"));
+
+        TranslationWorkflowOutcome outcome = module.execute(new TranslationWorkflowRequest(
+                profile, "BẢO VỆ", null, TranslationRequestKind.IMAGE_OCR,
+                null, false, Instant.now(), null, "vi"));
+
+        assertThat(((TranslationWorkflowOutcome.Success) outcome).result().sourceLanguage()).isEqualTo("vi");
+        verify(languageDetection, never()).detectLanguage(any());
+        ArgumentCaptor<TranslationRecord> record = ArgumentCaptor.forClass(TranslationRecord.class);
+        verify(recordRepository).save(record.capture());
+        assertThat(record.getValue().getSourceLanguage()).isEqualTo("vi");
+    }
+
+    @Test
+    void structuredImagePersistsReadableContentAndExactRegionMappings() {
+        UserProfile profile = profile();
+        StructuredImageTranslationAdapter structured = Mockito.mock(StructuredImageTranslationAdapter.class);
+        module = new TranslationWorkflowModule(languageDetection, translationAdapter, recordRepository,
+                userPreferencesModule, structured);
+        List<ImageRegionTranslationInput> inputs = List.of(
+                new ImageRegionTranslationInput("r1", "xin chào", "vi", List.of()),
+                new ImageRegionTranslationInput("r2", "thế giới", "vi", List.of()));
+        when(structured.translate(preferences, inputs, "zh-TW", TranslationStylePreset.FAITHFUL))
+                .thenReturn(new StructuredImageTranslationAdapter.Result(
+                        new AiExecutionResult("你好\n世界", "openrouter", "model"),
+                        List.of(new ImageRegionTranslation("r2", "世界"),
+                                new ImageRegionTranslation("r1", "你好"))));
+
+        TranslationWorkflowOutcome outcome = module.execute(new TranslationWorkflowRequest(
+                profile, "xin chào\nthế giới", null, TranslationRequestKind.IMAGE_OCR,
+                null, false, Instant.now(), null, "vi", inputs));
+
+        TranslationWorkflowResult result = ((TranslationWorkflowOutcome.Success) outcome).result();
+        assertThat(result.imageRegionTranslations()).extracting(ImageRegionTranslation::regionId)
+                .containsExactly("r2", "r1");
+        ArgumentCaptor<TranslationRecord> record = ArgumentCaptor.forClass(TranslationRecord.class);
+        verify(recordRepository).save(record.capture());
+        assertThat(record.getValue().getSourceText()).isEqualTo("xin chào\nthế giới");
+        assertThat(record.getValue().getTranslatedText()).isEqualTo("你好\n世界");
+        assertThat(record.getValue().getTranslatedText()).doesNotContain("schemaVersion", "regionId");
+        verify(languageDetection, never()).detectLanguage(any());
+    }
+
     private static Stream<Arguments> translationKinds() {
         return Stream.of(
                 Arguments.of(TranslationRequestKind.STANDARD_TEXT, 1, 0),

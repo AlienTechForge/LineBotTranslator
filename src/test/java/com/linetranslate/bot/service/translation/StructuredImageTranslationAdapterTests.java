@@ -1,0 +1,68 @@
+package com.linetranslate.bot.service.translation;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+import java.util.List;
+
+import org.junit.jupiter.api.Test;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.linetranslate.bot.service.ai.AiExecutionOutcome;
+import com.linetranslate.bot.service.ai.AiExecutionResult;
+import com.linetranslate.bot.service.preference.UserPreferences;
+
+class StructuredImageTranslationAdapterTests {
+    @Test
+    void performsAtMostOneRepairAndReturnsReadableExecution() {
+        CachedTranslationAdapter provider = mock(CachedTranslationAdapter.class);
+        UserPreferences preferences = new UserPreferences("zh-TW", "en", "zh-TW", "model", List.of());
+        when(provider.translateValidated(eq(preferences), anyString(), eq("zh-TW"),
+                eq(TranslationStylePreset.FAITHFUL), eq(StructuredImageTranslationCodec.SCHEMA_VERSION), any()))
+                .thenReturn(success("malformed"))
+                .thenReturn(success("{\"schemaVersion\":\"image-regions-v1\",\"regions\":[{\"regionId\":\"r1\",\"translatedText\":\"你好\"}]}"));
+        StructuredImageTranslationAdapter adapter = new StructuredImageTranslationAdapter(
+                provider, new StructuredImageTranslationCodec(new ObjectMapper()));
+
+        StructuredImageTranslationAdapter.Result result = adapter.translate(preferences,
+                List.of(
+                        new ImageRegionTranslationInput("r1", "hello", "en", List.of(), true, 0),
+                        new ImageRegionTranslationInput("date", "2021.05.28", "und",
+                                List.of("2021.05.28"), false, 1)),
+                "zh-TW", TranslationStylePreset.FAITHFUL);
+
+        assertThat(result.execution().text()).isEqualTo("你好\n2021.05.28");
+        assertThat(result.translations()).containsExactly(new ImageRegionTranslation("r1", "你好"));
+        verify(provider, times(2)).translateValidated(eq(preferences), anyString(), eq("zh-TW"),
+                eq(TranslationStylePreset.FAITHFUL), eq(StructuredImageTranslationCodec.SCHEMA_VERSION), any());
+    }
+
+    @Test
+    void secondInvalidResponseFailsClosedWithoutThirdAttempt() {
+        CachedTranslationAdapter provider = mock(CachedTranslationAdapter.class);
+        UserPreferences preferences = new UserPreferences("zh-TW", "en", "zh-TW", "model", List.of());
+        when(provider.translateValidated(eq(preferences), anyString(), eq("zh-TW"),
+                eq(TranslationStylePreset.FAITHFUL), eq(StructuredImageTranslationCodec.SCHEMA_VERSION), any()))
+                .thenReturn(success("malformed"));
+        StructuredImageTranslationAdapter adapter = new StructuredImageTranslationAdapter(
+                provider, new StructuredImageTranslationCodec(new ObjectMapper()));
+
+        assertThatThrownBy(() -> adapter.translate(preferences,
+                List.of(new ImageRegionTranslationInput("r1", "hello", "en", List.of())),
+                "zh-TW", TranslationStylePreset.FAITHFUL))
+                .isInstanceOf(StructuredTranslationException.class);
+        verify(provider, times(2)).translateValidated(eq(preferences), anyString(), eq("zh-TW"),
+                eq(TranslationStylePreset.FAITHFUL), eq(StructuredImageTranslationCodec.SCHEMA_VERSION), any());
+    }
+
+    private static AiExecutionOutcome success(String text) {
+        return new AiExecutionOutcome.Success(new AiExecutionResult(text, "openrouter", "model"));
+    }
+}

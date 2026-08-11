@@ -7,12 +7,23 @@ public record ImageTranslationPipelineResult(
         ImageTranslationContext context,
         TranslationWorkflowResult translation,
         ImageStorageResult renderedImage,
-        int lowConfidenceBlockCount) {
+        int lowConfidenceBlockCount,
+        ImageOverlayDisposition overlayDisposition) {
 
     public ImageTranslationPipelineResult(
             ImageTranslationContext context,
             TranslationWorkflowResult translation) {
-        this(context, translation, ImageStorageResult.notStored(), 0);
+        this(context, translation, ImageStorageResult.notStored(), 0, ImageOverlayDisposition.UNAVAILABLE);
+    }
+
+    public ImageTranslationPipelineResult(
+            ImageTranslationContext context,
+            TranslationWorkflowResult translation,
+            ImageStorageResult renderedImage,
+            int lowConfidenceBlockCount) {
+        this(context, translation, renderedImage, lowConfidenceBlockCount,
+                renderedImage != null && renderedImage.stored()
+                        ? ImageOverlayDisposition.GENERATED : ImageOverlayDisposition.UNAVAILABLE);
     }
 
     public ImageTranslationPipelineResult {
@@ -21,5 +32,6 @@ public record ImageTranslationPipelineResult(
         }
         renderedImage = renderedImage == null ? ImageStorageResult.notStored() : renderedImage;
         lowConfidenceBlockCount = Math.max(0, lowConfidenceBlockCount);
+        overlayDisposition = overlayDisposition == null ? ImageOverlayDisposition.UNAVAILABLE : overlayDisposition;
     }
 }

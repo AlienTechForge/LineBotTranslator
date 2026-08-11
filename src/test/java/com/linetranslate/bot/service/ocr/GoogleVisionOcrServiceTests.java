@@ -44,7 +44,7 @@ class GoogleVisionOcrServiceTests {
                 .build();
         TextAnnotation annotation = TextAnnotation.newBuilder()
                 .addPages(Page.newBuilder()
-                        .addBlocks(Block.newBuilder().addParagraphs(paragraph)))
+                        .addBlocks(Block.newBuilder().setBlockType(Block.BlockType.TEXT).addParagraphs(paragraph)))
                 .build();
         when(client.batchAnnotateImages(anyList())).thenReturn(
                 BatchAnnotateImagesResponse.newBuilder()
@@ -69,6 +69,43 @@ class GoogleVisionOcrServiceTests {
         org.mockito.Mockito.verify(client).batchAnnotateImages(request.capture());
         assertThat(request.getValue().get(0).getFeatures(0).getType())
                 .isEqualTo(Feature.Type.DOCUMENT_TEXT_DETECTION);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void preservesRotatedVertexOrderLanguageAndStableIdWhileIgnoringPictures() {
+        ImageAnnotatorClient client = mock(ImageAnnotatorClient.class);
+        ObjectProvider<ImageAnnotatorClient> provider = mock(ObjectProvider.class);
+        when(provider.getIfAvailable()).thenReturn(client);
+        BoundingPoly rotated = BoundingPoly.newBuilder()
+                .addVertices(Vertex.newBuilder().setX(20).setY(10))
+                .addVertices(Vertex.newBuilder().setX(120).setY(45))
+                .addVertices(Vertex.newBuilder().setX(105).setY(85))
+                .addVertices(Vertex.newBuilder().setX(5).setY(50)).build();
+        Paragraph paragraph = Paragraph.newBuilder()
+                .setBoundingBox(rotated).setConfidence(.93f)
+                .setProperty(TextAnnotation.TextProperty.newBuilder().addDetectedLanguages(
+                        TextAnnotation.DetectedLanguage.newBuilder().setLanguageCode("ko").setConfidence(.97f)))
+                .addWords(word("불닭볶음면")).build();
+        TextAnnotation annotation = TextAnnotation.newBuilder().addPages(Page.newBuilder()
+                .addBlocks(Block.newBuilder().setBlockType(Block.BlockType.PICTURE).addParagraphs(paragraph))
+                .addBlocks(Block.newBuilder().setBlockType(Block.BlockType.TEXT).addParagraphs(paragraph))).build();
+        when(client.batchAnnotateImages(anyList())).thenReturn(BatchAnnotateImagesResponse.newBuilder()
+                .addResponses(AnnotateImageResponse.newBuilder().setFullTextAnnotation(annotation)).build());
+        GoogleVisionOcrService service = new GoogleVisionOcrService(provider);
+
+        List<OcrRegion> first = service.recognizeRegions(new ByteArrayInputStream(new byte[] {1}));
+        List<OcrRegion> second = service.recognizeRegions(new ByteArrayInputStream(new byte[] {1}));
+
+        assertThat(first).singleElement().satisfies(region -> {
+            assertThat(region.polygon()).containsExactly(
+                    new OcrPoint(20, 10), new OcrPoint(120, 45),
+                    new OcrPoint(105, 85), new OcrPoint(5, 50));
+            assertThat(region.languages()).containsExactly(new OcrDetectedLanguage("ko", .97f));
+            assertThat(region.blockType()).isEqualTo(OcrBlockType.TEXT);
+            assertThat(region.confidenceKnown()).isTrue();
+        });
+        assertThat(second.get(0).id()).isEqualTo(first.get(0).id());
     }
 
     private static Word word(String value) {

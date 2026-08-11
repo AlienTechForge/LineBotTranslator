@@ -13,6 +13,10 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 
 @Service
 @Slf4j
@@ -93,6 +97,17 @@ public class GoogleVisionOcrService implements OcrService {
 
     @Override
     public List<TextBlock> recognizeTextWithLocations(InputStream imageStream) {
+        return recognizeRegions(imageStream).stream().map(region -> {
+            int minX = region.polygon().stream().mapToInt(OcrPoint::x).min().orElse(0);
+            int minY = region.polygon().stream().mapToInt(OcrPoint::y).min().orElse(0);
+            int maxX = region.polygon().stream().mapToInt(OcrPoint::x).max().orElse(minX);
+            int maxY = region.polygon().stream().mapToInt(OcrPoint::y).max().orElse(minY);
+            return new TextBlock(region.text(), minX, minY, maxX - minX, maxY - minY, region.confidence());
+        }).toList();
+    }
+
+    @Override
+    public List<OcrRegion> recognizeRegions(InputStream imageStream) {
         if (visionClient == null) {
             throw new OcrProcessingException("Google Vision client is unavailable");
         }
@@ -117,10 +132,14 @@ public class GoogleVisionOcrService implements OcrService {
                 throw new OcrProcessingException("Google Vision returned an OCR error");
             }
 
-            List<TextBlock> textBlocks = new ArrayList<>();
+            List<OcrRegion> regions = new ArrayList<>();
             TextAnnotation fullText = annotationResponse.getFullTextAnnotation();
+            int readingOrder = 0;
             for (var page : fullText.getPagesList()) {
                 for (var block : page.getBlocksList()) {
+                    if (block.getBlockType() != Block.BlockType.TEXT) {
+                        continue;
+                    }
                     for (var paragraph : block.getParagraphsList()) {
                         String text = paragraph.getWordsList().stream()
                                 .map(word -> word.getSymbolsList().stream()
@@ -129,29 +148,29 @@ public class GoogleVisionOcrService implements OcrService {
                                 .filter(value -> !value.isBlank())
                                 .reduce((left, right) -> left + " " + right)
                                 .orElse("");
-                        TextBlock located = located(text, paragraph.getBoundingBox(), paragraph.getConfidence());
-                        if (located != null) {
-                            textBlocks.add(located);
+                        List<OcrPoint> polygon = points(paragraph.getBoundingBox());
+                        if (!text.isBlank() && polygon.size() >= 4) {
+                            List<OcrWord> words = paragraph.getWordsList().stream().map(word -> {
+                                String wordText = word.getSymbolsList().stream().map(Symbol::getText)
+                                        .reduce("", String::concat);
+                                List<OcrSymbol> symbols = word.getSymbolsList().stream()
+                                        .map(symbol -> new OcrSymbol(symbol.getText(), points(symbol.getBoundingBox()),
+                                                symbol.getConfidence(), symbol.getConfidence() > 0))
+                                        .toList();
+                                return new OcrWord(wordText, points(word.getBoundingBox()), word.getConfidence(),
+                                        word.getConfidence() > 0, symbols);
+                            }).toList();
+                            List<OcrDetectedLanguage> languages = detectedLanguages(paragraph);
+                            regions.add(new OcrRegion(
+                                    stableId(readingOrder, text, polygon), text, polygon, words,
+                                    paragraph.getConfidence(), paragraph.getConfidence() > 0,
+                                    OcrBlockType.TEXT, languages, readingOrder++));
                         }
                     }
                 }
             }
-            if (textBlocks.isEmpty()) {
-                boolean fullImageAnnotation = true;
-                for (EntityAnnotation annotation : annotationResponse.getTextAnnotationsList()) {
-                    if (fullImageAnnotation) {
-                        fullImageAnnotation = false;
-                        continue;
-                    }
-                    TextBlock located = located(
-                            annotation.getDescription(), annotation.getBoundingPoly(), annotation.getScore());
-                    if (located != null) {
-                        textBlocks.add(located);
-                    }
-                }
-            }
-            log.info("識別到 {} 個文本塊", textBlocks.size());
-            return OcrReadingOrder.sort(textBlocks);
+            log.info("識別到 {} 個結構化文本區域", regions.size());
+            return List.copyOf(regions);
         } catch (IOException e) {
             log.error("OCR 識別失敗: failure={}", SafeLog.failure(e));
             throw new OcrProcessingException("Google Vision could not read image bytes", e);
@@ -163,24 +182,37 @@ public class GoogleVisionOcrService implements OcrService {
         }
     }
 
-    private static TextBlock located(String text, BoundingPoly boundingPoly, float confidence) {
-        if (text == null || text.isBlank() || boundingPoly == null || boundingPoly.getVerticesCount() == 0) {
-            return null;
+    private static List<OcrPoint> points(BoundingPoly polygon) {
+        if (polygon == null) return List.of();
+        return polygon.getVerticesList().stream().map(v -> new OcrPoint(v.getX(), v.getY())).toList();
+    }
+
+    private static List<OcrDetectedLanguage> detectedLanguages(Paragraph paragraph) {
+        java.util.Map<String, Float> confidenceByCode = new java.util.LinkedHashMap<>();
+        paragraph.getProperty().getDetectedLanguagesList().forEach(language -> {
+            if (!language.getLanguageCode().isBlank()) {
+                confidenceByCode.merge(language.getLanguageCode(), language.getConfidence(), Math::max);
+            }
+        });
+        paragraph.getWordsList().forEach(word -> word.getProperty().getDetectedLanguagesList().forEach(language -> {
+            if (!language.getLanguageCode().isBlank()) {
+                confidenceByCode.merge(language.getLanguageCode(), language.getConfidence(), Math::max);
+            }
+        }));
+        return confidenceByCode.entrySet().stream()
+                .map(entry -> new OcrDetectedLanguage(entry.getKey(), entry.getValue()))
+                .sorted(java.util.Comparator.comparing(OcrDetectedLanguage::confidence).reversed())
+                .toList();
+    }
+
+    private static String stableId(int order, String text, List<OcrPoint> polygon) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            String canonical = order + "|" + text.strip() + "|" + polygon;
+            String hash = HexFormat.of().formatHex(digest.digest(canonical.getBytes(StandardCharsets.UTF_8)));
+            return "r-%04d-%s".formatted(order + 1, hash.substring(0, 12));
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 is unavailable", impossible);
         }
-        int minX = Integer.MAX_VALUE;
-        int minY = Integer.MAX_VALUE;
-        int maxX = Integer.MIN_VALUE;
-        int maxY = Integer.MIN_VALUE;
-        for (Vertex vertex : boundingPoly.getVerticesList()) {
-            minX = Math.min(minX, vertex.getX());
-            minY = Math.min(minY, vertex.getY());
-            maxX = Math.max(maxX, vertex.getX());
-            maxY = Math.max(maxY, vertex.getY());
-        }
-        int width = maxX - minX;
-        int height = maxY - minY;
-        return width <= 0 || height <= 0
-                ? null
-                : new TextBlock(text.strip(), minX, minY, width, height, confidence);
     }
 }
