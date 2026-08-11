@@ -32,8 +32,7 @@ public class GoogleVisionOcrService implements OcrService {
     @Override
     public String recognizeText(InputStream imageStream) {
         if (visionClient == null) {
-            log.error("Google Vision 客戶端未初始化");
-            return "OCR 服務未正確配置，無法識別圖片文字";
+            throw new OcrProcessingException("Google Vision client is unavailable");
         }
 
         try {
@@ -55,6 +54,10 @@ public class GoogleVisionOcrService implements OcrService {
 
             // 執行 OCR 請求
             BatchAnnotateImagesResponse response = visionClient.batchAnnotateImages(List.of(request));
+
+            if (response.getResponsesCount() > 0 && response.getResponses(0).hasError()) {
+                throw new OcrProcessingException("Google Vision returned an OCR error");
+            }
 
             // 提取文本
             StringBuilder textBuilder = new StringBuilder();
@@ -79,7 +82,12 @@ public class GoogleVisionOcrService implements OcrService {
 
         } catch (IOException e) {
             log.error("OCR 識別失敗: failure={}", SafeLog.failure(e));
-            return "OCR 識別失敗，請稍後再試。";
+            throw new OcrProcessingException("Google Vision could not read image bytes", e);
+        } catch (RuntimeException failure) {
+            if (failure instanceof OcrProcessingException ocrFailure) {
+                throw ocrFailure;
+            }
+            throw new OcrProcessingException("Google Vision OCR failed", failure);
         }
     }
 
