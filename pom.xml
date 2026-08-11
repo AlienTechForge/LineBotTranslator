@@ -17,6 +17,7 @@
 	<properties>
 		<java.version>17</java.version>
 		<line.bot.sdk.version>10.1.0</line.bot.sdk.version>
+		<guava.version>33.6.0-jre</guava.version>
 	</properties>
 
 	<dependencies>
@@ -81,6 +82,18 @@
 			<groupId>com.optimaize.languagedetector</groupId>
 			<artifactId>language-detector</artifactId>
 			<version>0.6</version>
+			<exclusions>
+				<exclusion>
+					<groupId>com.google.guava</groupId>
+					<artifactId>guava</artifactId>
+				</exclusion>
+			</exclusions>
+		</dependency>
+		<!-- gRPC 1.80 and MinIO require APIs absent from language-detector's Guava 18. -->
+		<dependency>
+			<groupId>com.google.guava</groupId>
+			<artifactId>guava</artifactId>
+			<version>${guava.version}</version>
 		</dependency>
 
 		<!-- Google Cloud Vision API (用於 OCR) -->
