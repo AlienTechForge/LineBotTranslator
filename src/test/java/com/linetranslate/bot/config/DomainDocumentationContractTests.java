@@ -33,6 +33,15 @@ class DomainDocumentationContractTests {
     }
 
     @Test
+    void contextRecordsMaintainerAcceptance() throws IOException {
+        String context = Files.readString(Path.of("CONTEXT.md"));
+
+        assertThat(context)
+                .contains("> 狀態：Accepted（maintainer 於 2026-08-11 確認）")
+                .doesNotContain("- [ ]");
+    }
+
+    @Test
     void adrDirectoryContainsTemplateIndexAndAcceptedDecisions() throws IOException {
         Path adrDirectory = Path.of("docs", "adr");
         assertThat(adrDirectory.resolve("README.md")).exists();

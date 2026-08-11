@@ -1,6 +1,6 @@
 # LINE Bot Translator：Domain Context
 
-> 狀態：Draft，等待 maintainer 確認 domain 名稱與產品語意（Issue #11）。
+> 狀態：Accepted（maintainer 於 2026-08-11 確認）。
 
 本文件是程式碼、文件與後續 Issue 共用的 ubiquitous language。新功能應先使用這裡的詞彙；若產品語意改變，先更新本文件與對應 ADR，再修改 Implementation。
 
@@ -132,10 +132,10 @@
 
 ## Maintainer 確認清單
 
-- [ ] 「User Profile」只代表 identity/activity document；effective 設定統稱「User Preferences」。
-- [ ] 管理員可動態變更的全域非敏感設定統稱「Runtime Settings」。
-- [ ] 「Translation Record」是含內容的產品歷史；「Usage Event」是無個資的 provider-attempt accounting，兩者不可互換。
-- [ ] 「Model Selection」只代表 preference/default precedence 與 capability validation；不代表成本／品質自動路由或跨 provider fallback。
-- [ ] 上列九項排除功能仍不在目前產品範圍。
+- [x] 「User Profile」只代表 identity/activity document；effective 設定統稱「User Preferences」。
+- [x] 管理員可動態變更的全域非敏感設定統稱「Runtime Settings」。
+- [x] 「Translation Record」是含內容的產品歷史；「Usage Event」是無個資的 provider-attempt accounting，兩者不可互換。
+- [x] 「Model Selection」只代表 preference/default precedence 與 capability validation；不代表成本／品質自動路由或跨 provider fallback。
+- [x] 上列九項排除功能仍不在目前產品範圍。
 
-確認後，將本文件狀態改為 `Accepted`；未來語意變更以 ADR 記錄。
+本清單已由 maintainer 確認；未來語意變更以 ADR 記錄。
