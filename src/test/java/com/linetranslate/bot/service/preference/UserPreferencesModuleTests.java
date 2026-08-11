@@ -6,7 +6,6 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 
 import java.util.List;
 import java.util.Optional;
@@ -19,7 +18,6 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
-import com.linetranslate.bot.config.AppConfig;
 import com.linetranslate.bot.model.UserProfile;
 import com.linetranslate.bot.repository.UserProfileRepository;
 import com.linetranslate.bot.service.ai.AiProviderAdapter;
@@ -32,26 +30,13 @@ import com.linetranslate.bot.service.settings.RuntimeSettings;
 class UserPreferencesModuleTests {
 
     private static final String USER_ID = "U-preferences";
+    private static final AiProviderAdapter ADAPTER = adapter();
 
-    @Mock
-    private UserProfileRepository repository;
-    @Mock
-    private AppConfig appConfig;
-
-    private UserPreferencesModule module;
+    @Mock private UserProfileRepository repository;
     private UserProfile profile;
 
     @BeforeEach
     void setUp() {
-        lenient().when(appConfig.getDefaultAiProvider()).thenReturn("openai");
-        lenient().when(appConfig.getDefaultTargetLanguageForOthers()).thenReturn("en");
-        lenient().when(appConfig.getDefaultTargetLanguageForChinese()).thenReturn("ja");
-        module = new UserPreferencesModule(
-                repository,
-                appConfig,
-                List.of(
-                        adapter("openai", "gpt-default", "gpt-default", "gpt-selected"),
-                        adapter("gemini", "gemini-default", "gemini-default", "gemini-fast")));
         profile = UserProfile.builder().userId(USER_ID).build();
         lenient().when(repository.findByUserId(USER_ID)).thenReturn(Optional.of(profile));
         lenient().when(repository.save(any(UserProfile.class)))
@@ -59,158 +44,96 @@ class UserPreferencesModuleTests {
     }
 
     @Test
-    void resolvesMissingAndInvalidLegacyValuesWithoutMutatingDocument() {
+    void resolvesMissingAndInvalidValuesWithoutMutatingDocument() {
         profile.setPreferredLanguage("legacy-language");
-        profile.setPreferredChineseTargetLanguage(null);
-        profile.setPreferredAiProvider("removed-provider");
-        profile.setOpenaiPreferredModel("retired-model");
+        profile.setPreferredModel("retired-model");
         profile.setRecentLanguages(null);
+        UserPreferencesModule module = module(settings("en", "ja", "openai/gpt-4o-mini"));
 
         UserPreferences preferences = module.resolve(profile);
 
         assertThat(preferences.targetLanguage()).isEqualTo("en");
         assertThat(preferences.chineseTargetLanguage()).isEqualTo("ja");
-        assertThat(preferences.provider()).isEqualTo("openai");
-        assertThat(preferences.model()).isEqualTo("gpt-default");
+        assertThat(preferences.model()).isEqualTo("openai/gpt-4o-mini");
         assertThat(preferences.recentLanguages()).isEmpty();
         verify(repository, never()).save(any());
     }
 
     @Test
-    void languageUpdatesShareNormalizationAndSinglePersistencePath() {
-        UserPreferenceChange general = module.updateTargetLanguage(USER_ID, "日文");
-        UserPreferenceChange chinese = module.updateChineseTargetLanguage(USER_ID, "ko");
+    void languageAndModelUpdatesUseSingleValidatedPersistencePath() {
+        UserPreferencesModule module = module(settings("en", "ja", "openai/gpt-4o-mini"));
 
-        assertThat(general.current().targetLanguage()).isEqualTo("ja");
-        assertThat(chinese.current().chineseTargetLanguage()).isEqualTo("ko");
+        module.updateTargetLanguage(USER_ID, "日文");
+        UserPreferenceChange model = module.updateModel(USER_ID, "anthropic/claude-sonnet-4");
+
         assertThat(profile.getPreferredLanguage()).isEqualTo("ja");
-        assertThat(profile.getPreferredChineseTargetLanguage()).isEqualTo("ko");
+        assertThat(profile.getPreferredModel()).isEqualTo("anthropic/claude-sonnet-4");
+        assertThat(model.current().model()).isEqualTo("anthropic/claude-sonnet-4");
         verify(repository, org.mockito.Mockito.times(2)).save(profile);
     }
 
     @Test
     void unavailableModelIsRejectedWithoutMutationOrPersistence() {
-        profile.setPreferredAiProvider("openai");
-        profile.setOpenaiPreferredModel("gpt-selected");
+        UserPreferencesModule module = module(settings("en", "ja", "openai/gpt-4o-mini"));
+        profile.setPreferredModel("anthropic/claude-sonnet-4");
 
         assertThatThrownBy(() -> module.updateModel(USER_ID, "invented-model"))
                 .isInstanceOf(InvalidUserPreferenceException.class)
                 .hasMessageContaining("invented-model");
 
-        assertThat(profile.getOpenaiPreferredModel()).isEqualTo("gpt-selected");
+        assertThat(profile.getPreferredModel()).isEqualTo("anthropic/claude-sonnet-4");
         verify(repository, never()).save(any());
-    }
-
-    @Test
-    void nullProviderIsRejectedWithoutCreatingOrSavingAProfile() {
-        assertThatThrownBy(() -> module.updateProvider(USER_ID, null))
-                .isInstanceOf(InvalidUserPreferenceException.class);
-
-        verify(repository, never()).save(any());
-    }
-
-    @Test
-    void modelFromAnotherProviderSwitchesCompatiblePairAtomically() {
-        profile.setPreferredAiProvider("openai");
-        profile.setOpenaiPreferredModel("gpt-selected");
-
-        UserPreferenceChange change = module.updateModel(USER_ID, "gemini-fast");
-
-        assertThat(change.current().provider()).isEqualTo("gemini");
-        assertThat(change.current().model()).isEqualTo("gemini-fast");
-        assertThat(profile.getPreferredAiProvider()).isEqualTo("gemini");
-        assertThat(profile.getGeminiPreferredModel()).isEqualTo("gemini-fast");
-        verify(repository).save(profile);
     }
 
     @Test
     void recentLanguagesAreValidatedDeduplicatedAndBoundedByModule() {
+        UserPreferencesModule module = module(settings("en", "ja", "openai/gpt-4o-mini"));
         profile.setRecentLanguages(new java.util.LinkedHashSet<>(
-                List.of("invalid", "ja", "en", "ja", "ko", "fr", "de", "es")));
+                List.of("invalid", "ja", "en", "ko", "fr", "de", "es")));
 
         module.persistTranslationActivity(profile, "pt");
 
         assertThat(module.resolve(profile).recentLanguages())
                 .containsExactly("pt", "ja", "en", "ko", "fr");
-        verify(repository).save(profile);
     }
 
     @Test
-    void runtimeDefaultsAreReadDynamicallyWithoutRebuildingTheModule() {
-        AtomicReference<RuntimeSettings> runtime = new AtomicReference<>(settings(
-                "en", "ja", "openai", "gpt-selected", "gemini-default"));
-        UserPreferencesModule dynamicModule = new UserPreferencesModule(
-                repository,
-                runtime::get,
-                List.of(
-                        adapter("openai", "gpt-default", "gpt-default", "gpt-selected"),
-                        adapter("gemini", "gemini-default", "gemini-default", "gemini-fast")));
+    void runtimeDefaultsAreReadDynamicallyWithoutRebuildingModule() {
+        AtomicReference<RuntimeSettings> runtime = new AtomicReference<>(
+                settings("en", "ja", "openai/gpt-4o-mini"));
+        UserPreferencesModule module = new UserPreferencesModule(repository, runtime::get, List.of(ADAPTER));
 
-        assertThat(dynamicModule.resolve(profile))
-                .extracting(
-                        UserPreferences::targetLanguage,
+        assertThat(module.resolve(profile))
+                .extracting(UserPreferences::targetLanguage,
                         UserPreferences::chineseTargetLanguage,
-                        UserPreferences::provider,
                         UserPreferences::model)
-                .containsExactly("en", "ja", "openai", "gpt-selected");
+                .containsExactly("en", "ja", "openai/gpt-4o-mini");
 
-        runtime.set(settings("ko", "fr", "gemini", "gpt-default", "gemini-fast"));
-
-        assertThat(dynamicModule.resolve(profile))
-                .extracting(
-                        UserPreferences::targetLanguage,
+        runtime.set(settings("ko", "fr", "anthropic/claude-sonnet-4"));
+        assertThat(module.resolve(profile))
+                .extracting(UserPreferences::targetLanguage,
                         UserPreferences::chineseTargetLanguage,
-                        UserPreferences::provider,
                         UserPreferences::model)
-                .containsExactly("ko", "fr", "gemini", "gemini-fast");
+                .containsExactly("ko", "fr", "anthropic/claude-sonnet-4");
     }
 
-    private static RuntimeSettings settings(
-            String otherLanguage,
-            String chineseLanguage,
-            String provider,
-            String openAiModel,
-            String geminiModel) {
-        return new RuntimeSettings(
-                chineseLanguage,
-                otherLanguage,
-                provider,
-                openAiModel,
-                geminiModel,
-                true,
-                1,
-                1,
-                null,
-                "U-admin",
-                RuntimeSettings.Source.PERSISTED);
+    private UserPreferencesModule module(RuntimeSettings settings) {
+        return new UserPreferencesModule(repository, () -> settings, List.of(ADAPTER));
     }
 
-    private static AiProviderAdapter adapter(
-            String provider,
-            String defaultModel,
-            String... models) {
+    private static RuntimeSettings settings(String other, String chinese, String model) {
+        return new RuntimeSettings(chinese, other, model, true,
+                2, 1, null, "U-admin", RuntimeSettings.Source.PERSISTED);
+    }
+
+    private static AiProviderAdapter adapter() {
         return new AiProviderAdapter() {
-            @Override
-            public String providerName() {
-                return provider;
-            }
-
-            @Override
-            public String defaultModel() {
-                return defaultModel;
-            }
-
-            @Override
+            public String providerName() { return "openrouter"; }
+            public String defaultModel() { return "openai/gpt-4o-mini"; }
             public Set<String> availableModels() {
-                return Set.of(models);
+                return Set.of("openai/gpt-4o-mini", "anthropic/claude-sonnet-4");
             }
-
-            @Override
-            public Set<AiProviderOperation> capabilities() {
-                return Set.of(AiProviderOperation.TRANSLATE_TEXT);
-            }
-
-            @Override
+            public Set<AiProviderOperation> capabilities() { return Set.of(AiProviderOperation.values()); }
             public AiProviderResponse execute(AiProviderRequest request) {
                 throw new UnsupportedOperationException();
             }

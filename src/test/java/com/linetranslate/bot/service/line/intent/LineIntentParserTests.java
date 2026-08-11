@@ -45,10 +45,13 @@ class LineIntentParserTests {
 
     @Test
     void validationIsConsistentBeforeExecution() {
-        assertThat(parser.parseText("/setai"))
-                .isEqualTo(new LineIntent.Invalid(LineIntent.InvalidReason.AI_PROVIDER_REQUIRED, ""));
         assertThat(parser.parseText("/setmodel"))
                 .isEqualTo(new LineIntent.Invalid(LineIntent.InvalidReason.MODEL_REQUIRED, ""));
+        assertThat(parser.parseText("/model https://evil.example/?x=1"))
+                .isEqualTo(new LineIntent.Invalid(LineIntent.InvalidReason.INVALID_MODEL,
+                        "https://evil.example/?x=1"));
+        assertThat(parser.parseText("/models " + "a".repeat(81)))
+                .isEqualTo(new LineIntent.Invalid(LineIntent.InvalidReason.MODEL_QUERY_TOO_LONG, ""));
         assertThat(parser.parseText("快速翻譯:xx hello"))
                 .isEqualTo(new LineIntent.Invalid(LineIntent.InvalidReason.UNSUPPORTED_LANGUAGE, "xx"));
         assertThat(parser.parseText("快速翻譯:en"))
@@ -73,9 +76,12 @@ class LineIntentParserTests {
         return Stream.of(
                 Arguments.of("/help", LineIntent.UserAction.HELP, ""),
                 Arguments.of("/about", LineIntent.UserAction.ABOUT, ""),
-                Arguments.of("/setai OPENAI", LineIntent.UserAction.SET_AI, "openai"),
-                Arguments.of("/setmodel gpt-4o", LineIntent.UserAction.SET_MODEL, "gpt-4o"),
+                Arguments.of("/setmodel anthropic/claude-sonnet-4", LineIntent.UserAction.SET_MODEL,
+                        "anthropic/claude-sonnet-4"),
+                Arguments.of("/model openai/gpt-4o-mini", LineIntent.UserAction.SET_MODEL,
+                        "openai/gpt-4o-mini"),
                 Arguments.of("/models", LineIntent.UserAction.MODELS, ""),
+                Arguments.of("/models claude", LineIntent.UserAction.MODELS, "claude"),
                 Arguments.of("/外文翻譯 日文", LineIntent.UserAction.SET_FOREIGN_LANGUAGE, "日文"),
                 Arguments.of("/profile", LineIntent.UserAction.PROFILE, ""),
                 Arguments.of("/status", LineIntent.UserAction.STATUS, ""),

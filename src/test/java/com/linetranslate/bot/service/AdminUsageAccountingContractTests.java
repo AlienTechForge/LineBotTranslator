@@ -14,8 +14,8 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import com.linecorp.bot.messaging.client.MessagingApiClient;
-import com.linetranslate.bot.config.GeminiConfig;
-import com.linetranslate.bot.config.OpenAiConfig;
+import com.linetranslate.bot.config.OpenRouterConfig;
+import com.linetranslate.bot.service.ai.AiModelCatalog;
 import com.linetranslate.bot.repository.TranslationRecordRepository;
 import com.linetranslate.bot.repository.UserProfileRepository;
 import com.linetranslate.bot.service.line.LineUserProfileService;
@@ -32,8 +32,8 @@ class AdminUsageAccountingContractTests {
     @Mock private TranslationRecordRepository translationRecordRepository;
     @Mock private UserProfileRepository userProfileRepository;
     @Mock private MessagingApiClient messagingApiClient;
-    @Mock private OpenAiConfig openAiConfig;
-    @Mock private GeminiConfig geminiConfig;
+    @Mock private OpenRouterConfig openRouterConfig;
+    @Mock private AiModelCatalog modelCatalog;
     @Mock private LineUserProfileService lineUserProfileService;
     @Mock private UserPreferencesModule userPreferencesModule;
     @Mock private RuntimeSettingsModule runtimeSettingsModule;
@@ -48,8 +48,8 @@ class AdminUsageAccountingContractTests {
                 translationRecordRepository,
                 userProfileRepository,
                 messagingApiClient,
-                openAiConfig,
-                geminiConfig,
+                openRouterConfig,
+                modelCatalog,
                 lineUserProfileService,
                 userPreferencesModule,
                 runtimeSettingsModule,

@@ -70,11 +70,9 @@ public class LineInteractionModule {
         return switch (command.action()) {
             case HELP -> renderer.help();
             case ABOUT -> renderer.about();
-            case SET_AI -> renderer.settingResult(
-                    translationService.setPreferredProvider(userId, command.argument()));
             case SET_MODEL -> renderer.settingResult(
                     translationService.setPreferredModel(userId, command.argument()));
-            case MODELS -> renderer.models();
+            case MODELS -> renderer.models(command.argument());
             case SET_FOREIGN_LANGUAGE -> renderer.settingResult(
                     translationService.setPreferredLanguage(userId, command.argument()));
             case PROFILE -> renderer.profile(lineUserProfileService.getUserProfileInfo(userId));

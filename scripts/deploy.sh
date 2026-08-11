@@ -26,6 +26,16 @@ require_value() {
     [[ -n "${!key:-}" ]] || fail "Required runtime setting is missing: $key"
 }
 
+validate_openrouter() {
+    local status
+    status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+        --connect-timeout 10 --max-time 30 \
+        --header "Authorization: Bearer $OPEN_ROUTE_API_KEY" \
+        "${OPEN_ROUTE_API_URL%/}/models?output_modalities=text")"
+    [[ "$status" == "200" ]] || fail "OpenRouter credential validation failed (HTTP $status)"
+    log 'OpenRouter credential validation passed'
+}
+
 validate_identifier() {
     local label="$1"
     local value="$2"
@@ -95,7 +105,8 @@ CREDENTIALS_VOLUME="${CREDENTIALS_VOLUME:-linebot-translator-secrets}"
 HEALTH_TIMEOUT_SECONDS="${HEALTH_TIMEOUT_SECONDS:-120}"
 PULL_IMAGE="${PULL_IMAGE:-true}"
 OCR_ENABLED="${OCR_ENABLED:-true}"
-AI_DEFAULT_PROVIDER="${AI_DEFAULT_PROVIDER:-openai}"
+OPEN_ROUTE_API_URL="${OPEN_ROUTE_API_URL:-https://openrouter.ai/api/v1}"
+VALIDATE_OPENROUTER_REMOTE="${VALIDATE_OPENROUTER_REMOTE:-true}"
 
 [[ -n "$IMAGE" ]] || fail 'IMAGE must be an immutable image reference'
 validate_identifier 'CONTAINER_NAME' "$CONTAINER_NAME"
@@ -117,11 +128,11 @@ require_value LINE_BOT_CHANNEL_SECRET
 require_value MONGODB_URI
 require_value MONGODB_DATABASE
 
-case "$AI_DEFAULT_PROVIDER" in
-    openai) require_value OPENAI_API_KEY ;;
-    gemini) require_value GEMINI_API_KEY ;;
-    *) fail 'AI_DEFAULT_PROVIDER must be openai or gemini' ;;
-esac
+require_value OPEN_ROUTE_API_KEY
+if is_true "$VALIDATE_OPENROUTER_REMOTE"; then
+    require_command curl
+    validate_openrouter
+fi
 
 if is_true "$OCR_ENABLED"; then
     require_value GOOGLE_CREDENTIALS_JSON
@@ -149,15 +160,10 @@ runtime_keys=(
     WEBHOOK_PROCESSING_LEASE
     WEBHOOK_REPLY_MAX_ATTEMPTS
     WEBHOOK_REPLY_RETRY_BACKOFF
-    OPENAI_API_KEY
-    OPENAI_MODEL_NAME
-    OPENAI_AVAILABLE_MODELS
-    OPENAI_API_URL
-    GEMINI_API_KEY
-    GEMINI_MODEL_NAME
-    GEMINI_AVAILABLE_MODELS
+    OPEN_ROUTE_API_KEY
+    OPEN_ROUTE_MODEL_NAME
+    OPEN_ROUTE_API_URL
     OCR_ENABLED
-    AI_DEFAULT_PROVIDER
     ADMIN_USERS
     MINIO_ENDPOINT
     MINIO_ACCESS_KEY
@@ -169,7 +175,6 @@ runtime_keys=(
     MINIO_WRITE_TIMEOUT_MS
     MINIO_READ_TIMEOUT_MS
     LANGUAGE_DETECTION_USE_AI
-    LANGUAGE_DETECTION_AI_PROVIDER
     LANGUAGE_DETECTION_DEFAULT_CHINESE
     APP_BROADCAST_TEST_MODE
 )

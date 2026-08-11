@@ -58,7 +58,6 @@ class TranslationDetectionContractTests {
 
     @BeforeEach
     void setUp() {
-        lenient().when(appConfig.getDefaultAiProvider()).thenReturn("openai");
         lenient().when(appConfig.getDefaultTargetLanguageForOthers()).thenReturn("zh-TW");
         lenient().when(appConfig.getDefaultTargetLanguageForChinese()).thenReturn("en");
         translationService = createService(languageDetectionService);
@@ -200,7 +199,7 @@ class TranslationDetectionContractTests {
     private static UserProfile profile() {
         return UserProfile.builder()
                 .userId(USER_ID)
-                .preferredAiProvider("openai")
+                .preferredModel("gpt-test")
                 .build();
     }
 

@@ -43,7 +43,6 @@ class UserPreferencesMongoCompatibilityTests {
 
         assertThat(preferences.targetLanguage()).isNotBlank();
         assertThat(preferences.chineseTargetLanguage()).isNotBlank();
-        assertThat(preferences.provider()).isIn("openai", "gemini");
         assertThat(preferences.model()).isNotBlank();
         assertThat(preferences.recentLanguages()).isEmpty();
     }
@@ -63,7 +62,6 @@ class UserPreferencesMongoCompatibilityTests {
         UserPreferences preferences = module.resolve(legacy);
 
         assertThat(preferences.targetLanguage()).isNotIn("xx-retired", "yy-retired");
-        assertThat(preferences.provider()).isNotEqualTo("retired-ai");
         assertThat(preferences.model()).isNotEqualTo("retired-model");
         assertThat(preferences.recentLanguages()).containsExactly("ja", "en");
     }

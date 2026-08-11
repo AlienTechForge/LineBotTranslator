@@ -53,10 +53,9 @@ class TranslationUserPreferenceTests {
     @BeforeEach
     void setUp() {
         AiProviderAdapter openAi = org.mockito.Mockito.mock(AiProviderAdapter.class);
-        when(openAi.providerName()).thenReturn("openai");
-        when(openAi.defaultModel()).thenReturn("gpt-test");
-        when(openAi.availableModels()).thenReturn(Set.of("gpt-test"));
-        lenient().when(appConfig.getDefaultAiProvider()).thenReturn("openai");
+        lenient().when(openAi.providerName()).thenReturn("openrouter");
+        lenient().when(openAi.defaultModel()).thenReturn("gpt-test");
+        lenient().when(openAi.availableModels()).thenReturn(Set.of("gpt-test"));
         lenient().when(appConfig.getDefaultTargetLanguageForOthers()).thenReturn("en");
         lenient().when(appConfig.getDefaultTargetLanguageForChinese()).thenReturn("en");
         userPreferencesModule = new UserPreferencesModule(
@@ -69,7 +68,7 @@ class TranslationUserPreferenceTests {
         translationService = new TranslationService(workflowModule, userPreferencesModule);
         profile = UserProfile.builder()
                 .userId(USER_ID)
-                .preferredAiProvider("openai")
+                .preferredModel("gpt-test")
                 .preferredLanguage("ja")
                 .preferredChineseTargetLanguage("en")
                 .build();

@@ -21,7 +21,7 @@ import com.linetranslate.bot.service.storage.MinioStorageService;
 
 @SpringBootTest(
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
-        properties = {"openai.api.key=", "gemini.api.key="})
+        properties = "openrouter.api.key=")
 @AutoConfigureTestRestTemplate
 @ActiveProfiles("test")
 class AiUnavailableHealthEndpointTests {
@@ -34,7 +34,7 @@ class AiUnavailableHealthEndpointTests {
 
     @Test
     @SuppressWarnings("unchecked")
-    void noConfiguredAiProviderBlocksReadinessWithoutExposingConfiguration() {
+    void noConfiguredOpenRouterBlocksReadinessWithoutExposingConfiguration() {
         when(minioStorageService.isAvailable()).thenReturn(true);
 
         ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
@@ -47,12 +47,8 @@ class AiUnavailableHealthEndpointTests {
         assertThat(response.getBody()).containsEntry("status", "DOWN");
         Map<String, Object> components =
                 (Map<String, Object>) response.getBody().get("components");
-        assertThat((Map<String, Object>) components.get("aiProvidersConfigured"))
+        assertThat((Map<String, Object>) components.get("openRouterConfiguration"))
                 .containsEntry("status", "DOWN")
                 .doesNotContainKey("details");
-        assertThat((Map<String, Object>) components.get("openAiConfiguration"))
-                .containsEntry("status", "DISABLED");
-        assertThat((Map<String, Object>) components.get("geminiConfiguration"))
-                .containsEntry("status", "DISABLED");
     }
 }

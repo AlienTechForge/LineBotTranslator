@@ -26,7 +26,6 @@ public sealed interface LineIntent permits
     enum UserAction {
         HELP,
         ABOUT,
-        SET_AI,
         SET_MODEL,
         MODELS,
         SET_FOREIGN_LANGUAGE,
@@ -37,8 +36,9 @@ public sealed interface LineIntent permits
     }
 
     enum InvalidReason {
-        AI_PROVIDER_REQUIRED,
         MODEL_REQUIRED,
+        INVALID_MODEL,
+        MODEL_QUERY_TOO_LONG,
         FOREIGN_LANGUAGE_REQUIRED,
         CHINESE_LANGUAGE_REQUIRED,
         QUICK_TRANSLATION_FORMAT,

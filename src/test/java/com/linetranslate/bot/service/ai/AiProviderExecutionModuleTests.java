@@ -1,8 +1,8 @@
 package com.linetranslate.bot.service.ai;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 
 import java.util.ArrayList;
@@ -15,225 +15,113 @@ import org.junit.jupiter.api.Test;
 import com.linetranslate.bot.service.preference.UserPreferences;
 import com.linetranslate.bot.service.settings.RuntimeSettings;
 import com.linetranslate.bot.service.usage.AiUsageEventSink;
-import static com.linetranslate.bot.testing.UserPreferencesFixtures.preferences;
 
 class AiProviderExecutionModuleTests {
 
     @Test
-    void plannedTextRouteUsesTheEffectiveProviderAndModel() {
-        FakeAdapter openAi = new FakeAdapter("openai", "gpt-default", Set.of("gpt-default", "gpt-selected"));
-        AiProviderExecutionModule module = module(openAi);
-        UserPreferences selected = preferences("openai", "gpt-selected", "gemini-default");
-        UserPreferences unsupported = preferences("openai", "gpt-unknown", "gemini-default");
+    void selectedModelIsPlannedAndSentToTheSingleOpenRouterAdapter() {
+        FakeAdapter adapter = new FakeAdapter("openai/gpt-4o-mini",
+                Set.of("openai/gpt-4o-mini", "anthropic/claude-sonnet-4"));
+        AiProviderExecutionModule module = module(adapter);
+        UserPreferences preferences = preferences("anthropic/claude-sonnet-4");
 
-        assertThat(module.planText(selected))
-                .isEqualTo(new AiProviderRoute("openai", "gpt-selected"));
-        assertThat(module.planText(unsupported))
-                .isEqualTo(new AiProviderRoute("openai", "gpt-default"));
-    }
-
-    @Test
-    void selectedModelIsSentToTheProviderAdapter() {
-        FakeAdapter openAi = new FakeAdapter("openai", "gpt-default", Set.of("gpt-default", "gpt-selected"));
-        AiProviderExecutionModule module = module(openAi);
-        UserPreferences profile = preferences("openai", "gpt-selected", "gemini-default");
-
-        AiExecutionOutcome outcome = module.translateTextOutcome(profile, "hello", "zh-TW");
+        assertThat(module.planText(preferences))
+                .isEqualTo(new AiProviderRoute("openrouter", "anthropic/claude-sonnet-4"));
+        AiExecutionOutcome outcome = module.translateTextOutcome(preferences, "hello", "zh-TW");
 
         assertThat(outcome).isInstanceOf(AiExecutionOutcome.Success.class);
-        assertThat(openAi.requests).singleElement()
+        assertThat(adapter.requests).singleElement()
                 .extracting(AiProviderRequest::model)
-                .isEqualTo("gpt-selected");
-        AiExecutionResult result = ((AiExecutionOutcome.Success) outcome).result();
-        assertThat(result.modelName()).isEqualTo("gpt-selected");
-        assertThat(result.tokenUsage()).isEqualTo(new AiTokenUsage(10, 4, 14));
+                .isEqualTo("anthropic/claude-sonnet-4");
+        assertThat(((AiExecutionOutcome.Success) outcome).result().fallbackUsed()).isFalse();
     }
 
     @Test
-    void fallbackResultCarriesEveryAttemptAndTheActualSuccessfulProvider() {
-        FakeAdapter openAi = new FakeAdapter("openai", "gpt-default", Set.of("gpt-default"));
-        openAi.failure = failure(AiProviderException.Outcome.QUOTA_EXCEEDED, "openai", "gpt-default");
-        FakeAdapter gemini = new FakeAdapter("gemini", "gemini-default", Set.of("gemini-default"));
-        AiProviderExecutionModule module = module(openAi, gemini);
-        UserPreferences profile = preferences("openai", "gpt-default", "gemini-default");
+    void providerFailureIsTerminalStructuredDataWithoutFallback() {
+        FakeAdapter adapter = new FakeAdapter("openai/gpt-4o-mini", Set.of("openai/gpt-4o-mini"));
+        adapter.failure = failure(AiProviderException.Outcome.RATE_LIMITED, "openai/gpt-4o-mini");
 
-        AiExecutionOutcome outcome = module.translateTextOutcome(profile, "hello", "zh-TW");
+        AiExecutionOutcome outcome = module(adapter).translateTextOutcome(
+                preferences("openai/gpt-4o-mini"), "hello", "zh-TW");
 
-        AiExecutionResult result = ((AiExecutionOutcome.Success) outcome).result();
-        assertThat(result.providerName()).isEqualTo("gemini");
-        assertThat(result.modelName()).isEqualTo("gemini-default");
-        assertThat(result.fallbackUsed()).isTrue();
-        assertThat(result.attempts()).extracting(AiProviderAttempt::provider)
-                .containsExactly("openai", "gemini");
-        assertThat(result.attempts()).extracting(AiProviderAttempt::status)
-                .containsExactly(AiProviderAttempt.Status.FAILURE, AiProviderAttempt.Status.SUCCESS);
-    }
-
-    @Test
-    void terminalProviderFailureIsReturnedAsStructuredData() {
-        FakeAdapter openAi = new FakeAdapter("openai", "gpt-default", Set.of("gpt-default"));
-        openAi.failure = failure(AiProviderException.Outcome.SAFETY_BLOCKED, "openai", "gpt-default");
-        FakeAdapter gemini = new FakeAdapter("gemini", "gemini-default", Set.of("gemini-default"));
-        AiProviderExecutionModule module = module(openAi, gemini);
-
-        AiExecutionOutcome outcome = module.translateTextOutcome(
-                preferences("openai", "gpt-default", "gemini-default"),
-                "unsafe",
-                "zh-TW");
-
-        assertThat(outcome).isInstanceOf(AiExecutionOutcome.Failure.class);
         AiExecutionFailure failure = ((AiExecutionOutcome.Failure) outcome).failure();
-        assertThat(failure.outcome()).isEqualTo(AiProviderException.Outcome.SAFETY_BLOCKED);
+        assertThat(failure.outcome()).isEqualTo(AiProviderException.Outcome.RATE_LIMITED);
         assertThat(failure.attempts()).hasSize(1);
-        assertThat(gemini.requests).isEmpty();
     }
 
     @Test
-    void unsupportedCapabilityFailsBeforeCallingTheAdapter() {
-        FakeAdapter openAi = new FakeAdapter("openai", "gpt-default", Set.of("gpt-default"));
-        openAi.capabilities = Set.of(AiProviderOperation.GENERATE_TEXT);
+    void runtimeDefaultModelIsReadDynamically() {
+        FakeAdapter adapter = new FakeAdapter("openai/gpt-4o-mini",
+                Set.of("openai/gpt-4o-mini", "anthropic/claude-sonnet-4"));
+        AtomicReference<RuntimeSettings> runtime = new AtomicReference<>(settings("openai/gpt-4o-mini"));
+        AiProviderExecutionModule module = new AiProviderExecutionModule(List.of(adapter), runtime::get);
 
-        AiExecutionOutcome outcome = module(openAi).translateTextOutcome(
-                preferences("openai", "gpt-default", "gemini-default"),
-                "hello",
-                "zh-TW");
+        module.generateTextOutcome(null, "first");
+        runtime.set(settings("anthropic/claude-sonnet-4"));
+        module.generateTextOutcome(null, "second");
 
-        AiExecutionFailure failure = ((AiExecutionOutcome.Failure) outcome).failure();
-        assertThat(failure.outcome()).isEqualTo(AiProviderException.Outcome.CONFIGURATION_ERROR);
-        assertThat(failure.reason()).isEqualTo("UNSUPPORTED_OPERATION");
-        assertThat(openAi.requests).isEmpty();
+        assertThat(adapter.requests).extracting(AiProviderRequest::model)
+                .containsExactly("openai/gpt-4o-mini", "anthropic/claude-sonnet-4");
     }
 
     @Test
-    void providerAndModelDefaultsFollowRuntimeUpdates() {
-        FakeAdapter openAi = new FakeAdapter(
-                "openai", "gpt-default", Set.of("gpt-default", "gpt-selected"));
-        FakeAdapter gemini = new FakeAdapter(
-                "gemini", "gemini-default", Set.of("gemini-default", "gemini-selected"));
-        AtomicReference<RuntimeSettings> runtime = new AtomicReference<>(settings(
-                "gemini", "gpt-selected", "gemini-selected"));
-        AiProviderExecutionModule module = new AiProviderExecutionModule(
-                List.of(openAi, gemini), runtime::get);
-
-        module.generateTextOutcome(null, null, "first");
-        runtime.set(settings("openai", "gpt-selected", "gemini-default"));
-        module.generateTextOutcome(null, null, "second");
-
-        assertThat(gemini.requests).singleElement()
-                .extracting(AiProviderRequest::model)
-                .isEqualTo("gemini-selected");
-        assertThat(openAi.requests).singleElement()
-                .extracting(AiProviderRequest::model)
-                .isEqualTo("gpt-selected");
-    }
-
-    @Test
-    void completedProviderOutcomeIsSentToUsageAccountingSeam() {
-        FakeAdapter openAi = new FakeAdapter(
-                "openai", "gpt-default", Set.of("gpt-default"));
+    void completedOutcomeIsSentToAccountingAndAccountingOutageIsIsolated() {
+        FakeAdapter adapter = new FakeAdapter("openai/gpt-4o-mini", Set.of("openai/gpt-4o-mini"));
         AiUsageEventSink sink = mock(AiUsageEventSink.class);
         AiProviderExecutionModule module = new AiProviderExecutionModule(
-                List.of(openAi), "openai", sink);
+                List.of(adapter), () -> settings("openai/gpt-4o-mini"), sink);
 
-        AiExecutionOutcome outcome = module.translateTextOutcome(
-                preferences("openai", "gpt-default", "gemini-default"),
-                "hello",
-                "zh-TW");
+        AiExecutionOutcome first = module.translateTextOutcome(
+                preferences("openai/gpt-4o-mini"), "hello", "zh-TW");
+        verify(sink).record(AiProviderOperation.TRANSLATE_TEXT, first);
 
-        verify(sink).record(AiProviderOperation.TRANSLATE_TEXT, outcome);
-    }
-
-    @Test
-    void accountingOutageDoesNotChangeProviderOutcome() {
-        FakeAdapter openAi = new FakeAdapter(
-                "openai", "gpt-default", Set.of("gpt-default"));
-        AiUsageEventSink sink = mock(AiUsageEventSink.class);
         doThrow(new IllegalStateException("mongo unavailable"))
                 .when(sink).record(
                         org.mockito.ArgumentMatchers.eq(AiProviderOperation.TRANSLATE_TEXT),
                         org.mockito.ArgumentMatchers.any(AiExecutionOutcome.class));
-        AiProviderExecutionModule module = new AiProviderExecutionModule(
-                List.of(openAi), "openai", sink);
-
-        AiExecutionOutcome outcome = module.translateTextOutcome(
-                preferences("openai", "gpt-default", "gemini-default"),
-                "hello",
-                "zh-TW");
-
-        assertThat(outcome).isInstanceOf(AiExecutionOutcome.Success.class);
+        assertThat(module.translateTextOutcome(
+                preferences("openai/gpt-4o-mini"), "again", "zh-TW"))
+                .isInstanceOf(AiExecutionOutcome.Success.class);
     }
 
-    private static AiProviderExecutionModule module(AiProviderAdapter... adapters) {
-        return new AiProviderExecutionModule(List.of(adapters), "openai");
+    private static AiProviderExecutionModule module(AiProviderAdapter adapter) {
+        return new AiProviderExecutionModule(List.of(adapter), () -> settings(adapter.defaultModel()));
     }
 
-    private static RuntimeSettings settings(
-            String provider,
-            String openAiModel,
-            String geminiModel) {
-        return new RuntimeSettings(
-                "en", "zh-TW", provider, openAiModel, geminiModel, true,
-                1, 1, null, "U-admin", RuntimeSettings.Source.PERSISTED);
+    private static RuntimeSettings settings(String model) {
+        return new RuntimeSettings("en", "zh-TW", model, true,
+                2, 1, null, "U-admin", RuntimeSettings.Source.PERSISTED);
     }
 
-    private static AiProviderException failure(
-            AiProviderException.Outcome outcome,
-            String provider,
-            String model) {
+    private static UserPreferences preferences(String model) {
+        return new UserPreferences("en", "en", "en", model, List.of());
+    }
+
+    private static AiProviderException failure(AiProviderException.Outcome outcome, String model) {
         return new AiProviderException(
-                outcome,
-                provider,
-                model,
-                outcome.name(),
-                "correlation-1",
-                -1,
-                null);
+                outcome, "openrouter", model, outcome.name(), "correlation-1", 429, null);
     }
 
     private static final class FakeAdapter implements AiProviderAdapter {
-        private final String provider;
         private final String defaultModel;
         private final Set<String> models;
         private final List<AiProviderRequest> requests = new ArrayList<>();
-        private Set<AiProviderOperation> capabilities = Set.of(AiProviderOperation.values());
         private AiProviderException failure;
 
-        private FakeAdapter(String provider, String defaultModel, Set<String> models) {
-            this.provider = provider;
+        private FakeAdapter(String defaultModel, Set<String> models) {
             this.defaultModel = defaultModel;
             this.models = models;
         }
 
-        @Override
-        public String providerName() {
-            return provider;
-        }
+        public String providerName() { return "openrouter"; }
+        public String defaultModel() { return defaultModel; }
+        public Set<String> availableModels() { return models; }
+        public Set<AiProviderOperation> capabilities() { return Set.of(AiProviderOperation.values()); }
 
-        @Override
-        public String defaultModel() {
-            return defaultModel;
-        }
-
-        @Override
-        public Set<String> availableModels() {
-            return models;
-        }
-
-        @Override
-        public Set<AiProviderOperation> capabilities() {
-            return capabilities;
-        }
-
-        @Override
         public AiProviderResponse execute(AiProviderRequest request) {
             requests.add(request);
-            if (failure != null) {
-                throw failure;
-            }
-            return new AiProviderResponse(
-                    "translated",
-                    request.model(),
-                    new AiTokenUsage(10, 4, 14));
+            if (failure != null) throw failure;
+            return new AiProviderResponse("translated", request.model(), new AiTokenUsage(10, 4, 14));
         }
     }
 }

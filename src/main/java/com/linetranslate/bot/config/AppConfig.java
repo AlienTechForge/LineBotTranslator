@@ -20,12 +20,4 @@ public class AppConfig {
     @Value("${app.ocr.enabled}")
     private boolean ocrEnabled;
 
-    @Value("${app.ai.default-provider}")
-    private String defaultAiProvider;
-    
-    @Value("${app.ai.openai.default-model:gpt-4o}")
-    private String openaiDefaultModel;
-    
-    @Value("${app.ai.gemini.default-model:gemini-pro}")
-    private String geminiDefaultModel;
 }

@@ -1,13 +1,13 @@
 # LINE Bot 翻譯機器人
 
-這是一個基於 Spring Boot 開發的 LINE Bot 翻譯機器人，使用 OpenAI 和 Google Gemini 進行文字翻譯，以及 Google Cloud Vision API 進行圖片文字識別與翻譯。
+這是一個基於 Spring Boot 開發的 LINE Bot 翻譯機器人，透過 OpenRouter 統一 API 使用多種模型進行文字翻譯，並以 Google Cloud Vision API 進行圖片文字識別與翻譯。
 
 ## 功能特點
 
 - **自動語言檢測**：自動識別輸入文字的語言，並選擇適當的目標語言進行翻譯
 - **多語言翻譯**：支持多種語言之間的翻譯，包括中文、英文、日文、韓文等
 - **圖片文字識別**：使用 OCR 技術識別圖片中的文字並翻譯
-- **用戶偏好設定**：允許用戶設置偏好的 AI 引擎和默認翻譯語言
+- **用戶偏好設定**：允許用戶在對話中搜尋、指定 OpenRouter 模型與默認翻譯語言
 - **翻譯記憶**：記住用戶最近使用的語言，提供快速翻譯選項
 - **管理員統計**：為管理員提供系統使用統計信息
 
@@ -15,7 +15,7 @@
 
 - **後端框架**：Spring Boot 4.1（Java 17+）
 - **數據庫**：MongoDB
-- **翻譯引擎**：OpenAI GPT-4o、Google Gemini
+- **翻譯引擎**：OpenRouter Chat Completions API
 - **OCR 技術**：Google Cloud Vision API
 - **消息平台**：LINE Messaging API（LINE Bot SDK for Java 10.1）
 
@@ -51,20 +51,16 @@ WEBHOOK_PROCESSING_LEASE=PT5M
 WEBHOOK_REPLY_MAX_ATTEMPTS=3
 WEBHOOK_REPLY_RETRY_BACKOFF=PT1S
 
-# OpenAI 配置
-OPENAI_API_KEY=your_openai_api_key
-OPENAI_MODEL_NAME=gpt-4o
-
-# Gemini 配置
-GEMINI_API_KEY=your_gemini_api_key
-GEMINI_MODEL_NAME=gemini-1.5-pro
+# OpenRouter 配置（API key 的名稱固定為 OPEN_ROUTE_API_KEY）
+OPEN_ROUTE_API_KEY=your_openrouter_api_key
+OPEN_ROUTE_MODEL_NAME=openai/gpt-4o-mini
+OPEN_ROUTE_API_URL=https://openrouter.ai/api/v1
 
 # Google Cloud Vision API 配置 (OCR)
 GOOGLE_CLOUD_VISION_API_KEY=your_google_cloud_vision_api_key
 
 # 應用程式配置
 OCR_ENABLED=true
-AI_DEFAULT_PROVIDER=openai
 
 # 管理員配置
 ADMIN_USERS=U123456789abcdef,U987654321abcdef
@@ -125,8 +121,10 @@ java -jar target/linebot-translator-0.0.1-SNAPSHOT.jar
 
 - `/help` - 顯示幫助信息
 - `/about` - 關於此機器人
-- `/setai openai|gemini` - 設置偏好的 AI 引擎
-- `/setlang [語言]` - 設置默認翻譯語言
+- `/models [關鍵字]` - 列出或搜尋 OpenRouter 可用模型（最多顯示前 20 個）
+- `/model [完整模型 slug]` - 指定使用模型；`/setmodel` 為相同功能的相容別名
+- `/外文翻譯 [語言]` - 設置一般文字的默認目標語言
+- `/中文翻譯 [語言]` - 設置中文文字的默認目標語言
 - `/lang` - 顯示語言選擇菜單
 - `/profile` - 查看用戶資料
 
@@ -134,6 +132,7 @@ java -jar target/linebot-translator-0.0.1-SNAPSHOT.jar
 
 - `/admin stats` - 顯示系統統計信息
 - `/admin today` - 顯示今日統計信息
+- `/admin config model [完整模型 slug]` - 設置全域 OpenRouter 默認模型
 
 ## 貢獻與支持
 

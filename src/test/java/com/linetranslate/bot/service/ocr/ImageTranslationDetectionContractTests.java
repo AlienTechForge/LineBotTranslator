@@ -94,7 +94,7 @@ class ImageTranslationDetectionContractTests {
 
         userProfile = UserProfile.builder()
                 .userId("U-test")
-                .preferredAiProvider("openai")
+                .preferredModel("gpt-test")
                 .build();
         when(userProfileRepository.findByUserId("U-test")).thenReturn(Optional.of(userProfile));
         when(userProfileRepository.save(any(UserProfile.class)))

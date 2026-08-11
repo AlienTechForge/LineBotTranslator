@@ -6,19 +6,18 @@ import static org.mockito.Mockito.when;
 
 import java.time.LocalDateTime;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 
 import org.junit.jupiter.api.Test;
 
 import com.linecorp.bot.messaging.client.MessagingApiClient;
 import com.linetranslate.bot.config.AppConfig;
-import com.linetranslate.bot.config.GeminiConfig;
-import com.linetranslate.bot.config.OpenAiConfig;
+import com.linetranslate.bot.config.OpenRouterConfig;
 import com.linetranslate.bot.model.UserProfile;
 import com.linetranslate.bot.repository.TranslationRecordRepository;
 import com.linetranslate.bot.repository.UserProfileRepository;
 import com.linetranslate.bot.service.AdminService;
+import com.linetranslate.bot.service.ai.AiModelCatalog;
 import com.linetranslate.bot.service.line.LineUserProfileService;
 import com.linetranslate.bot.service.translation.TranslationService;
 import com.linetranslate.bot.service.translation.TranslationWorkflowModule;
@@ -38,9 +37,7 @@ class UserPreferenceViewsConsistencyTests {
                 "ja",
                 "en",
                 "zh-TW",
-                "gemini",
-                "gemini-fast",
-                Map.of("openai", "gpt-fast", "gemini", "gemini-fast"),
+                "anthropic/claude-sonnet-4",
                 List.of("ja", "en"));
 
         UserProfileRepository profiles = mock(UserProfileRepository.class);
@@ -60,18 +57,18 @@ class UserPreferenceViewsConsistencyTests {
                 profiles,
                 messaging,
                 mock(AppConfig.class),
-                mock(OpenAiConfig.class),
-                mock(GeminiConfig.class),
+                mock(OpenRouterConfig.class),
+                mock(AiModelCatalog.class),
                 lineProfile,
                 preferencesModule);
 
         assertThat(translation.getUserStatus(userId))
-                .contains("GEMINI", "gemini-fast", "日文", "英文");
+                .contains("OpenRouter", "anthropic/claude-sonnet-4", "日文", "英文");
         assertThat(lineProfile.getUserProfileInfo(userId))
-                .contains("gemini", "gemini-fast", "日文", "英文");
+                .contains("OpenRouter", "anthropic/claude-sonnet-4", "日文", "英文");
         assertThat(admin.getUserInfo(userId))
-                .containsEntry("preferredAiProvider", "gemini")
-                .containsEntry("geminiPreferredModel", "gemini-fast")
+                .containsEntry("aiProvider", "openrouter")
+                .containsEntry("preferredModel", "anthropic/claude-sonnet-4")
                 .containsEntry("preferredLanguage", "ja")
                 .containsEntry("preferredChineseTargetLanguage", "en");
     }

@@ -21,7 +21,7 @@ import com.linetranslate.bot.service.storage.MinioStorageService;
 
 @SpringBootTest(
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
-        properties = "openai.api.key=test-openai-key")
+        properties = "openrouter.api.key=test-openrouter-key")
 @AutoConfigureTestRestTemplate
 @ActiveProfiles("test")
 class MinioDegradedHealthEndpointTests {
@@ -47,7 +47,7 @@ class MinioDegradedHealthEndpointTests {
                 .containsEntry("status", "DEGRADED")
                 .doesNotContainKey("details");
         assertThat(response.getBody().toString())
-                .doesNotContain("test-openai-key", "signed", "exception", "user");
+                .doesNotContain("test-openrouter-key", "signed", "exception", "user");
     }
 
     private ResponseEntity<Map<String, Object>> readiness() {

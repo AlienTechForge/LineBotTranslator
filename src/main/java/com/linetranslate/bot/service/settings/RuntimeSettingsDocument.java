@@ -21,9 +21,7 @@ public class RuntimeSettingsDocument {
     private Integer schemaVersion;
     private String defaultTargetLanguageForChinese;
     private String defaultTargetLanguageForOthers;
-    private String defaultAiProvider;
-    private String openAiDefaultModel;
-    private String geminiDefaultModel;
+    private String openRouterDefaultModel;
     private Boolean ocrEnabled;
     private Long revision;
     private Instant updatedAt;

@@ -52,9 +52,7 @@ public class AdminInteractionModule {
                     adminService.setDefaultTargetLanguageForChinese(intent.value(), userId));
             case CONFIG_LANGUAGE -> configResult(
                     adminService.setDefaultTargetLanguageForOthers(intent.value(), userId));
-            case CONFIG_AI -> configResult(adminService.setDefaultAiProvider(intent.value(), userId));
-            case CONFIG_OPENAI -> configResult(adminService.setOpenAiDefaultModel(intent.value(), userId));
-            case CONFIG_GEMINI -> configResult(adminService.setGeminiDefaultModel(intent.value(), userId));
+            case CONFIG_MODEL -> configResult(adminService.setOpenRouterDefaultModel(intent.value(), userId));
             case CONFIG_OCR -> configResult(adminService.setOcrEnabled(intent.value(), userId));
             case USAGE_CURRENT_MONTH -> renderer.info("本月 API 用量", adminService.getApiUsageStats());
             case USAGE_DAY -> renderer.info("每日 API 用量", adminService.getApiUsageStatsByDay(intent.value()));
@@ -136,7 +134,8 @@ public class AdminInteractionModule {
                     + "圖片翻譯：" + value(userInfo, "imageTranslationCount") + "\n\n"
                     + "預設語言：" + value(userInfo, "preferredLanguage") + "\n"
                     + "中文目標語言：" + value(userInfo, "preferredChineseTargetLanguage") + "\n"
-                    + "AI 提供者：" + value(userInfo, "preferredAiProvider");
+                    + "AI 提供者：" + value(userInfo, "aiProvider") + "\n"
+                    + "模型：" + value(userInfo, "preferredModel");
             return renderer.info("用戶詳細資訊", body);
         } catch (Exception exception) {
             log.error("獲取用戶資訊失敗: failure={}", SafeLog.failure(exception));
@@ -149,9 +148,7 @@ public class AdminInteractionModule {
                 + "\n\n可用指令：\n"
                 + "/admin config c2lang [lang]\n"
                 + "/admin config lang [lang]\n"
-                + "/admin config ai [openai|gemini]\n"
-                + "/admin config openai [model]\n"
-                + "/admin config gemini [model]\n"
+                + "/admin config model [OpenRouter slug]\n"
                 + "/admin config ocr [on|off]";
     }
 
@@ -174,7 +171,7 @@ public class AdminInteractionModule {
             case USAGE_MONTH_REQUIRED ->
                     "請指定月份，格式為 YYYY-MM。例如：/admin usage month 2026-08";
             case USAGE_PROVIDER_REQUIRED ->
-                    "請指定 openai 或 gemini。例如：/admin usage provider openai";
+                    "請指定提供者維度。例如：/admin usage provider openrouter";
             case USAGE_MODEL_REQUIRED -> "請指定模型。例如：/admin usage model gpt-4o";
             case USAGE_TYPE_REQUIRED -> "請指定 text 或 image。例如：/admin usage type image";
             case ADD_ADMIN_REQUIRED ->
