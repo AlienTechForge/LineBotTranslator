@@ -334,22 +334,6 @@ public class TranslationService {
     }
 
     /**
-     * 設置用戶偏好的 AI 提供者
-     *
-     * @param userId 用戶 ID
-     * @param provider AI 提供者
-     * @return 更新結果信息
-     */
-    public String setPreferredProvider(String userId, String provider) {
-        try {
-            UserPreferenceChange change = userPreferencesModule.updateProvider(userId, provider);
-            return "已將您的偏好 AI 設置為 " + change.current().provider();
-        } catch (InvalidUserPreferenceException invalid) {
-            return "不支持的 AI 提供者。請選擇 'openai' 或 'gemini'。";
-        }
-    }
-
-    /**
      * 設置用戶偏好的語言
      *
      * @param userId 用戶 ID
@@ -377,16 +361,6 @@ public class TranslationService {
     public List<String> getRecentLanguages(String userId) {
         return userPreferencesModule.get(userId).recentLanguages();
     }
-    /**
-     * 獲取用戶偏好的 AI 提供者
-     *
-     * @param userId 用戶 ID
-     * @return 用戶偏好的 AI 提供者 (openai 或 gemini)
-     */
-    public String getPreferredProvider(String userId) {
-        return userPreferencesModule.get(userId).provider();
-    }
-    
     /**
      * 設置用戶偏好的中文翻譯目標語言
      * 
@@ -431,10 +405,7 @@ public class TranslationService {
         StringBuilder status = new StringBuilder();
         status.append("您的翻譯設定：\n\n");
         
-        // 偏好的 AI 提供者
-        status.append("• 偏好的 AI 提供者：")
-                .append(preferences.provider().toUpperCase(java.util.Locale.ROOT))
-                .append("\n");
+        status.append("• AI 提供者：OpenRouter\n");
         status.append("• 目前使用的模型：").append(preferences.model()).append("\n");
         
         // 偏好的預設翻譯語言
@@ -480,15 +451,6 @@ public class TranslationService {
     }
     
     /**
-     * 獲取默認的 AI 提供者
-     * 
-     * @return 默認的 AI 提供者名稱
-     */
-    public String getDefaultProvider() {
-        return userPreferencesModule.defaultProvider();
-    }
-    
-    /**
      * 設置用戶偏好的 AI 模型
      * 
      * @param userId 用戶 ID
@@ -503,21 +465,14 @@ public class TranslationService {
             return "不支援或不可用的 AI 模型：" + modelName;
         }
         String oldModel = change.previous().model();
-        String newProvider = change.current().provider();
         StringBuilder result = new StringBuilder();
         if (oldModel != null && !oldModel.isEmpty() && oldModel.equals(modelName)) {
             result.append("已設置 AI 模型為 ").append(modelName);
         } else if (oldModel != null && !oldModel.isEmpty()) {
-            result.append("已將 ").append(newProvider).append(" 模型從 ").append(oldModel).append(" 更改為 ").append(modelName);
+            result.append("已將 OpenRouter 模型從 ").append(oldModel).append(" 更改為 ").append(modelName);
         } else {
-            result.append("已設置 ").append(newProvider).append(" 模型為 ").append(modelName);
+            result.append("已設置 OpenRouter 模型為 ").append(modelName);
         }
-        
-        // 如果提供者發生變化，添加提示信息
-        if (!newProvider.equals(change.previous().provider())) {
-            result.append("\n同時已將 AI 提供者設置為 ").append(newProvider);
-        }
-        
         return result.toString();
     }
 }

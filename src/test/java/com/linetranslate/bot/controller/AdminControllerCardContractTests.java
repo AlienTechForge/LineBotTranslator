@@ -72,7 +72,8 @@ class AdminControllerCardContractTests {
                 "imageTranslationCount", 2,
                 "preferredLanguage", "zh-TW",
                 "preferredChineseTargetLanguage", "en",
-                "preferredAiProvider", "openai"));
+                "aiProvider", "openrouter",
+                "preferredModel", "openai/gpt-4o-mini"));
 
         Message response = controller.handleCommand(ADMIN_ID, "user U-target");
 
@@ -108,10 +109,10 @@ class AdminControllerCardContractTests {
                 "stats", "today", "users", "user", "user missing",
                 "nickname", "nickname U-target", "nickname U-target Jason",
                 "config", "config c2lang en", "config lang zh-TW",
-                "config ai openai", "config openai gpt-4o",
-                "config gemini gemini-1.5-pro", "config ocr on", "config unknown",
+                "config model openai/gpt-4o-mini",
+                "config openrouter anthropic/claude-sonnet-4", "config ocr on", "config unknown",
                 "usage", "usage day 2026-08-11", "usage month 2026-08",
-                "usage provider openai", "usage model gpt-4o", "usage type image",
+                "usage provider openrouter", "usage model openai/gpt-4o-mini", "usage type image",
                 "usage summary", "usage unknown",
                 "add", "add U-target", "remove", "remove U-target", "unknown");
     }

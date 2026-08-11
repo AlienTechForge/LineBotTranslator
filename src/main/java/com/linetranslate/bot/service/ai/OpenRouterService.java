@@ -1,0 +1,303 @@
+package com.linetranslate.bot.service.ai;
+
+import java.io.IOException;
+import java.net.SocketTimeoutException;
+import java.util.Locale;
+import java.util.Set;
+import java.util.UUID;
+
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.stereotype.Service;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.linetranslate.bot.config.OpenRouterConfig;
+
+import okhttp3.MediaType;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.RequestBody;
+import okhttp3.Response;
+import okhttp3.ResponseBody;
+
+/** OpenRouter-only Adapter for text translation, generation and image understanding. */
+@Service
+public class OpenRouterService implements AiProviderAdapter {
+
+    private static final MediaType JSON = MediaType.get("application/json");
+    private static final String TRANSLATION_INSTRUCTIONS =
+            "你是專業翻譯助手。將使用者文字翻譯成 %s。只返回翻譯結果，不加解釋。";
+    private static final String OCR_INSTRUCTIONS =
+            "你是專業 OCR 助手。識別並提取圖片中所有文字。只返回文字內容，不加解釋。";
+    private static final String GENERATION_INSTRUCTIONS =
+            "你是專業語言助手。依照使用者提示簡潔回應。";
+
+    private final OpenRouterConfig config;
+    private final OkHttpClient httpClient;
+    private final ObjectMapper objectMapper;
+    private final AiModelCatalog modelCatalog;
+
+    @Autowired
+    public OpenRouterService(
+            OpenRouterConfig config,
+            @Qualifier("openRouterHttpClient") OkHttpClient httpClient,
+            ObjectMapper objectMapper,
+            AiModelCatalog modelCatalog) {
+        this.config = config;
+        this.httpClient = httpClient;
+        this.objectMapper = objectMapper;
+        this.modelCatalog = modelCatalog;
+    }
+
+    @Override
+    public String providerName() {
+        return "openrouter";
+    }
+
+    @Override
+    public String defaultModel() {
+        return config.getModelName();
+    }
+
+    @Override
+    public Set<String> availableModels() {
+        return modelCatalog.modelIds();
+    }
+
+    @Override
+    public Set<AiProviderOperation> capabilities() {
+        return Set.of(AiProviderOperation.values());
+    }
+
+    @Override
+    public boolean supports(AiProviderRequest request) {
+        return request != null && modelCatalog.supports(request.model(), request.operation());
+    }
+
+    @Override
+    public AiProviderResponse execute(AiProviderRequest providerRequest) {
+        String correlationId = UUID.randomUUID().toString();
+        requireConfigured(providerRequest.model(), correlationId);
+        try {
+            Request request = httpRequest(providerRequest);
+            try (Response response = httpClient.newCall(request).execute()) {
+                ResponseBody body = response.body();
+                String json = body == null ? "" : body.string();
+                if (!response.isSuccessful()) {
+                    throw httpFailure(response.code(), json, providerRequest.model(), correlationId);
+                }
+                if (json.isBlank()) {
+                    throw failure(AiProviderException.Outcome.EMPTY_RESPONSE,
+                            "EMPTY_HTTP_BODY", providerRequest.model(), correlationId, response.code(), null);
+                }
+                return parseResponse(json, providerRequest.model(), correlationId);
+            }
+        } catch (AiProviderException failure) {
+            throw failure;
+        } catch (SocketTimeoutException failure) {
+            throw failure(AiProviderException.Outcome.TIMEOUT,
+                    "SOCKET_TIMEOUT", providerRequest.model(), correlationId, -1, failure);
+        } catch (IOException failure) {
+            throw failure(AiProviderException.Outcome.TRANSPORT_ERROR,
+                    "IO_FAILURE", providerRequest.model(), correlationId, -1, failure);
+        } catch (RuntimeException failure) {
+            throw failure(AiProviderException.Outcome.UNEXPECTED_ERROR,
+                    failure.getClass().getSimpleName(), providerRequest.model(), correlationId, -1, failure);
+        }
+    }
+
+    private Request httpRequest(AiProviderRequest request) throws JsonProcessingException {
+        ObjectNode body = objectMapper.createObjectNode();
+        body.put("model", request.model());
+        ArrayNode messages = body.putArray("messages");
+        messages.addObject()
+                .put("role", "system")
+                .put("content", instructions(request));
+        ObjectNode user = messages.addObject().put("role", "user");
+        if (request.operation() == AiProviderOperation.PROCESS_IMAGE) {
+            ArrayNode content = user.putArray("content");
+            content.addObject().put("type", "text").put("text", request.input());
+            content.addObject()
+                    .put("type", "image_url")
+                    .putObject("image_url")
+                    .put("url", request.imageData());
+            body.put("max_tokens", 1024);
+            body.put("temperature", 0.1);
+        } else {
+            user.put("content", request.input());
+            body.put("temperature", request.operation() == AiProviderOperation.TRANSLATE_TEXT ? 0.2 : 0.7);
+        }
+
+        Request.Builder builder = new Request.Builder()
+                .url(config.normalizedApiUrl() + "/chat/completions")
+                .post(RequestBody.create(objectMapper.writeValueAsBytes(body), JSON))
+                .header("Authorization", "Bearer " + config.getApiKey().trim())
+                .header("Content-Type", "application/json");
+        optionalHeader(builder, "HTTP-Referer", config.getHttpReferer());
+        optionalHeader(builder, "X-OpenRouter-Title", config.getAppTitle());
+        return builder.build();
+    }
+
+    private String instructions(AiProviderRequest request) {
+        return switch (request.operation()) {
+            case TRANSLATE_TEXT -> TRANSLATION_INSTRUCTIONS.formatted(request.targetLanguage());
+            case PROCESS_IMAGE -> OCR_INSTRUCTIONS;
+            case GENERATE_TEXT -> GENERATION_INSTRUCTIONS;
+        };
+    }
+
+    private AiProviderResponse parseResponse(
+            String json,
+            String requestedModel,
+            String correlationId) {
+        try {
+            JsonNode root = objectMapper.readTree(json);
+            JsonNode rootError = root.path("error");
+            if (!rootError.isMissingNode() && !rootError.isNull()) {
+                throw embeddedFailure(rootError, requestedModel, correlationId);
+            }
+            JsonNode choices = root.path("choices");
+            if (!choices.isArray() || choices.isEmpty()) {
+                throw failure(AiProviderException.Outcome.EMPTY_RESPONSE,
+                        "NO_CHOICES", requestedModel, correlationId, 200, null);
+            }
+            JsonNode choice = choices.get(0);
+            JsonNode choiceError = choice.path("error");
+            if (!choiceError.isMissingNode() && !choiceError.isNull()) {
+                throw embeddedFailure(choiceError, requestedModel, correlationId);
+            }
+            String text = contentText(choice.path("message").path("content")).trim();
+            if (text.isEmpty()) {
+                throw failure(AiProviderException.Outcome.EMPTY_RESPONSE,
+                        "NO_MESSAGE_CONTENT", requestedModel, correlationId, 200, null);
+            }
+            JsonNode usage = root.path("usage");
+            AiTokenUsage tokenUsage = usage.isMissingNode()
+                    ? AiTokenUsage.UNKNOWN
+                    : new AiTokenUsage(
+                            usage.path("prompt_tokens").asLong(-1),
+                            usage.path("completion_tokens").asLong(-1),
+                            usage.path("total_tokens").asLong(-1));
+            return new AiProviderResponse(
+                    text,
+                    root.path("model").asText(requestedModel),
+                    tokenUsage);
+        } catch (AiProviderException failure) {
+            throw failure;
+        } catch (JsonProcessingException failure) {
+            throw failure(AiProviderException.Outcome.MALFORMED_RESPONSE,
+                    "INVALID_JSON", requestedModel, correlationId, 200, failure);
+        }
+    }
+
+    private String contentText(JsonNode content) {
+        if (content.isTextual()) {
+            return content.asText();
+        }
+        if (!content.isArray()) {
+            return "";
+        }
+        StringBuilder value = new StringBuilder();
+        for (JsonNode part : content) {
+            if ("text".equals(part.path("type").asText()) && part.path("text").isTextual()) {
+                value.append(part.path("text").asText());
+            }
+        }
+        return value.toString();
+    }
+
+    private AiProviderException httpFailure(
+            int status,
+            String json,
+            String model,
+            String correlationId) {
+        String errorType = errorType(json);
+        return failure(mapOutcome(status, errorType),
+                errorType.isBlank() ? "HTTP_" + status : errorType,
+                model,
+                correlationId,
+                status,
+                null);
+    }
+
+    private AiProviderException embeddedFailure(
+            JsonNode error,
+            String model,
+            String correlationId) {
+        int status = error.path("code").canConvertToInt() ? error.path("code").asInt() : 200;
+        String errorType = error.path("metadata").path("error_type").asText("");
+        return failure(mapOutcome(status, errorType),
+                errorType.isBlank() ? "PROVIDER_ERROR" : errorType,
+                model,
+                correlationId,
+                status,
+                null);
+    }
+
+    private String errorType(String json) {
+        if (json == null || json.isBlank()) {
+            return "";
+        }
+        try {
+            JsonNode error = objectMapper.readTree(json).path("error");
+            String type = error.path("metadata").path("error_type").asText("");
+            return type.isBlank() ? error.path("type").asText("") : type;
+        } catch (JsonProcessingException ignored) {
+            return "";
+        }
+    }
+
+    private static AiProviderException.Outcome mapOutcome(int status, String errorType) {
+        String type = errorType == null ? "" : errorType.toLowerCase(Locale.ROOT);
+        if (type.contains("content_policy") || type.contains("moderation")) {
+            return AiProviderException.Outcome.SAFETY_BLOCKED;
+        }
+        if (status == 401 || "authentication".equals(type)) {
+            return AiProviderException.Outcome.AUTHENTICATION_FAILED;
+        }
+        if (status == 402 || "payment_required".equals(type) || type.contains("token_limit")) {
+            return AiProviderException.Outcome.QUOTA_EXCEEDED;
+        }
+        if (status == 408 || status == 504 || "timeout".equals(type)) {
+            return AiProviderException.Outcome.TIMEOUT;
+        }
+        if (status == 429 || "rate_limit_exceeded".equals(type)) {
+            return AiProviderException.Outcome.RATE_LIMITED;
+        }
+        return AiProviderException.Outcome.HTTP_ERROR;
+    }
+
+    private void requireConfigured(String model, String correlationId) {
+        if (config.getApiKey() == null || config.getApiKey().isBlank()) {
+            throw failure(AiProviderException.Outcome.CONFIGURATION_ERROR,
+                    "API_KEY_UNAVAILABLE", model, correlationId, -1, null);
+        }
+    }
+
+    private AiProviderException failure(
+            AiProviderException.Outcome outcome,
+            String reason,
+            String model,
+            String correlationId,
+            int httpStatus,
+            Throwable cause) {
+        return new AiProviderException(
+                outcome,
+                providerName(),
+                model,
+                reason,
+                correlationId,
+                httpStatus,
+                cause);
+    }
+
+    private static void optionalHeader(Request.Builder builder, String name, String value) {
+        if (value != null && !value.isBlank()) {
+            builder.header(name, value.trim());
+        }
+    }
+}

@@ -206,7 +206,7 @@ public class LineUserProfileService {
 
             UserPreferences preferences = userPreferencesModule.resolve(profile);
             info.append("【翻譯設定】\n");
-            info.append("AI 引擎：").append(preferences.provider()).append("\n");
+            info.append("AI 引擎：OpenRouter\n");
             info.append("AI 模型：").append(preferences.model()).append("\n");
             info.append("預設翻譯語言：")
                     .append(LanguageUtils.toChineseName(preferences.targetLanguage()))

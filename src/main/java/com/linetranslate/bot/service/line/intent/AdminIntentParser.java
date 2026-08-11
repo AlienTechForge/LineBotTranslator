@@ -71,9 +71,7 @@ public class AdminIntentParser {
         AdminIntent.Action action = switch (command) {
             case "c2lang" -> AdminIntent.Action.CONFIG_C2LANG;
             case "lang" -> AdminIntent.Action.CONFIG_LANGUAGE;
-            case "ai" -> AdminIntent.Action.CONFIG_AI;
-            case "openai" -> AdminIntent.Action.CONFIG_OPENAI;
-            case "gemini" -> AdminIntent.Action.CONFIG_GEMINI;
+            case "model", "openrouter" -> AdminIntent.Action.CONFIG_MODEL;
             case "ocr" -> AdminIntent.Action.CONFIG_OCR;
             default -> AdminIntent.Action.UNKNOWN_CONFIG;
         };

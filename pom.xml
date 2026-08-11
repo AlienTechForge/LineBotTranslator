@@ -12,7 +12,7 @@
 	<artifactId>linebot-translator</artifactId>
 	<version>0.0.1-SNAPSHOT</version>
 	<name>linebot-translator</name>
-	<description>LINE Bot Translator with OpenAI and Gemini integration</description>
+	<description>LINE Bot Translator with OpenRouter integration</description>
 
 	<properties>
 		<java.version>17</java.version>
@@ -64,20 +64,6 @@
 			<artifactId>line-bot-spring-boot-client</artifactId>
 			<version>${line.bot.sdk.version}</version>
 		</dependency>
-		<!-- OpenAI API 客戶端 -->
-		<dependency>
-			<groupId>com.openai</groupId>
-			<artifactId>openai-java</artifactId>
-			<version>4.0.0</version>
-		</dependency>
-
-		<!-- Google AI (Gemini) API 客戶端 -->
-		<dependency>
-			<groupId>com.google.cloud</groupId>
-			<artifactId>google-cloud-aiplatform</artifactId>
-			<version>3.53.0</version>
-		</dependency>
-
 		<!-- HTTP 客戶端 -->
 		<dependency>
 			<groupId>com.squareup.okhttp3</groupId>
@@ -90,11 +76,6 @@
 			<groupId>com.fasterxml.jackson.core</groupId>
 			<artifactId>jackson-databind</artifactId>
 		</dependency>
-		<dependency>
-			<groupId>com.google.code.gson</groupId>
-			<artifactId>gson</artifactId>
-		</dependency>
-
 		<!-- 語言檢測 -->
 		<dependency>
 			<groupId>com.optimaize.languagedetector</groupId>

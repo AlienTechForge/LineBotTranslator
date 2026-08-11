@@ -19,12 +19,12 @@ import com.linecorp.bot.messaging.client.MessagingApiClient;
 import com.linecorp.bot.messaging.model.PushMessageRequest;
 import com.linecorp.bot.messaging.model.TextMessage;
 import com.linetranslate.bot.config.AppConfig;
-import com.linetranslate.bot.config.GeminiConfig;
-import com.linetranslate.bot.config.OpenAiConfig;
+import com.linetranslate.bot.config.OpenRouterConfig;
 import com.linetranslate.bot.model.UserProfile;
 import com.linetranslate.bot.repository.TranslationRecordRepository;
 import com.linetranslate.bot.repository.UserProfileRepository;
 import com.linetranslate.bot.service.line.LineUserProfileService;
+import com.linetranslate.bot.service.ai.AiModelCatalog;
 import com.linetranslate.bot.service.preference.UserPreferencesModule;
 
 @ExtendWith(MockitoExtension.class)
@@ -39,9 +39,9 @@ class AdminServiceSdkContractTests {
     @Mock
     private AppConfig appConfig;
     @Mock
-    private OpenAiConfig openAiConfig;
+    private OpenRouterConfig openRouterConfig;
     @Mock
-    private GeminiConfig geminiConfig;
+    private AiModelCatalog modelCatalog;
     @Mock
     private LineUserProfileService lineUserProfileService;
     @Mock
@@ -59,8 +59,8 @@ class AdminServiceSdkContractTests {
                 userProfileRepository,
                 messagingApiClient,
                 appConfig,
-                openAiConfig,
-                geminiConfig,
+                openRouterConfig,
+                modelCatalog,
                 lineUserProfileService,
                 userPreferencesModule);
 

@@ -6,24 +6,32 @@ import java.time.Instant;
 import java.util.Comparator;
 import java.util.List;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+import com.linetranslate.bot.service.ai.AiModelCatalog;
+import com.linetranslate.bot.service.ai.AiModelDescriptor;
 import com.linetranslate.bot.service.ai.AiTokenUsage;
 
-/** Central, versioned pricing catalog. Unknown usage is retained as unpriced. */
+/** Prices new OpenRouter events from the cached official model catalog snapshot. */
 @Component
 public class UsagePricingCatalog {
 
     private static final BigDecimal ONE_MILLION = new BigDecimal("1000000");
     private static final String USD = "USD";
 
+    private final AiModelCatalog modelCatalog;
     private final List<UsagePriceRule> rules;
 
-    public UsagePricingCatalog() {
-        this(officialRules());
+    @Autowired
+    public UsagePricingCatalog(AiModelCatalog modelCatalog) {
+        this.modelCatalog = modelCatalog;
+        this.rules = List.of();
     }
 
+    /** Focused-test constructor for historical immutable pricing rules. */
     public UsagePricingCatalog(List<UsagePriceRule> rules) {
+        this.modelCatalog = null;
         this.rules = rules == null ? List.of() : List.copyOf(rules);
     }
 
@@ -33,21 +41,36 @@ public class UsagePricingCatalog {
             Instant occurredAt,
             AiTokenUsage usage,
             int imageCount) {
+        if ("openrouter".equalsIgnoreCase(provider) && modelCatalog != null) {
+            AiModelDescriptor descriptor = modelCatalog.find(model).orElse(null);
+            if (descriptor != null
+                    && descriptor.promptPricePerToken() != null
+                    && descriptor.completionPricePerToken() != null) {
+                BigDecimal cost = descriptor.promptPricePerToken()
+                        .multiply(BigDecimal.valueOf(known(usage == null ? -1 : usage.inputTokens())))
+                        .add(descriptor.completionPricePerToken()
+                                .multiply(BigDecimal.valueOf(known(
+                                        usage == null ? -1 : usage.outputTokens()))));
+                return new UsagePriceQuote(
+                        cost.setScale(8, RoundingMode.HALF_UP),
+                        USD,
+                        "openrouter-catalog-v1",
+                        true);
+            }
+        }
+
         UsagePriceRule rule = rules.stream()
                 .filter(candidate -> candidate.matches(provider, model, occurredAt))
                 .max(Comparator.comparing(UsagePriceRule::effectiveFrom)
                         .thenComparingInt(candidate -> candidate.modelFamily().length()))
                 .orElse(null);
         if (rule == null) {
-            return new UsagePriceQuote(
-                    BigDecimal.ZERO.setScale(8), USD, "unpriced-v1", false);
+            return new UsagePriceQuote(BigDecimal.ZERO.setScale(8), USD, "unpriced-v1", false);
         }
-
-        long inputTokens = known(usage == null ? -1 : usage.inputTokens());
-        long outputTokens = known(usage == null ? -1 : usage.outputTokens());
         BigDecimal tokenCost = rule.inputPerMillion()
-                .multiply(BigDecimal.valueOf(inputTokens))
-                .add(rule.outputPerMillion().multiply(BigDecimal.valueOf(outputTokens)))
+                .multiply(BigDecimal.valueOf(known(usage == null ? -1 : usage.inputTokens())))
+                .add(rule.outputPerMillion().multiply(
+                        BigDecimal.valueOf(known(usage == null ? -1 : usage.outputTokens()))))
                 .divide(ONE_MILLION, 12, RoundingMode.HALF_UP);
         BigDecimal imageCost = rule.perImage().multiply(BigDecimal.valueOf(Math.max(0, imageCount)));
         return new UsagePriceQuote(
@@ -55,43 +78,6 @@ public class UsagePricingCatalog {
                 rule.currency(),
                 rule.version(),
                 true);
-    }
-
-    /**
-     * USD standard-tier rates verified against the official OpenAI model pages
-     * and Gemini API pricing page. Each revision receives a new effective date
-     * and version instead of rewriting historical events.
-     */
-    private static List<UsagePriceRule> officialRules() {
-        return List.of(
-                rule("openai", "gpt-4o-mini", "openai-2026-08-11-v1",
-                        "2026-08-11T00:00:00Z", "0.15", "0.60"),
-                rule("openai", "gpt-4o", "openai-2026-08-11-v1",
-                        "2026-08-11T00:00:00Z", "2.50", "10.00"),
-                rule("openai", "gpt-3.5-turbo", "openai-legacy-2026-08-11-v1",
-                        "2026-08-11T00:00:00Z", "0.50", "1.50"),
-                rule("gemini", "gemini-1.5-flash", "gemini-2025-09-25-v1",
-                        "2025-09-25T00:00:00Z", "0.075", "0.30"),
-                rule("gemini", "gemini-1.5-pro", "gemini-2025-09-25-v1",
-                        "2025-09-25T00:00:00Z", "1.25", "5.00"));
-    }
-
-    private static UsagePriceRule rule(
-            String provider,
-            String model,
-            String version,
-            String effectiveFrom,
-            String input,
-            String output) {
-        return new UsagePriceRule(
-                provider,
-                model,
-                USD,
-                version,
-                Instant.parse(effectiveFrom),
-                new BigDecimal(input),
-                new BigDecimal(output),
-                BigDecimal.ZERO);
     }
 
     private static long known(long tokens) {

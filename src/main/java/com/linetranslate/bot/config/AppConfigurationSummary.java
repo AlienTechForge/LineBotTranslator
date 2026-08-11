@@ -25,8 +25,7 @@ public class AppConfigurationSummary implements ApplicationListener<ApplicationS
     private final HealthIndicator mongo;
     private final HealthIndicator minio;
     private final HealthIndicator ocrConfiguration;
-    private final HealthIndicator openAiConfiguration;
-    private final HealthIndicator geminiConfiguration;
+    private final HealthIndicator openRouterConfiguration;
 
     public AppConfigurationSummary(
             @Value("${server.port:8080}") int serverPort,
@@ -35,16 +34,14 @@ public class AppConfigurationSummary implements ApplicationListener<ApplicationS
             @Qualifier("mongoHealthIndicator") HealthIndicator mongo,
             @Qualifier("minioHealthIndicator") HealthIndicator minio,
             @Qualifier("ocrConfigurationHealthIndicator") HealthIndicator ocrConfiguration,
-            @Qualifier("openAiConfigurationHealthIndicator") HealthIndicator openAiConfiguration,
-            @Qualifier("geminiConfigurationHealthIndicator") HealthIndicator geminiConfiguration) {
+            @Qualifier("openRouterConfigurationHealthIndicator") HealthIndicator openRouterConfiguration) {
         this.serverPort = serverPort;
         this.environment = environment;
         this.lineConfiguration = lineConfiguration;
         this.mongo = mongo;
         this.minio = minio;
         this.ocrConfiguration = ocrConfiguration;
-        this.openAiConfiguration = openAiConfiguration;
-        this.geminiConfiguration = geminiConfiguration;
+        this.openRouterConfiguration = openRouterConfiguration;
     }
 
     @Override
@@ -65,8 +62,7 @@ public class AppConfigurationSummary implements ApplicationListener<ApplicationS
                 "MongoDB=" + requiredState(mongo),
                 "MinIO=" + optionalState(minio),
                 "OCR=" + configurationOptionalState(ocrConfiguration),
-                "OpenAI=" + configurationState(openAiConfiguration),
-                "Gemini=" + configurationState(geminiConfiguration));
+                "OpenRouter=" + configurationState(openRouterConfiguration));
     }
 
     private String requiredState(HealthIndicator indicator) {

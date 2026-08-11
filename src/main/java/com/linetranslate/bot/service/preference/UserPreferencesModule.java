@@ -2,13 +2,9 @@ package com.linetranslate.bot.service.preference;
 
 import java.time.LocalDateTime;
 import java.util.Collection;
-import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
-import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -17,13 +13,14 @@ import com.linetranslate.bot.config.AppConfig;
 import com.linetranslate.bot.model.UserProfile;
 import com.linetranslate.bot.repository.UserProfileRepository;
 import com.linetranslate.bot.service.ai.AiProviderAdapter;
+import com.linetranslate.bot.service.ai.AiProviderRequest;
 import com.linetranslate.bot.service.settings.RuntimeSettings;
 import com.linetranslate.bot.service.settings.RuntimeSettingsSource;
 import com.linetranslate.bot.util.LanguageUtils;
 
 /**
- * Deep Module for effective user preferences. This is the single validation,
- * fallback and persistence path for preference data.
+ * Deep Module for effective user preferences. Model discovery stays dynamic at
+ * the OpenRouter catalog Seam; only a validated model slug is persisted.
  */
 @Service
 public class UserPreferencesModule {
@@ -32,7 +29,7 @@ public class UserPreferencesModule {
 
     private final UserProfileRepository repository;
     private final RuntimeSettingsSource runtimeSettingsSource;
-    private final Map<String, ProviderModels> providerModels;
+    private final AiProviderAdapter adapter;
 
     @Autowired
     public UserPreferencesModule(
@@ -41,27 +38,10 @@ public class UserPreferencesModule {
             List<AiProviderAdapter> adapters) {
         this.repository = repository;
         this.runtimeSettingsSource = runtimeSettingsSource;
-
-        Map<String, ProviderModels> catalog = new LinkedHashMap<>();
-        for (AiProviderAdapter adapter : adapters) {
-            String provider = normalizeName(adapter.providerName());
-            if (provider == null) {
-                continue;
-            }
-            Set<String> models = normalizedModels(adapter.availableModels());
-            String fallbackModel = normalizeModel(adapter.defaultModel());
-            if (fallbackModel == null) {
-                fallbackModel = models.stream().findFirst().orElse("unavailable");
-            }
-            if (fallbackModel != null) {
-                models.add(fallbackModel);
-            }
-            catalog.put(provider, new ProviderModels(fallbackModel, Set.copyOf(models)));
+        if (adapters == null || adapters.size() != 1) {
+            throw new IllegalStateException("OpenRouter-only preferences require exactly one AI Adapter");
         }
-        if (catalog.isEmpty()) {
-            catalog.put("openai", new ProviderModels("unavailable", Set.of("unavailable")));
-        }
-        this.providerModels = Map.copyOf(catalog);
+        this.adapter = adapters.get(0);
     }
 
     /** Compatibility constructor for focused unit tests. */
@@ -94,35 +74,14 @@ public class UserPreferencesModule {
         if (profile == null) {
             throw new IllegalArgumentException("User profile is required");
         }
-
-        RuntimeSettings runtimeSettings = runtimeSettingsSource.current();
-        String provider = effectiveProvider(profile.getPreferredAiProvider(), runtimeSettings);
-        Map<String, String> models = new LinkedHashMap<>();
-        for (Map.Entry<String, ProviderModels> entry : providerModels.entrySet()) {
-            String requested = modelField(profile, entry.getKey());
-            models.put(entry.getKey(), effectiveModel(
-                    entry.getKey(), requested, runtimeSettings));
-        }
-        if (!models.containsKey(provider)) {
-            models.put(provider, effectiveModel(provider, null, runtimeSettings));
-        }
-
+        RuntimeSettings settings = runtimeSettingsSource.current();
         return new UserPreferences(
-                effectiveLanguage(
-                        profile.getPreferredLanguage(),
-                        runtimeSettings.defaultTargetLanguageForOthers(),
-                        "en"),
-                effectiveLanguage(
-                        profile.getPreferredChineseTargetLanguage(),
-                        runtimeSettings.defaultTargetLanguageForChinese(),
-                        "en"),
-                effectiveLanguage(
-                        null,
-                        runtimeSettings.defaultTargetLanguageForOthers(),
-                        "en"),
-                provider,
-                models.get(provider),
-                models,
+                effectiveLanguage(profile.getPreferredLanguage(),
+                        settings.defaultTargetLanguageForOthers(), "en"),
+                effectiveLanguage(profile.getPreferredChineseTargetLanguage(),
+                        settings.defaultTargetLanguageForChinese(), "en"),
+                effectiveLanguage(null, settings.defaultTargetLanguageForOthers(), "en"),
+                effectiveModel(profile.getPreferredModel(), settings),
                 validRecentLanguages(profile.getRecentLanguages()));
     }
 
@@ -144,49 +103,18 @@ public class UserPreferencesModule {
         return new UserPreferenceChange(previous, resolve(profile));
     }
 
-    public UserPreferenceChange updateProvider(String userId, String providerName) {
-        String provider = normalizeName(providerName);
-        if (provider == null || !providerModels.containsKey(provider)) {
-            throw new InvalidUserPreferenceException(
-                    InvalidUserPreferenceException.Kind.PROVIDER,
-                    providerName);
-        }
-        UserProfile profile = profile(userId);
-        UserPreferences previous = resolve(profile);
-        profile.setPreferredAiProvider(provider);
-        repository.save(profile);
-        return new UserPreferenceChange(previous, resolve(profile));
-    }
-
     public UserPreferenceChange updateModel(String userId, String modelName) {
         String model = normalizeModel(modelName);
-        if (model == null) {
-            throw new InvalidUserPreferenceException(
-                    InvalidUserPreferenceException.Kind.MODEL,
-                    modelName);
+        if (model == null || !adapter.supports(AiProviderRequest.translate(model, "validation", "en"))) {
+            throw new InvalidUserPreferenceException(InvalidUserPreferenceException.Kind.MODEL, modelName);
         }
-        List<String> compatibleProviders = providerModels.entrySet().stream()
-                .filter(entry -> entry.getValue().available().contains(model))
-                .map(Map.Entry::getKey)
-                .toList();
-        if (compatibleProviders.isEmpty()) {
-            throw new InvalidUserPreferenceException(
-                    InvalidUserPreferenceException.Kind.MODEL,
-                    modelName);
-        }
-
         UserProfile profile = profile(userId);
         UserPreferences previous = resolve(profile);
-        String provider = compatibleProviders.contains(previous.provider())
-                ? previous.provider()
-                : compatibleProviders.get(0);
-        profile.setPreferredAiProvider(provider);
-        setModelField(profile, provider, model);
+        profile.setPreferredModel(model);
         repository.save(profile);
         return new UserPreferenceChange(previous, resolve(profile));
     }
 
-    /** Persists a valid, deduplicated, bounded recent-language preference. */
     public void persistTranslationActivity(UserProfile profile, String targetLanguage) {
         if (profile == null) {
             throw new IllegalArgumentException("User profile is required");
@@ -203,43 +131,20 @@ public class UserPreferencesModule {
         repository.save(profile);
     }
 
-    public String defaultProvider() {
-        return effectiveProvider(null, runtimeSettingsSource.current());
+    public java.util.Set<String> availableModels() {
+        return adapter.availableModels();
     }
 
-    public Map<String, Set<String>> availableModels() {
-        Map<String, Set<String>> result = new LinkedHashMap<>();
-        providerModels.forEach((provider, models) -> result.put(provider, models.available()));
-        return Map.copyOf(result);
-    }
-
-    private String effectiveProvider(String requested, RuntimeSettings runtimeSettings) {
-        String normalized = normalizeName(requested);
-        if (normalized != null && providerModels.containsKey(normalized)) {
-            return normalized;
+    private String effectiveModel(String requested, RuntimeSettings settings) {
+        String model = normalizeModel(requested);
+        if (model != null && adapter.availableModels().contains(model)) {
+            return model;
         }
-        String configuredDefault = normalizeName(runtimeSettings.defaultAiProvider());
-        return providerModels.containsKey(configuredDefault)
-                ? configuredDefault
-                : providerModels.keySet().stream().findFirst().orElse("openai");
-    }
-
-    private String effectiveModel(
-            String provider,
-            String requested,
-            RuntimeSettings runtimeSettings) {
-        ProviderModels catalog = providerModels.get(provider);
-        if (catalog == null) {
-            return null;
+        String runtimeDefault = normalizeModel(settings.openRouterDefaultModel());
+        if (runtimeDefault != null && adapter.availableModels().contains(runtimeDefault)) {
+            return runtimeDefault;
         }
-        String normalized = normalizeModel(requested);
-        if (normalized != null && catalog.available().contains(normalized)) {
-            return normalized;
-        }
-        String runtimeDefault = normalizeModel(runtimeSettings.modelFor(provider));
-        return runtimeDefault != null && catalog.available().contains(runtimeDefault)
-                ? runtimeDefault
-                : catalog.defaultModel();
+        return adapter.defaultModel();
     }
 
     private String effectiveLanguage(String requested, String configuredDefault, String hardDefault) {
@@ -254,9 +159,7 @@ public class UserPreferencesModule {
     private String requireLanguage(String language) {
         String normalized = normalizeLanguage(language);
         if (!isSupportedLanguage(normalized)) {
-            throw new InvalidUserPreferenceException(
-                    InvalidUserPreferenceException.Kind.LANGUAGE,
-                    language);
+            throw new InvalidUserPreferenceException(InvalidUserPreferenceException.Kind.LANGUAGE, language);
         }
         return normalized;
     }
@@ -278,38 +181,8 @@ public class UserPreferencesModule {
         return List.copyOf(result);
     }
 
-    private static String modelField(UserProfile profile, String provider) {
-        return "gemini".equals(provider)
-                ? profile.getGeminiPreferredModel()
-                : profile.getOpenaiPreferredModel();
-    }
-
-    private static void setModelField(UserProfile profile, String provider, String model) {
-        if ("gemini".equals(provider)) {
-            profile.setGeminiPreferredModel(model);
-        } else {
-            profile.setOpenaiPreferredModel(model);
-        }
-    }
-
-    private static Set<String> normalizedModels(Collection<String> models) {
-        Set<String> result = new LinkedHashSet<>();
-        if (models != null) {
-            for (String model : models) {
-                String normalized = normalizeModel(model);
-                if (normalized != null) {
-                    result.add(normalized);
-                }
-            }
-        }
-        return result;
-    }
-
     private static String normalizeLanguage(String language) {
-        if (language == null || language.isBlank()) {
-            return null;
-        }
-        return LanguageUtils.toLanguageCode(language.trim());
+        return language == null || language.isBlank() ? null : LanguageUtils.toLanguageCode(language.trim());
     }
 
     private static boolean isSupportedLanguage(String language) {
@@ -317,12 +190,6 @@ public class UserPreferencesModule {
                 && (LanguageUtils.isSupported(language)
                         || "zh-tw".equalsIgnoreCase(language)
                         || "zh-cn".equalsIgnoreCase(language));
-    }
-
-    private static String normalizeName(String value) {
-        return value == null || value.isBlank()
-                ? null
-                : value.trim().toLowerCase(Locale.ROOT);
     }
 
     private static String normalizeModel(String value) {
@@ -338,29 +205,18 @@ public class UserPreferencesModule {
     private static RuntimeSettingsSource deploymentSettings(
             AppConfig appConfig,
             List<AiProviderAdapter> adapters) {
+        String model = adapters == null || adapters.isEmpty()
+                ? "unavailable"
+                : adapters.get(0).defaultModel();
         return () -> new RuntimeSettings(
                 appConfig.getDefaultTargetLanguageForChinese(),
                 appConfig.getDefaultTargetLanguageForOthers(),
-                appConfig.getDefaultAiProvider(),
-                adapterDefault(adapters, "openai"),
-                adapterDefault(adapters, "gemini"),
+                model,
                 appConfig.isOcrEnabled(),
-                1,
+                2,
                 0,
                 null,
                 null,
                 RuntimeSettings.Source.DEPLOYMENT_DEFAULTS);
-    }
-
-    private static String adapterDefault(List<AiProviderAdapter> adapters, String provider) {
-        return adapters.stream()
-                .filter(adapter -> provider.equals(normalizeName(adapter.providerName())))
-                .map(AiProviderAdapter::defaultModel)
-                .filter(model -> model != null && !model.isBlank())
-                .findFirst()
-                .orElse("unavailable");
-    }
-
-    private record ProviderModels(String defaultModel, Set<String> available) {
     }
 }

@@ -3,6 +3,7 @@ package com.linetranslate.bot.service.line.intent;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.Locale;
+import java.util.regex.Pattern;
 
 import org.springframework.stereotype.Component;
 
@@ -16,6 +17,9 @@ public class LineIntentParser {
     private static final String QUICK_TRANSLATION_FULL_WIDTH = "快速翻譯：";
     private static final String POSTBACK_COMMAND = "command=";
     private static final int MAX_POSTBACK_CODE_POINTS = 300;
+    private static final int MAX_MODEL_QUERY_CODE_POINTS = 80;
+    private static final Pattern MODEL_SLUG = Pattern.compile(
+            "^[A-Za-z0-9~][A-Za-z0-9._:~/\\-]{0,199}$");
 
     public LineIntent parseText(String text) {
         String safeText = text == null ? "" : text;
@@ -56,13 +60,10 @@ public class LineIntentParser {
         return switch (action) {
             case "help" -> user(LineIntent.UserAction.HELP);
             case "about" -> user(LineIntent.UserAction.ABOUT);
-            case "setai" -> argument.isEmpty()
-                    ? invalid(LineIntent.InvalidReason.AI_PROVIDER_REQUIRED)
-                    : user(LineIntent.UserAction.SET_AI, argument.toLowerCase(Locale.ROOT));
-            case "setmodel" -> argument.isEmpty()
-                    ? invalid(LineIntent.InvalidReason.MODEL_REQUIRED)
-                    : user(LineIntent.UserAction.SET_MODEL, argument);
-            case "models" -> user(LineIntent.UserAction.MODELS);
+            case "setmodel", "model" -> model(argument);
+            case "models" -> argument.codePointCount(0, argument.length()) > MAX_MODEL_QUERY_CODE_POINTS
+                    ? invalid(LineIntent.InvalidReason.MODEL_QUERY_TOO_LONG)
+                    : user(LineIntent.UserAction.MODELS, argument);
             case "外文翻譯" -> argument.isEmpty()
                     ? invalid(LineIntent.InvalidReason.FOREIGN_LANGUAGE_REQUIRED)
                     : user(LineIntent.UserAction.SET_FOREIGN_LANGUAGE, argument);
@@ -96,6 +97,15 @@ public class LineIntentParser {
 
     private static LineIntent.UserCommand user(LineIntent.UserAction action) {
         return user(action, "");
+    }
+
+    private static LineIntent model(String argument) {
+        if (argument.isEmpty()) {
+            return invalid(LineIntent.InvalidReason.MODEL_REQUIRED);
+        }
+        return MODEL_SLUG.matcher(argument).matches()
+                ? user(LineIntent.UserAction.SET_MODEL, argument)
+                : new LineIntent.Invalid(LineIntent.InvalidReason.INVALID_MODEL, argument);
     }
 
     private static LineIntent.UserCommand user(LineIntent.UserAction action, String argument) {

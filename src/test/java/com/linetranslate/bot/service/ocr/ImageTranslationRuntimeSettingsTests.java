@@ -16,8 +16,8 @@ class ImageTranslationRuntimeSettingsTests {
         ImageTranslationPipeline pipeline = mock(ImageTranslationPipeline.class);
         UserProfileRepository repository = mock(UserProfileRepository.class);
         RuntimeSettings disabled = new RuntimeSettings(
-                "en", "zh-TW", "openai", "gpt-test", "gemini-test", false,
-                1, 1, null, "U-admin", RuntimeSettings.Source.PERSISTED);
+                "en", "zh-TW", "openai/gpt-4o-mini", false,
+                2, 1, null, "U-admin", RuntimeSettings.Source.PERSISTED);
         ImageTranslationService service = new ImageTranslationService(
                 pipeline, repository, () -> disabled);
 

@@ -20,7 +20,7 @@
 
 - **LineBotController**：處理 LINE 平台的消息事件，包括文字消息和圖片消息
   - 使用 `@LineMessageHandler` 和 `@EventMapping` 註解處理不同類型的 LINE 事件
-  - 支持命令處理（如 `/help`、`/setai` 等）
+  - 支持命令處理（如 `/help`、`/models`、`/model` 等）
   - 支持管理員特殊命令
 
 #### 服務層
@@ -38,9 +38,13 @@
 - **LanguageDetectionService**：語言檢測服務
   - 使用 language-detector 庫檢測文字語言
 
-- **AiService**：AI 服務介面
-  - 定義 AI 提供者必須實現的方法
-  - 由 OpenAiService 和 GeminiService 實現
+- **AiProviderAdapter**：AI 執行邊界 Interface
+  - `OpenRouterService` 是唯一 Implementation，負責 Chat Completions wire contract
+  - `AiProviderExecutionModule` 統一模型驗證、失敗正規化與用量記錄
+
+- **AiModelCatalog**：模型探索 Seam
+  - `OpenRouterModelCatalog` 從 `/api/v1/models` 取得 capability 與 pricing
+  - 以 TTL cache、stale fallback 與 bounded search 保持對話回覆穩定
 
 - **LineUserProfileService**：LINE 用戶資料服務
   - 獲取和管理 LINE 用戶資料
@@ -58,8 +62,7 @@
 
 - **MongoConfig**：MongoDB 資料庫配置
 - **AppConfig**：應用程式全局配置
-- **OpenAiConfig**：OpenAI API 配置
-- **GeminiConfig**：Google Gemini API 配置
+- **OpenRouterConfig**：OpenRouter API、預設模型與 catalog TTL 配置
 - **GoogleVisionConfig**：Google Cloud Vision API 配置
 
 ## 資料庫設計

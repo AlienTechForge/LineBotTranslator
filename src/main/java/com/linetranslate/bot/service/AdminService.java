@@ -24,13 +24,13 @@ import com.linecorp.bot.messaging.model.PushMessageRequest;
 import com.linecorp.bot.messaging.model.TextMessage;
 
 import com.linetranslate.bot.config.AppConfig;
-import com.linetranslate.bot.config.GeminiConfig;
-import com.linetranslate.bot.config.OpenAiConfig;
+import com.linetranslate.bot.config.OpenRouterConfig;
 import com.linetranslate.bot.model.TranslationRecord;
 import com.linetranslate.bot.model.UserProfile;
 import com.linetranslate.bot.repository.TranslationRecordRepository;
 import com.linetranslate.bot.repository.UserProfileRepository;
 import com.linetranslate.bot.logging.SafeLog;
+import com.linetranslate.bot.service.ai.AiModelCatalog;
 import com.linetranslate.bot.service.line.LineUserProfileService;
 import com.linetranslate.bot.service.preference.UserPreferences;
 import com.linetranslate.bot.service.preference.UserPreferencesModule;
@@ -63,8 +63,8 @@ public class AdminService {
     private final UserProfileRepository userProfileRepository;
     private final MessagingApiClient messagingApiClient;
     private final DateTimeFormatter dateTimeFormatter;
-    private final OpenAiConfig openAiConfig;
-    private final GeminiConfig geminiConfig;
+    private final OpenRouterConfig openRouterConfig;
+    private final AiModelCatalog modelCatalog;
     private final LineUserProfileService lineUserProfileService;
     private final UserPreferencesModule userPreferencesModule;
     private final RuntimeSettingsModule runtimeSettingsModule;
@@ -76,8 +76,8 @@ public class AdminService {
             TranslationRecordRepository translationRecordRepository,
             UserProfileRepository userProfileRepository,
             MessagingApiClient messagingApiClient,
-            OpenAiConfig openAiConfig,
-            GeminiConfig geminiConfig,
+            OpenRouterConfig openRouterConfig,
+            AiModelCatalog modelCatalog,
             LineUserProfileService lineUserProfileService,
             UserPreferencesModule userPreferencesModule,
             RuntimeSettingsModule runtimeSettingsModule,
@@ -86,8 +86,8 @@ public class AdminService {
         this.translationRecordRepository = translationRecordRepository;
         this.userProfileRepository = userProfileRepository;
         this.messagingApiClient = messagingApiClient;
-        this.openAiConfig = openAiConfig;
-        this.geminiConfig = geminiConfig;
+        this.openRouterConfig = openRouterConfig;
+        this.modelCatalog = modelCatalog;
         this.lineUserProfileService = lineUserProfileService;
         this.userPreferencesModule = userPreferencesModule;
         this.runtimeSettingsModule = runtimeSettingsModule;
@@ -102,12 +102,12 @@ public class AdminService {
             UserProfileRepository userProfileRepository,
             MessagingApiClient messagingApiClient,
             AppConfig appConfig,
-            OpenAiConfig openAiConfig,
-            GeminiConfig geminiConfig,
+            OpenRouterConfig openRouterConfig,
+            AiModelCatalog modelCatalog,
             LineUserProfileService lineUserProfileService,
             UserPreferencesModule userPreferencesModule) {
         this(translationRecordRepository, userProfileRepository, messagingApiClient,
-                openAiConfig, geminiConfig, lineUserProfileService,
+                openRouterConfig, modelCatalog, lineUserProfileService,
                 userPreferencesModule, null, null, null);
     }
 
@@ -327,9 +327,8 @@ public class AdminService {
         // 用戶設置
         userInfo.put("preferredLanguage", preferences.targetLanguage());
         userInfo.put("preferredChineseTargetLanguage", preferences.chineseTargetLanguage());
-        userInfo.put("preferredAiProvider", preferences.provider());
-        userInfo.put("openaiPreferredModel", valueOrUnavailable(preferences.modelFor("openai")));
-        userInfo.put("geminiPreferredModel", valueOrUnavailable(preferences.modelFor("gemini")));
+        userInfo.put("aiProvider", "openrouter");
+        userInfo.put("preferredModel", valueOrUnavailable(preferences.model()));
         
         return userInfo;
     }
@@ -357,8 +356,7 @@ public class AdminService {
         long activeUsersLast24h = userProfileRepository.findByLastInteractionAtAfter(yesterday).size();
         
         // 統計每個 AI 提供商的使用情況
-        long openaiCount = translationRecordRepository.countByAiProvider("openai");
-        long geminiCount = translationRecordRepository.countByAiProvider("gemini");
+        long openRouterCount = translationRecordRepository.countByAiProvider("openrouter");
         
         // 統計過去7天的翻譯量
         LocalDateTime weekAgo = LocalDateTime.now().minusDays(7);
@@ -387,13 +385,9 @@ public class AdminService {
         stats.append("\nAI 提供商使用情況\n");
         stats.append("-------------------\n");
         
-        if (totalTranslations > 0) {
-            stats.append("OpenAI: ").append(openaiCount).append(" (").append(String.format("%.1f%%", (double)openaiCount/totalTranslations*100)).append(")\n");
-            stats.append("Gemini: ").append(geminiCount).append(" (").append(String.format("%.1f%%", (double)geminiCount/totalTranslations*100)).append(")\n");
-        } else {
-            stats.append("OpenAI: 0 (0.0%)\n");
-            stats.append("Gemini: 0 (0.0%)\n");
-        }
+        double openRouterRatio = totalTranslations == 0 ? 0 : (double) openRouterCount / totalTranslations * 100;
+        stats.append("OpenRouter: ").append(openRouterCount).append(" (")
+                .append(String.format("%.1f%%", openRouterRatio)).append(")\n");
         
         stats.append("\n過去7天翻譯量\n");
         stats.append("-------------------\n");
@@ -475,21 +469,11 @@ public class AdminService {
         configBuilder.append("• 其他語言翻譯默認目標語言: ").append(runtime.defaultTargetLanguageForOthers()).append("\n");
         configBuilder.append("• OCR 功能: ").append(runtime.ocrEnabled() ? "已啟用" : "已禁用").append("\n\n");
         
-        // AI 提供者配置
-        configBuilder.append("【AI 提供者設定】\n");
-        configBuilder.append("• 默認 AI 提供者: ").append(runtime.defaultAiProvider()).append("\n\n");
-        
-        // OpenAI 配置
-        configBuilder.append("【OpenAI 設定】\n");
-        configBuilder.append("• 默認模型: ").append(runtime.openAiDefaultModel()).append("\n");
-        configBuilder.append("• 可用模型: ").append(String.join(", ", openAiConfig.getAvailableModels())).append("\n");
-        configBuilder.append("• API 狀態: ").append(openAiConfig.getApiKey() != null && !openAiConfig.getApiKey().isEmpty() ? "已配置" : "未配置").append("\n\n");
-        
-        // Gemini 配置
-        configBuilder.append("【Gemini 設定】\n");
-        configBuilder.append("• 默認模型: ").append(runtime.geminiDefaultModel()).append("\n");
-        configBuilder.append("• 可用模型: ").append(String.join(", ", geminiConfig.getAvailableModels())).append("\n");
-        configBuilder.append("• API 狀態: ").append(geminiConfig.getApiKey() != null && !geminiConfig.getApiKey().isEmpty() ? "已配置" : "未配置").append("\n\n");
+        configBuilder.append("【OpenRouter 設定】\n");
+        configBuilder.append("• 默認模型: ").append(runtime.openRouterDefaultModel()).append("\n");
+        configBuilder.append("• Catalog 模型數: ").append(modelCatalog.list("", 0).total()).append("\n");
+        configBuilder.append("• API 狀態: ").append(openRouterConfig.getApiKey() != null
+                && !openRouterConfig.getApiKey().isBlank() ? "已配置" : "未配置").append("\n\n");
         
         // 管理員設定
         configBuilder.append("【管理員設定】\n");
@@ -533,46 +517,12 @@ public class AdminService {
                 "✅ 已將其他語言翻譯默認目標語言設置為: " + language);
     }
     
-    /**
-     * 設置默認 AI 提供者
-     *
-     * @param provider AI 提供者 (openai 或 gemini)
-     * @return 操作結果訊息
-     */
-    public String setDefaultAiProvider(String provider, String operatorId) {
+    public String setOpenRouterDefaultModel(String model, String operatorId) {
         return updateSetting(
-                RuntimeSettingKey.DEFAULT_AI_PROVIDER,
-                provider,
-                operatorId,
-                "✅ 已將默認 AI 提供者設置為: " + provider);
-    }
-    
-    /**
-     * 設置 OpenAI 默認模型
-     *
-     * @param model 模型名稱
-     * @return 操作結果訊息
-     */
-    public String setOpenAiDefaultModel(String model, String operatorId) {
-        return updateSetting(
-                RuntimeSettingKey.OPENAI_DEFAULT_MODEL,
+                RuntimeSettingKey.OPENROUTER_DEFAULT_MODEL,
                 model,
                 operatorId,
-                "✅ 已將 OpenAI 默認模型設置為: " + model);
-    }
-    
-    /**
-     * 設置 Gemini 默認模型
-     *
-     * @param model 模型名稱
-     * @return 操作結果訊息
-     */
-    public String setGeminiDefaultModel(String model, String operatorId) {
-        return updateSetting(
-                RuntimeSettingKey.GEMINI_DEFAULT_MODEL,
-                model,
-                operatorId,
-                "✅ 已將 Gemini 默認模型設置為: " + model);
+                "✅ 已將 OpenRouter 默認模型設置為: " + model);
     }
     
     /**
@@ -638,12 +588,12 @@ public String getApiUsageStatsByMonth(String month) {
 /**
  * 按 AI 提供者獲取 API 使用量和費用統計
  *
- * @param provider AI 提供者 (openai 或 gemini)
+ * @param provider AI 提供者維度
  * @return API 使用量和費用統計信息
  */
 public String getApiUsageStatsByProvider(String provider) {
-    if (!"openai".equalsIgnoreCase(provider) && !"gemini".equalsIgnoreCase(provider)) {
-        return "❌ 無效的 AI 提供者。請使用 'openai' 或 'gemini'。";
+    if (provider == null || !provider.matches("(?i)^[a-z0-9._-]{1,64}$")) {
+        return "❌ 無效的 AI 提供者名稱。";
     }
     return renderUsage(
             provider + " 提供者",

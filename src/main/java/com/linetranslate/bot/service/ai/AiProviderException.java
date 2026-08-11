@@ -73,7 +73,7 @@ public final class AiProviderException extends RuntimeException {
         if (value == null || value.isBlank()) {
             return "UNKNOWN";
         }
-        String normalized = value.replaceAll("[^a-zA-Z0-9._:-]", "_");
+        String normalized = value.replaceAll("[^a-zA-Z0-9._:/~-]", "_");
         return normalized.length() <= MAX_METADATA_LENGTH
                 ? normalized
                 : normalized.substring(0, MAX_METADATA_LENGTH);

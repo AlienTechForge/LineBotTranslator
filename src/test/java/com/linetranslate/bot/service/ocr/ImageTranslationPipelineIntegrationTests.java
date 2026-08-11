@@ -70,7 +70,7 @@ class ImageTranslationPipelineIntegrationTests {
                 minioStorageService);
         userProfile = UserProfile.builder()
                 .userId("U-image")
-                .preferredAiProvider("openai")
+                .preferredModel("gpt-test")
                 .build();
         when(userPreferencesModule.resolve(userProfile)).thenReturn(
                 com.linetranslate.bot.testing.UserPreferencesFixtures.preferences(userProfile));
