@@ -21,6 +21,8 @@ class LineIntentParserTests {
                 .isEqualTo(new LineIntent.QuickTranslate("en", "你好"));
         assertThat(parser.parseText("快速翻譯：ja 晚安"))
                 .isEqualTo(new LineIntent.QuickTranslate("ja", "晚安"));
+        assertThat(parser.parseText("/translate-style formal Please reply soon"))
+                .isEqualTo(new LineIntent.StyledTranslate("formal", "Please reply soon"));
     }
 
     @ParameterizedTest
@@ -58,6 +60,11 @@ class LineIntentParserTests {
                 .isEqualTo(new LineIntent.Invalid(LineIntent.InvalidReason.QUICK_TRANSLATION_FORMAT, ""));
         assertThat(parser.parseText("/does-not-exist"))
                 .isEqualTo(new LineIntent.Invalid(LineIntent.InvalidReason.UNKNOWN_COMMAND, "does-not-exist"));
+        assertThat(parser.parseText("/style retired"))
+                .isEqualTo(new LineIntent.Invalid(LineIntent.InvalidReason.INVALID_STYLE, "retired"));
+        assertThat(parser.parseText("/translate-style formal"))
+                .isEqualTo(new LineIntent.Invalid(
+                        LineIntent.InvalidReason.STYLED_TRANSLATION_FORMAT, ""));
     }
 
     @Test
@@ -86,6 +93,9 @@ class LineIntentParserTests {
                 "command=%2Fretranslate+" + recordId + "+xx"))
                 .isEqualTo(new LineIntent.Invalid(
                         LineIntent.InvalidReason.TRANSLATION_ACTION_FORMAT, ""));
+        assertThat(parser.parsePostback(
+                "command=%2Frestyle+" + recordId + "+business"))
+                .isEqualTo(new LineIntent.Restyle(recordId, "business"));
     }
 
     private static Stream<Arguments> commands() {
@@ -98,6 +108,8 @@ class LineIntentParserTests {
                         "openai/gpt-4o-mini"),
                 Arguments.of("/models", LineIntent.UserAction.MODELS, ""),
                 Arguments.of("/models claude", LineIntent.UserAction.MODELS, "claude"),
+                Arguments.of("/styles", LineIntent.UserAction.STYLES, ""),
+                Arguments.of("/style business", LineIntent.UserAction.SET_STYLE, "business"),
                 Arguments.of("/外文翻譯 日文", LineIntent.UserAction.SET_FOREIGN_LANGUAGE, "日文"),
                 Arguments.of("/profile", LineIntent.UserAction.PROFILE, ""),
                 Arguments.of("/status", LineIntent.UserAction.STATUS, ""),

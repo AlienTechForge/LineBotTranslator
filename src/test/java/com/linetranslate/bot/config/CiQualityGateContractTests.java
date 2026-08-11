@@ -43,11 +43,13 @@ class CiQualityGateContractTests {
         assertThat(workflow)
                 .contains("TRANSLATION_CACHE_TTL: ${{ vars.TRANSLATION_CACHE_TTL || 'PT30M' }}")
                 .contains("TRANSLATION_CACHE_MAX_ENTRIES: ${{ vars.TRANSLATION_CACHE_MAX_ENTRIES || '1000' }}")
-                .contains("TRANSLATION_PROMPT_VERSION:");
+                .contains("TRANSLATION_GLOSSARY_VERSION:")
+                .doesNotContain("TRANSLATION_STYLE:", "TRANSLATION_PROMPT_VERSION:");
         assertThat(deployScript)
                 .contains("TRANSLATION_CACHE_TTL")
                 .contains("TRANSLATION_CACHE_MAX_ENTRIES")
-                .contains("TRANSLATION_PROMPT_VERSION");
+                .contains("TRANSLATION_GLOSSARY_VERSION")
+                .doesNotContain("TRANSLATION_STYLE", "TRANSLATION_PROMPT_VERSION");
     }
 
     @Test

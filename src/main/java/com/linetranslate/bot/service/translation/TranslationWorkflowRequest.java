@@ -11,7 +11,20 @@ public record TranslationWorkflowRequest(
         TranslationRequestKind kind,
         String imageUrl,
         Boolean imageStored,
-        Instant startedAt) {
+        Instant startedAt,
+        String requestedStylePresetId) {
+
+    public TranslationWorkflowRequest(
+            UserProfile userProfile,
+            String sourceText,
+            String requestedTargetLanguage,
+            TranslationRequestKind kind,
+            String imageUrl,
+            Boolean imageStored,
+            Instant startedAt) {
+        this(userProfile, sourceText, requestedTargetLanguage, kind, imageUrl,
+                imageStored, startedAt, null);
+    }
 
     public TranslationWorkflowRequest {
         if (userProfile == null || userProfile.getUserId() == null || userProfile.getUserId().isBlank()) {
@@ -28,6 +41,10 @@ public record TranslationWorkflowRequest(
                 || requestedTargetLanguage.isBlank()
                         ? null
                         : requestedTargetLanguage.trim();
+        requestedStylePresetId = requestedStylePresetId == null
+                || requestedStylePresetId.isBlank()
+                        ? null
+                        : requestedStylePresetId.trim();
         if (!kind.isImage()) {
             imageUrl = null;
             imageStored = null;

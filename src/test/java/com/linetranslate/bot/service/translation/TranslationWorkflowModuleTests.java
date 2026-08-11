@@ -121,6 +121,33 @@ class TranslationWorkflowModuleTests {
     }
 
     @Test
+    void oneTimeStyleReachesAdapterAndHistoryWithoutChangingUserDefault() {
+        UserProfile profile = profile();
+        profile.setPreferredTranslationStyle("faithful");
+        when(languageDetection.detectLanguage("hello")).thenReturn("en");
+        when(translationAdapter.translate(
+                preferences, "hello", "zh-TW", TranslationStylePreset.FORMAL))
+                .thenReturn(success("您好"));
+
+        TranslationWorkflowOutcome outcome = module.execute(new TranslationWorkflowRequest(
+                profile,
+                "hello",
+                null,
+                TranslationRequestKind.STANDARD_TEXT,
+                null,
+                null,
+                Instant.now(),
+                "formal"));
+
+        assertThat(outcome).isInstanceOf(TranslationWorkflowOutcome.Success.class);
+        ArgumentCaptor<TranslationRecord> captor = ArgumentCaptor.forClass(TranslationRecord.class);
+        verify(recordRepository).save(captor.capture());
+        assertThat(captor.getValue().getStylePresetId()).isEqualTo("formal");
+        assertThat(captor.getValue().getStylePromptVersion()).isEqualTo("formal-v1");
+        assertThat(profile.getPreferredTranslationStyle()).isEqualTo("faithful");
+    }
+
+    @Test
     void providerFailureNeverWritesHistoryOrCounters() {
         UserProfile profile = profile();
         when(languageDetection.detectLanguage("hello")).thenReturn("en");

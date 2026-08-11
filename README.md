@@ -43,9 +43,7 @@ MONGODB_DATABASE=linebot_translator
 # 有界翻譯快取與安全失效版本
 TRANSLATION_CACHE_TTL=PT30M
 TRANSLATION_CACHE_MAX_ENTRIES=1000
-TRANSLATION_STYLE=neutral
 TRANSLATION_GLOSSARY_VERSION=none
-TRANSLATION_PROMPT_VERSION=translation-v1
 
 # Webhook 非同步處理、去重與 LINE 回覆重試
 WEBHOOK_CORE_THREADS=2
@@ -78,7 +76,7 @@ MINIO_BUCKET_NAME=linebot-images
 ADMIN_USERS=U123456789abcdef,U987654321abcdef
 ```
 
-翻譯快取採 `expire-after-write` TTL；超過 `TRANSLATION_CACHE_MAX_ENTRIES` 時，Caffeine 會依使用頻率與近期性淘汰項目。失敗、safety blocked 與 model mismatch 不會寫入；變更 style、glossary 或 prompt version 會自然切換到新的 cache identity。
+翻譯快取採 `expire-after-write` TTL；超過 `TRANSLATION_CACHE_MAX_ENTRIES` 時，Caffeine 會依使用頻率與近期性淘汰項目。失敗、safety blocked 與 model mismatch 不會寫入；實際使用的 style preset ID、prompt version 與 glossary version 都納入 cache identity。
 
 Webhook 先驗證 LINE signature，再以 `webhookEventId` 建立 MongoDB TTL receipt 並交給 bounded executor。重送事件不重複處理；queue 已滿或 receipt store 暫時不可用時回傳 `503`，讓 LINE 稍後 redeliver。receipt 僅保存事件 ID、時間與處理狀態，不保存訊息內容或 reply token。
 
@@ -135,6 +133,9 @@ java -jar target/linebot-translator-0.0.1-SNAPSHOT.jar
 - `/about` - 關於此機器人
 - `/models [關鍵字]` - 列出或搜尋 OpenRouter 可用模型（最多顯示前 20 個）
 - `/model [完整模型 slug]` - 指定使用模型；`/setmodel` 為相同功能的相容別名
+- `/styles` - 列出忠實、自然、口語、正式、商務與字幕精簡風格
+- `/style [風格 ID]` - 設定個人預設翻譯風格
+- `/translate-style [風格 ID] [文字]` - 僅本次翻譯套用指定風格，不修改預設值
 - `/外文翻譯 [語言]` - 設置一般文字的默認目標語言
 - `/中文翻譯 [語言]` - 設置中文文字的默認目標語言
 - `/lang` - 顯示語言選擇菜單

@@ -113,7 +113,7 @@ class TranslationUserPreferenceTests {
         translationService.processTranslationRequest(USER_ID, "hello");
 
         verify(translationAdapter).translate(
-                any(UserPreferences.class), eq("hello"), eq("zh-tw"));
+                any(UserPreferences.class), eq("hello"), eq("zh-TW"));
     }
 
     @Test

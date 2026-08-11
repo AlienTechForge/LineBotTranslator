@@ -235,6 +235,19 @@ public class TranslationService {
             TranslationRequestKind kind,
             Instant start,
             boolean includeLanguageSummary) {
+        return performTranslation(userId, userProfile, sourceText, targetLanguage,
+                kind, start, includeLanguageSummary, null);
+    }
+
+    private TranslationResponse performTranslation(
+            String userId,
+            UserProfile userProfile,
+            String sourceText,
+            String targetLanguage,
+            TranslationRequestKind kind,
+            Instant start,
+            boolean includeLanguageSummary,
+            String stylePresetId) {
         TranslationWorkflowOutcome outcome = translationWorkflowModule.execute(
                 new TranslationWorkflowRequest(
                         userProfile,
@@ -243,7 +256,8 @@ public class TranslationService {
                         kind,
                         null,
                         null,
-                        start));
+                        start,
+                        stylePresetId));
         if (outcome instanceof TranslationWorkflowOutcome.Failure failure) {
             logTranslationFailure(userId, failure.failure());
             return TranslationResponse.plain(PROVIDER_UNAVAILABLE_MESSAGE);
@@ -259,6 +273,26 @@ public class TranslationService {
         String displayText = result.translatedText() + "\n\n[偵測到: " + sourceLanguageName
                 + " | 翻譯成: " + targetLanguageName + "]";
         return TranslationResponse.success(result, displayText);
+    }
+
+    /** Applies a style to this request only; the persisted user default is untouched. */
+    public TranslationResponse processStyledTranslationResponse(
+            String userId,
+            String text,
+            String presetId) {
+        TranslationStylePreset preset = TranslationStylePreset.find(presetId).orElse(null);
+        if (preset == null) {
+            return TranslationResponse.plain("不支援的翻譯風格。請使用 /styles 查看可用風格。");
+        }
+        return performTranslation(
+                userId,
+                ensureUserProfileExists(userId),
+                text,
+                null,
+                TranslationRequestKind.STANDARD_TEXT,
+                Instant.now(),
+                true,
+                preset.id());
     }
 
     /**
@@ -313,6 +347,29 @@ public class TranslationService {
                 TranslationRequestKind.STANDARD_TEXT,
                 Instant.now(),
                 true);
+    }
+
+    public TranslationResponse translateExisting(
+            String userId,
+            String sourceText,
+            String targetLanguageCode,
+            String stylePresetId) {
+        if (!LanguageUtils.isSupported(targetLanguageCode)) {
+            return TranslationResponse.plain("不支持的語言代碼：" + targetLanguageCode);
+        }
+        TranslationStylePreset preset = TranslationStylePreset.find(stylePresetId).orElse(null);
+        if (preset == null) {
+            return TranslationResponse.plain("不支援指定的翻譯風格。");
+        }
+        return performTranslation(
+                userId,
+                ensureUserProfileExists(userId),
+                sourceText,
+                LanguageUtils.toLanguageCode(targetLanguageCode),
+                TranslationRequestKind.STANDARD_TEXT,
+                Instant.now(),
+                true,
+                preset.id());
     }
 
     /**
@@ -442,6 +499,9 @@ public class TranslationService {
         
         status.append("• AI 提供者：OpenRouter\n");
         status.append("• 目前使用的模型：").append(preferences.model()).append("\n");
+        status.append("• 預設翻譯風格：")
+                .append(preferences.translationStyle().localizedName("zh-TW"))
+                .append(" (").append(preferences.translationStyle().id()).append(")\n");
         
         // 偏好的預設翻譯語言
         status.append("• 預設翻譯語言：")
@@ -509,5 +569,18 @@ public class TranslationService {
             result.append("已設置 OpenRouter 模型為 ").append(modelName);
         }
         return result.toString();
+    }
+
+    public String setPreferredTranslationStyle(String userId, String presetId) {
+        try {
+            TranslationStylePreset preset = userPreferencesModule
+                    .updateTranslationStyle(userId, presetId)
+                    .current()
+                    .translationStyle();
+            return "已將預設翻譯風格設為 " + preset.localizedName("zh-TW")
+                    + " (" + preset.id() + ")";
+        } catch (InvalidUserPreferenceException invalid) {
+            return "不支援的翻譯風格：" + presetId + "。請使用 /styles 查看可用風格。";
+        }
     }
 }

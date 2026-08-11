@@ -27,6 +27,8 @@ public class TranslationRecord {
     private String translatedText;
     private String aiProvider; // openrouter（歷史資料可能保留舊維度）
     private String modelName;
+    private String stylePresetId;
+    private String stylePromptVersion;
     private LocalDateTime createdAt;
     private double processingTimeMs;
     private boolean isImageTranslation;

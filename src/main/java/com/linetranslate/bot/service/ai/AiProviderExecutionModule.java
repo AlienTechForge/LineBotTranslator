@@ -10,6 +10,7 @@ import org.springframework.stereotype.Service;
 import com.linetranslate.bot.logging.SafeLog;
 import com.linetranslate.bot.service.preference.UserPreferences;
 import com.linetranslate.bot.service.settings.RuntimeSettingsSource;
+import com.linetranslate.bot.service.translation.TranslationStylePreset;
 import com.linetranslate.bot.service.usage.AiUsageEventSink;
 
 import lombok.extern.slf4j.Slf4j;
@@ -55,10 +56,30 @@ public class AiProviderExecutionModule {
             UserPreferences preferences,
             String text,
             String targetLanguage) {
+        TranslationStylePreset style = preferences == null
+                ? TranslationStylePreset.defaultPreset()
+                : preferences.translationStyle();
+        return translateTextOutcome(preferences, text, targetLanguage, style);
+    }
+
+    public AiExecutionOutcome translateTextOutcome(
+            UserPreferences preferences,
+            String text,
+            String targetLanguage,
+            TranslationStylePreset style) {
+        TranslationStylePreset effectiveStyle = style == null
+                ? TranslationStylePreset.defaultPreset()
+                : style;
         AiExecutionOutcome outcome = execute(
                 AiProviderOperation.TRANSLATE_TEXT,
                 preferredModel(preferences),
-                model -> AiProviderRequest.translate(model, text, targetLanguage));
+                model -> AiProviderRequest.translate(
+                        model,
+                        text,
+                        targetLanguage,
+                        effectiveStyle.id(),
+                        effectiveStyle.promptVersion(),
+                        effectiveStyle.promptRule()));
         recordUsage(AiProviderOperation.TRANSLATE_TEXT, outcome);
         return outcome;
     }

@@ -9,7 +9,22 @@ public record TranslationWorkflowResult(
         AiExecutionResult execution,
         long processingTimeMillis,
         TranslationRequestKind kind,
-        String recordId) {
+        String recordId,
+        String stylePresetId,
+        String stylePromptVersion) {
+
+    public TranslationWorkflowResult(
+            String sourceText,
+            String sourceLanguage,
+            String targetLanguage,
+            AiExecutionResult execution,
+            long processingTimeMillis,
+            TranslationRequestKind kind,
+            String recordId) {
+        this(sourceText, sourceLanguage, targetLanguage, execution, processingTimeMillis,
+                kind, recordId, TranslationStylePreset.defaultPreset().id(),
+                TranslationStylePreset.defaultPreset().promptVersion());
+    }
 
     public TranslationWorkflowResult(
             String sourceText,

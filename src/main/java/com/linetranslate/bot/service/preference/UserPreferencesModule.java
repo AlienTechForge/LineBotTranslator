@@ -16,6 +16,7 @@ import com.linetranslate.bot.service.ai.AiProviderAdapter;
 import com.linetranslate.bot.service.ai.AiProviderRequest;
 import com.linetranslate.bot.service.settings.RuntimeSettings;
 import com.linetranslate.bot.service.settings.RuntimeSettingsSource;
+import com.linetranslate.bot.service.translation.TranslationStylePreset;
 import com.linetranslate.bot.util.LanguageUtils;
 
 /**
@@ -82,7 +83,8 @@ public class UserPreferencesModule {
                         settings.defaultTargetLanguageForChinese(), "en"),
                 effectiveLanguage(null, settings.defaultTargetLanguageForOthers(), "en"),
                 effectiveModel(profile.getPreferredModel(), settings),
-                validRecentLanguages(profile.getRecentLanguages()));
+                validRecentLanguages(profile.getRecentLanguages()),
+                TranslationStylePreset.resolve(profile.getPreferredTranslationStyle()));
     }
 
     public UserPreferenceChange updateTargetLanguage(String userId, String language) {
@@ -111,6 +113,17 @@ public class UserPreferencesModule {
         UserProfile profile = profile(userId);
         UserPreferences previous = resolve(profile);
         profile.setPreferredModel(model);
+        repository.save(profile);
+        return new UserPreferenceChange(previous, resolve(profile));
+    }
+
+    public UserPreferenceChange updateTranslationStyle(String userId, String presetId) {
+        TranslationStylePreset preset = TranslationStylePreset.find(presetId)
+                .orElseThrow(() -> new InvalidUserPreferenceException(
+                        InvalidUserPreferenceException.Kind.STYLE, presetId));
+        UserProfile profile = profile(userId);
+        UserPreferences previous = resolve(profile);
+        profile.setPreferredTranslationStyle(preset.id());
         repository.save(profile);
         return new UserPreferenceChange(previous, resolve(profile));
     }

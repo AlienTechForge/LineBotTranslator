@@ -296,8 +296,9 @@ public interface TranslationRecordRepository extends MongoRepository<Translation
    - `TranslationService` 解析翻譯請求格式
    - 使用 `LanguageDetectionService` 檢測源語言
    - 根據用戶偏好或默認規則選擇目標語言
-   - `UserPreferencesModule` resolve 目標語言與 OpenRouter model
-   - `CachedTranslationAdapter` 查 bounded、model-aware cache
+   - `UserPreferencesModule` resolve 目標語言、OpenRouter model 與預設翻譯風格
+   - 單次 `/translate-style <id> <text>` 可覆蓋本次風格，不修改預設值
+   - `CachedTranslationAdapter` 以實際 style ID/prompt version 查 bounded、model-aware cache
    - `AiProviderExecutionModule` 驗證 model capability 並呼叫唯一 OpenRouter Adapter
    - 成功後保存實際 provider/model metadata，並更新用戶資料
 
@@ -333,6 +334,12 @@ public interface TranslationRecordRepository extends MongoRepository<Translation
    - catalog 保存 capability/pricing snapshot，採 TTL cache 與 stale/default fallback
    - LINE `/models [關鍵字]` 搜尋，`/model <slug>` 保存個人選擇
 
+4. **Translation Style Presets**：
+   - 穩定 ID：`faithful`、`natural`、`casual`、`formal`、`business`、`subtitle`
+   - 每個 preset 具有中英文名稱、版本化 prompt rule；只由 server allowlist 建立 system instruction
+   - `/styles` 列出風格，`/style <id>` 保存個人預設，`/translate-style <id> <text>` 僅套用一次
+   - Translation Record、cache identity 與安全 restyle action 都保存／使用實際 preset ID 與 prompt version
+
 ### OCR 實現
 
 1. **Google Cloud Vision API**：
@@ -347,7 +354,7 @@ public interface TranslationRecordRepository extends MongoRepository<Translation
 
 ### 緩存策略
 
-`CachedTranslationAdapter` 使用 Caffeine bounded cache。Identity 包含 source digest、target、planned provider/model、style、glossary version 與 prompt version；只保存 model identity 一致的成功結果，failure 與 safety blocked 不寫入。TTL 與 maximum entries 由部署 variables 控制。
+`CachedTranslationAdapter` 使用 Caffeine bounded cache。Identity 包含 source digest、target、planned provider/model、實際 Translation Style Preset ID、該 preset 的 prompt version 與 glossary version；只保存 model identity 一致的成功結果，failure 與 safety blocked 不寫入。TTL 與 maximum entries 由部署 variables 控制。
 
 ### 異步處理
 

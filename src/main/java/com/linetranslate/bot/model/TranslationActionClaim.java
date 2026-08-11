@@ -29,6 +29,7 @@ public class TranslationActionClaim {
     private String userId;
     private String sourceRecordId;
     private String targetLanguage;
+    private String stylePresetId;
     private Status status;
     private String resultRecordId;
     private LocalDateTime createdAt;

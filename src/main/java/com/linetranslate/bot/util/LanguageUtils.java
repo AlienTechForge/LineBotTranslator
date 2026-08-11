@@ -2,6 +2,7 @@ package com.linetranslate.bot.util;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Locale;
 
 /**
  * 語言工具類，用於語言代碼和名稱的轉換和映射
@@ -197,16 +198,17 @@ public class LanguageUtils {
             return "unknown";
         }
 
-        String normalizedInput = languageNameOrCode.trim().toLowerCase();
+        String normalizedInput = languageNameOrCode.trim().toLowerCase(Locale.ROOT);
 
         // 如果輸入的是標準語言代碼
-        if (LANGUAGE_CODE_TO_NAME.containsKey(normalizedInput)) {
-            return normalizedInput;
+        String canonicalCode = canonicalCode(normalizedInput);
+        if (canonicalCode != null) {
+            return canonicalCode;
         }
 
         // 嘗試從大小寫不敏感的映射中找到對應的語言代碼
         for (Map.Entry<String, String> entry : LANGUAGE_NAME_TO_CODE.entrySet()) {
-            if (entry.getKey().toLowerCase().equals(normalizedInput)) {
+            if (entry.getKey().toLowerCase(Locale.ROOT).equals(normalizedInput)) {
                 return entry.getValue();
             }
         }
@@ -226,40 +228,52 @@ public class LanguageUtils {
             return "未知語言";
         }
 
-        String normalizedCode = languageCode.trim().toLowerCase();
-        return LANGUAGE_CODE_TO_NAME.getOrDefault(normalizedCode, languageCode);
+        String canonicalCode = canonicalCode(languageCode.trim());
+        return canonicalCode == null
+                ? languageCode
+                : LANGUAGE_CODE_TO_NAME.get(canonicalCode);
     }
 
-/**
- * 檢查是否支持該語言
- *
- * @param languageNameOrCode 語言名稱或代碼
- * @return 是否支持
- */
-public static boolean isSupported(String languageNameOrCode) {
-    if (languageNameOrCode == null || languageNameOrCode.trim().isEmpty()) {
+    /**
+     * 檢查是否支持該語言
+     *
+     * @param languageNameOrCode 語言名稱或代碼
+     * @return 是否支持
+     */
+    public static boolean isSupported(String languageNameOrCode) {
+        if (languageNameOrCode == null || languageNameOrCode.trim().isEmpty()) {
+            return false;
+        }
+
+        String normalizedInput = languageNameOrCode.trim().toLowerCase(Locale.ROOT);
+
+        // 檢查代碼是否存在
+        if (canonicalCode(normalizedInput) != null) {
+            return true;
+        }
+
+        // 檢查名稱是否存在於 LANGUAGE_NAME_TO_CODE 中
+        if (LANGUAGE_NAME_TO_CODE.containsKey(normalizedInput)) {
+            return true;
+        }
+
+        // 檢查名稱是否存在（大小寫不敏感）
+        for (String name : LANGUAGE_NAME_TO_CODE.keySet()) {
+            if (name.toLowerCase(Locale.ROOT).equals(normalizedInput)) {
+                return true;
+            }
+        }
+
         return false;
     }
 
-    String normalizedInput = languageNameOrCode.trim().toLowerCase();
-
-    // 檢查代碼是否存在
-    if (LANGUAGE_CODE_TO_NAME.containsKey(normalizedInput)) {
-        return true;
-    }
-
-    // 檢查名稱是否存在於 LANGUAGE_NAME_TO_CODE 中
-    if (LANGUAGE_NAME_TO_CODE.containsKey(normalizedInput)) {
-        return true;
-    }
-
-    // 檢查名稱是否存在（大小寫不敏感）
-    for (String name : LANGUAGE_NAME_TO_CODE.keySet()) {
-        if (name.toLowerCase().equals(normalizedInput)) {
-            return true;
+    private static String canonicalCode(String code) {
+        if (code == null) {
+            return null;
         }
+        return LANGUAGE_CODE_TO_NAME.keySet().stream()
+                .filter(candidate -> candidate.equalsIgnoreCase(code.trim()))
+                .findFirst()
+                .orElse(null);
     }
-
-    return false;
-}
 }

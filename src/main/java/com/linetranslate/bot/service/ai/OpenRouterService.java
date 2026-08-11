@@ -144,7 +144,10 @@ public class OpenRouterService implements AiProviderAdapter {
 
     private String instructions(AiProviderRequest request) {
         return switch (request.operation()) {
-            case TRANSLATE_TEXT -> TRANSLATION_INSTRUCTIONS.formatted(request.targetLanguage());
+            case TRANSLATE_TEXT -> TRANSLATION_INSTRUCTIONS.formatted(request.targetLanguage())
+                    + "\nStyle preset: " + request.translationStyleId()
+                    + " (" + request.translationPromptVersion() + ").\n"
+                    + request.translationStyleInstruction();
             case PROCESS_IMAGE -> OCR_INSTRUCTIONS;
             case GENERATE_TEXT -> GENERATION_INSTRUCTIONS;
         };

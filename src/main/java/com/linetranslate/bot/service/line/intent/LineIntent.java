@@ -4,7 +4,9 @@ package com.linetranslate.bot.service.line.intent;
 public sealed interface LineIntent permits
         LineIntent.TranslateText,
         LineIntent.QuickTranslate,
+        LineIntent.StyledTranslate,
         LineIntent.Retranslate,
+        LineIntent.Restyle,
         LineIntent.UserCommand,
         LineIntent.AdminCommand,
         LineIntent.Invalid {
@@ -15,7 +17,13 @@ public sealed interface LineIntent permits
     record QuickTranslate(String language, String text) implements LineIntent {
     }
 
+    record StyledTranslate(String presetId, String text) implements LineIntent {
+    }
+
     record Retranslate(String recordId, String targetLanguage) implements LineIntent {
+    }
+
+    record Restyle(String recordId, String presetId) implements LineIntent {
     }
 
     record UserCommand(UserAction action, String argument) implements LineIntent {
@@ -32,6 +40,8 @@ public sealed interface LineIntent permits
         ABOUT,
         SET_MODEL,
         MODELS,
+        SET_STYLE,
+        STYLES,
         SET_FOREIGN_LANGUAGE,
         PROFILE,
         STATUS,
@@ -44,6 +54,9 @@ public sealed interface LineIntent permits
         INVALID_MODEL,
         MODEL_QUERY_TOO_LONG,
         TRANSLATION_ACTION_FORMAT,
+        STYLE_REQUIRED,
+        INVALID_STYLE,
+        STYLED_TRANSLATION_FORMAT,
         FOREIGN_LANGUAGE_REQUIRED,
         CHINESE_LANGUAGE_REQUIRED,
         QUICK_TRANSLATION_FORMAT,

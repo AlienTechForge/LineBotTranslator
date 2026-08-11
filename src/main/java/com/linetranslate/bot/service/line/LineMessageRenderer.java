@@ -18,6 +18,7 @@ import com.linetranslate.bot.service.ai.AiModelDescriptor;
 import com.linetranslate.bot.service.ai.AiModelPage;
 import com.linetranslate.bot.service.line.intent.LineIntent;
 import com.linetranslate.bot.service.translation.TranslationResponse;
+import com.linetranslate.bot.service.translation.TranslationStylePreset;
 
 /** Central LINE message renderer for user-facing interaction results. */
 @Component
@@ -47,6 +48,9 @@ public class LineMessageRenderer {
                 + "🀄 /中文翻譯 [語言] - 設置中文翻譯的目標語言\n"
                 + "🤖 /model [OpenRouter 模型 slug] - 指定模型\n"
                 + "📋 /models [關鍵字] - 搜尋可用模型\n\n"
+                + "🎨 /styles - 列出翻譯風格\n"
+                + "🎨 /style [ID] - 設定預設風格\n"
+                + "✨ /translate-style [ID] [文字] - 僅本次使用指定風格\n\n"
                 + "[ℹ️ 其他命令]\n"
                 + "❓ /help - 顯示此幫助信息\n"
                 + "ℹ️ /about - 關於此機器人\n"
@@ -110,6 +114,16 @@ public class LineMessageRenderer {
         return text(body.toString());
     }
 
+    public Message styles() {
+        StringBuilder body = new StringBuilder("🎨 可用翻譯風格\n\n");
+        for (TranslationStylePreset preset : TranslationStylePreset.available()) {
+            body.append("• ").append(preset.id()).append(" — ")
+                    .append(preset.localizedName("zh-TW")).append("\n");
+        }
+        body.append("\n/style [ID] 設定預設；/translate-style [ID] [文字] 僅套用一次。");
+        return text(body.toString());
+    }
+
     public Message translation(String result) { return text(result); }
     public Message translation(TranslationResponse result) { return interactiveTranslation(result); }
     public Message status(String result) { return text(result); }
@@ -128,6 +142,10 @@ public class LineMessageRenderer {
             case INVALID_MODEL -> "模型 slug 格式無效。請先用 /models [關鍵字] 查詢完整 slug。";
             case MODEL_QUERY_TOO_LONG -> "模型搜尋關鍵字過長；請縮短至 80 個字元內。";
             case TRANSLATION_ACTION_FORMAT -> "翻譯操作已失效，請從新的翻譯結果重試。";
+            case STYLE_REQUIRED -> "請指定風格 ID。先用 /styles 查看可用風格。";
+            case INVALID_STYLE -> "不支援的翻譯風格：" + invalid.value() + "。請用 /styles 查看可用風格。";
+            case STYLED_TRANSLATION_FORMAT ->
+                    "格式錯誤。請使用 /translate-style [風格 ID] [要翻譯的文字]。";
             case FOREIGN_LANGUAGE_REQUIRED ->
                     "請指定語言代碼或名稱。例如：/外文翻譯 en 或 /外文翻譯 日文";
             case CHINESE_LANGUAGE_REQUIRED ->
@@ -169,10 +187,28 @@ public class LineMessageRenderer {
                 "重新翻譯",
                 response.recordId(),
                 response.targetLanguage()));
+        for (TranslationStylePreset preset : TranslationStylePreset.available()) {
+            if (!preset.id().equals(response.stylePresetId())) {
+                items.add(stylePostbackItem(
+                        preset.localizedName("zh-TW"),
+                        response.recordId(),
+                        preset.id()));
+            }
+        }
 
         return new TextMessage.Builder(response.displayText())
                 .quickReply(new QuickReply(items))
                 .build();
+    }
+
+    private QuickReplyItem stylePostbackItem(
+            String label,
+            String recordId,
+            String presetId) {
+        String command = "/restyle " + recordId + " " + presetId;
+        String data = "command=" + URLEncoder.encode(command, StandardCharsets.UTF_8);
+        return new QuickReplyItem(new PostbackAction(
+                label, data, "改用「" + label + "」風格", null, null, null));
     }
 
     private QuickReplyItem postbackItem(

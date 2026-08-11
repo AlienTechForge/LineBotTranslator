@@ -52,9 +52,17 @@ public class LineInteractionModule {
                     translationService.quickTranslateResponse(
                             userId, translation.text(), translation.language()));
         }
+        if (intent instanceof LineIntent.StyledTranslate translation) {
+            return renderer.translation(translationService.processStyledTranslationResponse(
+                    userId, translation.text(), translation.presetId()));
+        }
         if (intent instanceof LineIntent.Retranslate translation) {
             return renderer.translation(translationActionModule.execute(
                     userId, translation.recordId(), translation.targetLanguage()));
+        }
+        if (intent instanceof LineIntent.Restyle translation) {
+            return renderer.translation(translationActionModule.executeStyle(
+                    userId, translation.recordId(), translation.presetId()));
         }
         if (intent instanceof LineIntent.UserCommand command) {
             return executeUserCommand(userId, command);
@@ -83,6 +91,9 @@ public class LineInteractionModule {
             case SET_MODEL -> renderer.settingResult(
                     translationService.setPreferredModel(userId, command.argument()));
             case MODELS -> renderer.models(command.argument());
+            case SET_STYLE -> renderer.settingResult(
+                    translationService.setPreferredTranslationStyle(userId, command.argument()));
+            case STYLES -> renderer.styles();
             case SET_FOREIGN_LANGUAGE -> renderer.settingResult(
                     translationService.setPreferredLanguage(userId, command.argument()));
             case PROFILE -> renderer.profile(lineUserProfileService.getUserProfileInfo(userId));
