@@ -49,4 +49,27 @@ class CiQualityGateContractTests {
                 .contains("TRANSLATION_CACHE_MAX_ENTRIES")
                 .contains("TRANSLATION_PROMPT_VERSION");
     }
+
+    @Test
+    void deploymentPassesBoundedWebhookPolicyIntoTheRuntimeContainer() throws IOException {
+        String workflow = Files.readString(Path.of(".github", "workflows", "ci-cd.yml"));
+        String deployScript = Files.readString(Path.of("scripts", "deploy.sh"));
+
+        assertThat(workflow)
+                .contains("WEBHOOK_CORE_THREADS: ${{ vars.WEBHOOK_CORE_THREADS || '2' }}")
+                .contains("WEBHOOK_MAX_THREADS: ${{ vars.WEBHOOK_MAX_THREADS || '4' }}")
+                .contains("WEBHOOK_QUEUE_CAPACITY: ${{ vars.WEBHOOK_QUEUE_CAPACITY || '100' }}")
+                .contains("WEBHOOK_RECEIPT_TTL: ${{ vars.WEBHOOK_RECEIPT_TTL || 'P7D' }}")
+                .contains("WEBHOOK_PROCESSING_LEASE: ${{ vars.WEBHOOK_PROCESSING_LEASE || 'PT5M' }}")
+                .contains("WEBHOOK_REPLY_MAX_ATTEMPTS: ${{ vars.WEBHOOK_REPLY_MAX_ATTEMPTS || '3' }}")
+                .contains("WEBHOOK_REPLY_RETRY_BACKOFF: ${{ vars.WEBHOOK_REPLY_RETRY_BACKOFF || 'PT1S' }}");
+        assertThat(deployScript)
+                .contains("WEBHOOK_CORE_THREADS")
+                .contains("WEBHOOK_MAX_THREADS")
+                .contains("WEBHOOK_QUEUE_CAPACITY")
+                .contains("WEBHOOK_RECEIPT_TTL")
+                .contains("WEBHOOK_PROCESSING_LEASE")
+                .contains("WEBHOOK_REPLY_MAX_ATTEMPTS")
+                .contains("WEBHOOK_REPLY_RETRY_BACKOFF");
+    }
 }

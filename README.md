@@ -42,6 +42,15 @@ TRANSLATION_STYLE=neutral
 TRANSLATION_GLOSSARY_VERSION=none
 TRANSLATION_PROMPT_VERSION=translation-v1
 
+# Webhook 非同步處理、去重與 LINE 回覆重試
+WEBHOOK_CORE_THREADS=2
+WEBHOOK_MAX_THREADS=4
+WEBHOOK_QUEUE_CAPACITY=100
+WEBHOOK_RECEIPT_TTL=P7D
+WEBHOOK_PROCESSING_LEASE=PT5M
+WEBHOOK_REPLY_MAX_ATTEMPTS=3
+WEBHOOK_REPLY_RETRY_BACKOFF=PT1S
+
 # OpenAI 配置
 OPENAI_API_KEY=your_openai_api_key
 OPENAI_MODEL_NAME=gpt-4o
@@ -62,6 +71,8 @@ ADMIN_USERS=U123456789abcdef,U987654321abcdef
 ```
 
 翻譯快取採 `expire-after-write` TTL；超過 `TRANSLATION_CACHE_MAX_ENTRIES` 時，Caffeine 會依使用頻率與近期性淘汰項目。失敗、safety blocked、fallback 與 route mismatch 不會寫入；變更 style、glossary 或 prompt version 會自然切換到新的 cache identity。
+
+Webhook 先驗證 LINE signature，再以 `webhookEventId` 建立 MongoDB TTL receipt 並交給 bounded executor。重送事件不重複處理；queue 已滿或 receipt store 暫時不可用時回傳 `503`，讓 LINE 稍後 redeliver。receipt 僅保存事件 ID、時間與處理狀態，不保存訊息內容或 reply token。
 
 ## 建立與運行
 
