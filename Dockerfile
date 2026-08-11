@@ -27,7 +27,8 @@ WORKDIR /app
 
 # 設置時區與容器健康檢查工具
 RUN apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl tzdata && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        curl fonts-noto-cjk tzdata && \
     ln -fs /usr/share/zoneinfo/Asia/Taipei /etc/localtime && \
     dpkg-reconfigure -f noninteractive tzdata && \
     apt-get clean && \

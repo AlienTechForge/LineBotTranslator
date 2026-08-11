@@ -9,8 +9,10 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.awt.image.BufferedImage;
 import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -20,7 +22,10 @@ import java.util.concurrent.Executors;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.ObjectProvider;
+
+import javax.imageio.ImageIO;
 
 import com.linecorp.bot.client.base.BlobContent;
 import com.linecorp.bot.client.base.Result;
@@ -303,7 +308,47 @@ class ImageTranslationPipelineIntegrationTests {
         });
     }
 
+    @Test
+    void locatedOcrRendersTranslatedBlocksAndStoresShortLivedResult() throws Exception {
+        byte[] png = png(240, 120);
+        image("message-overlay", png, "image/png");
+        ImageTranslationProperties limits = ImageTranslationProperties.defaults();
+        pipeline = new ImageTranslationPipeline(
+                ocrServiceProvider,
+                workflowModule,
+                aiProviderExecutionModule,
+                userPreferencesModule,
+                messagingApiBlobClient,
+                minioStorageService,
+                new ImageInputValidator(limits),
+                new ImageTranslationOverlayRenderer(),
+                limits);
+        when(minioStorageService.uploadImage(any(byte[].class), anyString()))
+                .thenReturn(ImageStorageResult.stored("https://storage.example/source.png"));
+        when(ocrService.recognizeTextWithLocations(any(InputStream.class))).thenReturn(List.of(
+                new OcrService.TextBlock("hello", 10, 10, 90, 35, 0.98f),
+                new OcrService.TextBlock("world", 10, 60, 90, 35, 0.92f)));
+        when(workflowModule.execute(any())).thenReturn(success("hello\nworld", "你好\n世界"));
+        when(minioStorageService.uploadTranslatedImage(any(byte[].class)))
+                .thenReturn(ImageStorageResult.stored("https://storage.example/translated.png"));
+
+        ImageTranslationPipelineResult result = successResult(pipeline.execute(request("message-overlay")));
+
+        assertThat(result.renderedImage().url())
+                .contains("https://storage.example/translated.png");
+        assertThat(result.lowConfidenceBlockCount()).isZero();
+        ArgumentCaptor<TranslationWorkflowRequest> workflow =
+                ArgumentCaptor.forClass(TranslationWorkflowRequest.class);
+        verify(workflowModule).execute(workflow.capture());
+        assertThat(workflow.getValue().sourceText()).isEqualTo("hello\nworld");
+        verify(minioStorageService).uploadTranslatedImage(any(byte[].class));
+    }
+
     private TrackingInputStream image(String messageId, byte[] bytes) throws Exception {
+        return image(messageId, bytes, null);
+    }
+
+    private TrackingInputStream image(String messageId, byte[] bytes, String mimeType) throws Exception {
         Result<BlobContent> result = mock(Result.class);
         BlobContent content = mock(BlobContent.class);
         TrackingInputStream stream = new TrackingInputStream(bytes);
@@ -311,7 +356,15 @@ class ImageTranslationPipelineIntegrationTests {
                 .thenReturn(CompletableFuture.completedFuture(result));
         when(result.body()).thenReturn(content);
         when(content.byteStream()).thenReturn(stream);
+        when(content.mimeType()).thenReturn(mimeType);
         return stream;
+    }
+
+    private static byte[] png(int width, int height) throws Exception {
+        BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        ImageIO.write(image, "png", output);
+        return output.toByteArray();
     }
 
     private ImageTranslationRequest request(String messageId) {
