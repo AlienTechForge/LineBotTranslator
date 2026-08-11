@@ -2,6 +2,7 @@ package com.linetranslate.bot.service.ocr;
 
 import java.io.InputStream;
 import java.util.List;
+import java.util.stream.IntStream;
 
 /**
  * OCR 服務介面，定義圖片文字識別的方法
@@ -23,6 +24,23 @@ public interface OcrService {
      * @return 文字塊列表，包含文字內容和位置信息
      */
     List<TextBlock> recognizeTextWithLocations(InputStream imageStream);
+
+    /** Structured geometry path. Legacy implementations remain text-only. */
+    default List<OcrRegion> recognizeRegions(InputStream imageStream) {
+        List<TextBlock> blocks = recognizeTextWithLocations(imageStream);
+        if (blocks == null) return List.of();
+        return IntStream.range(0, blocks.size()).mapToObj(index -> {
+            TextBlock block = blocks.get(index);
+            List<OcrPoint> polygon = List.of(
+                    new OcrPoint(block.x, block.y),
+                    new OcrPoint(block.x + block.width, block.y),
+                    new OcrPoint(block.x + block.width, block.y + block.height),
+                    new OcrPoint(block.x, block.y + block.height));
+            return new OcrRegion(
+                    "legacy-%04d".formatted(index + 1), block.text, polygon, List.of(),
+                    block.confidence, block.confidence > 0, OcrBlockType.TEXT, List.of(), index);
+        }).toList();
+    }
 
     /**
      * 表示文字塊的類，包含文字內容和位置信息

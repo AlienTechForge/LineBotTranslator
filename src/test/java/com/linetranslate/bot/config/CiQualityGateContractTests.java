@@ -32,7 +32,25 @@ class CiQualityGateContractTests {
                 .contains("./mvnw clean verify -B")
                 .contains("Verify packaged application")
                 .contains("target/surefire-reports/")
-                .contains("target/failsafe-reports/");
+                .contains("target/failsafe-reports/")
+                .contains("target/image-translation-replay/")
+                .contains("Verify production renderer runtime")
+                .contains("fc-match \"Noto Sans CJK TC\"");
+    }
+
+    @Test
+    void deploymentPassesFailClosedOverlayPolicyIntoRuntimeContainer() throws IOException {
+        String workflow = Files.readString(Path.of(".github", "workflows", "ci-cd.yml"));
+        String deployScript = Files.readString(Path.of("scripts", "deploy.sh"));
+
+        assertThat(workflow)
+                .contains("IMAGE_TRANSLATION_OVERLAY_ENABLED:")
+                .contains("IMAGE_TRANSLATION_MAX_REGION_AREA_RATIO:")
+                .contains("IMAGE_TRANSLATION_MAX_TOTAL_MASK_RATIO:");
+        assertThat(deployScript)
+                .contains("IMAGE_TRANSLATION_OVERLAY_ENABLED")
+                .contains("IMAGE_TRANSLATION_MAX_REGION_AREA_RATIO")
+                .contains("IMAGE_TRANSLATION_MAX_TOTAL_MASK_RATIO");
     }
 
     @Test

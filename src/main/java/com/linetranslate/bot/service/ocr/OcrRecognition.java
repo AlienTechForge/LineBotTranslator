@@ -2,11 +2,16 @@ package com.linetranslate.bot.service.ocr;
 
 import java.util.List;
 
-public record OcrRecognition(String text, List<OcrService.TextBlock> blocks) {
+public record OcrRecognition(String text, List<OcrService.TextBlock> blocks, List<OcrRegion> regions) {
 
     public OcrRecognition {
         text = text == null ? "" : text.strip();
         blocks = blocks == null ? List.of() : List.copyOf(blocks);
+        regions = regions == null ? List.of() : List.copyOf(regions);
+    }
+
+    public OcrRecognition(String text, List<OcrService.TextBlock> blocks) {
+        this(text, blocks, List.of());
     }
 
     public static OcrRecognition located(List<OcrService.TextBlock> blocks) {
@@ -17,11 +22,20 @@ public record OcrRecognition(String text, List<OcrService.TextBlock> blocks) {
                 .filter(value -> !value.isBlank())
                 .reduce((left, right) -> left + "\n" + right)
                 .orElse("");
-        return new OcrRecognition(text, ordered);
+        return new OcrRecognition(text, ordered, List.of());
+    }
+
+    public static OcrRecognition structured(List<OcrRegion> regions) {
+        List<OcrRegion> ordered = regions == null ? List.of() : regions.stream()
+                .sorted(java.util.Comparator.comparingInt(OcrRegion::readingOrder).thenComparing(OcrRegion::id))
+                .toList();
+        String text = ordered.stream().map(OcrRegion::text).filter(value -> !value.isBlank())
+                .reduce((left, right) -> left + "\n" + right).orElse("");
+        return new OcrRecognition(text, List.of(), ordered);
     }
 
     public static OcrRecognition plain(String text) {
-        return new OcrRecognition(text, List.of());
+        return new OcrRecognition(text, List.of(), List.of());
     }
 
     public String reliableText(float threshold) {
@@ -38,6 +52,6 @@ public record OcrRecognition(String text, List<OcrService.TextBlock> blocks) {
     }
 
     static boolean isReliable(OcrService.TextBlock block, float threshold) {
-        return block.getConfidence() <= 0 || block.getConfidence() >= threshold;
+        return block.getConfidence() > 0 && block.getConfidence() >= threshold;
     }
 }

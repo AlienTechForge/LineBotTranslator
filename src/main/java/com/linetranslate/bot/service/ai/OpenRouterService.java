@@ -16,6 +16,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.linetranslate.bot.config.OpenRouterConfig;
+import com.linetranslate.bot.service.translation.StructuredImageTranslationCodec;
 
 import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
@@ -130,6 +131,10 @@ public class OpenRouterService implements AiProviderAdapter {
         } else {
             user.put("content", request.input());
             body.put("temperature", request.operation() == AiProviderOperation.TRANSLATE_TEXT ? 0.2 : 0.7);
+            if (isStructuredImageTranslation(request)) {
+                body.set("response_format", structuredResponseFormat());
+                body.put("temperature", 0);
+            }
         }
 
         Request.Builder builder = new Request.Builder()
@@ -144,13 +149,47 @@ public class OpenRouterService implements AiProviderAdapter {
 
     private String instructions(AiProviderRequest request) {
         return switch (request.operation()) {
-            case TRANSLATE_TEXT -> TRANSLATION_INSTRUCTIONS.formatted(request.targetLanguage())
+            case TRANSLATE_TEXT -> (isStructuredImageTranslation(request)
+                    ? "Translate each image region independently. Return only JSON matching the supplied schema. "
+                            + "Return every action=TRANSLATE regionId exactly once. Do not return action=PRESERVE regions; "
+                            + "never add, omit, or change protectedTokens."
+                    : TRANSLATION_INSTRUCTIONS.formatted(request.targetLanguage()))
                     + "\nStyle preset: " + request.translationStyleId()
                     + " (" + request.translationPromptVersion() + ").\n"
                     + request.translationStyleInstruction();
             case PROCESS_IMAGE -> OCR_INSTRUCTIONS;
             case GENERATE_TEXT -> GENERATION_INSTRUCTIONS;
         };
+    }
+
+    private static boolean isStructuredImageTranslation(AiProviderRequest request) {
+        return request.operation() == AiProviderOperation.TRANSLATE_TEXT
+                && request.input().contains("\"schemaVersion\":\"" + StructuredImageTranslationCodec.SCHEMA_VERSION + "\"");
+    }
+
+    private ObjectNode structuredResponseFormat() {
+        ObjectNode format = objectMapper.createObjectNode();
+        format.put("type", "json_schema");
+        ObjectNode wrapper = format.putObject("json_schema");
+        wrapper.put("name", "image_region_translations");
+        wrapper.put("strict", true);
+        ObjectNode schema = wrapper.putObject("schema");
+        schema.put("type", "object");
+        schema.putArray("required").add("schemaVersion").add("regions");
+        schema.put("additionalProperties", false);
+        ObjectNode properties = schema.putObject("properties");
+        properties.putObject("schemaVersion").put("type", "string")
+                .put("const", StructuredImageTranslationCodec.SCHEMA_VERSION);
+        ObjectNode regions = properties.putObject("regions");
+        regions.put("type", "array");
+        ObjectNode item = regions.putObject("items");
+        item.put("type", "object");
+        item.putArray("required").add("regionId").add("translatedText");
+        item.put("additionalProperties", false);
+        ObjectNode itemProperties = item.putObject("properties");
+        itemProperties.putObject("regionId").put("type", "string");
+        itemProperties.putObject("translatedText").put("type", "string").put("maxLength", 4000);
+        return format;
     }
 
     private AiProviderResponse parseResponse(

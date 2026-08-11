@@ -42,6 +42,7 @@ import com.linetranslate.bot.service.translation.TranslationWorkflowModule;
 import com.linetranslate.bot.service.translation.TranslationWorkflowOutcome;
 import com.linetranslate.bot.service.translation.TranslationWorkflowRequest;
 import com.linetranslate.bot.service.translation.TranslationWorkflowResult;
+import com.linetranslate.bot.service.translation.ImageRegionTranslation;
 
 @SuppressWarnings("unchecked")
 class ImageTranslationPipelineIntegrationTests {
@@ -325,10 +326,13 @@ class ImageTranslationPipelineIntegrationTests {
                 limits);
         when(minioStorageService.uploadImage(any(byte[].class), anyString()))
                 .thenReturn(ImageStorageResult.stored("https://storage.example/source.png"));
-        when(ocrService.recognizeTextWithLocations(any(InputStream.class))).thenReturn(List.of(
-                new OcrService.TextBlock("hello", 10, 10, 90, 35, 0.98f),
-                new OcrService.TextBlock("world", 10, 60, 90, 35, 0.92f)));
-        when(workflowModule.execute(any())).thenReturn(success("hello\nworld", "你好\n世界"));
+        when(ocrService.recognizeRegions(any(InputStream.class))).thenReturn(List.of(
+                region("r-hello", "hello", 10, 10, 90, 35, .98f),
+                region("r-world", "world", 10, 60, 90, 35, .92f)));
+        when(workflowModule.execute(any())).thenReturn(successStructured(
+                "hello\nworld", "greetings\nplanet",
+                List.of(new ImageRegionTranslation("r-hello", "greetings"),
+                        new ImageRegionTranslation("r-world", "planet"))));
         when(minioStorageService.uploadTranslatedImage(any(byte[].class)))
                 .thenReturn(ImageStorageResult.stored("https://storage.example/translated.png"));
 
@@ -341,7 +345,90 @@ class ImageTranslationPipelineIntegrationTests {
                 ArgumentCaptor.forClass(TranslationWorkflowRequest.class);
         verify(workflowModule).execute(workflow.capture());
         assertThat(workflow.getValue().sourceText()).isEqualTo("hello\nworld");
+        assertThat(workflow.getValue().explicitSourceLanguage()).isEqualTo("en");
+        assertThat(workflow.getValue().imageRegions()).extracting(
+                com.linetranslate.bot.service.translation.ImageRegionTranslationInput::regionId)
+                .containsExactly("r-hello", "r-world");
         verify(minioStorageService).uploadTranslatedImage(any(byte[].class));
+    }
+
+    @Test
+    void overlayKillSwitchStillCompletesTextWorkflowWithoutUploadingRenderedImage() throws Exception {
+        byte[] png = png(240, 120);
+        image("message-disabled-overlay", png, "image/png");
+        ImageTranslationProperties limits = new ImageTranslationProperties(
+                10_485_760, 4096, 16_000_000, .6f, false, .12, .35);
+        pipeline = new ImageTranslationPipeline(
+                ocrServiceProvider, workflowModule, aiProviderExecutionModule, userPreferencesModule,
+                messagingApiBlobClient, minioStorageService, new ImageInputValidator(limits),
+                new ImageTranslationOverlayRenderer(), limits);
+        when(minioStorageService.uploadImage(any(byte[].class), anyString()))
+                .thenReturn(ImageStorageResult.notStored());
+        when(ocrService.recognizeRegions(any(InputStream.class)))
+                .thenReturn(List.of(region("r1", "hello", 10, 10, 90, 35, .98f)));
+        when(workflowModule.execute(any())).thenReturn(successStructured("hello", "greetings",
+                List.of(new ImageRegionTranslation("r1", "greetings"))));
+
+        ImageTranslationPipelineResult result = successResult(pipeline.execute(request("message-disabled-overlay")));
+
+        assertThat(result.translation().translatedText()).isEqualTo("greetings");
+        assertThat(result.renderedImage().stored()).isFalse();
+        assertThat(result.overlayDisposition()).isEqualTo(ImageOverlayDisposition.SAFETY_DEGRADED);
+        verify(minioStorageService, never()).uploadTranslatedImage(any(byte[].class));
+    }
+
+    @Test
+    void missingStructuredMappingsNeverFallsBackToLineIndexOverlay() throws Exception {
+        byte[] png = png(240, 120);
+        image("message-incomplete-mapping", png, "image/png");
+        when(minioStorageService.uploadImage(any(byte[].class), anyString()))
+                .thenReturn(ImageStorageResult.notStored());
+        when(ocrService.recognizeRegions(any(InputStream.class)))
+                .thenReturn(List.of(region("r1", "hello", 10, 10, 90, 35, .98f)));
+        when(workflowModule.execute(any())).thenReturn(success("hello", "greetings"));
+
+        ImageTranslationPipelineResult result = successResult(pipeline.execute(request("message-incomplete-mapping")));
+
+        assertThat(result.translation().translatedText()).isEqualTo("greetings");
+        assertThat(result.overlayDisposition()).isEqualTo(ImageOverlayDisposition.SAFETY_DEGRADED);
+        verify(minioStorageService, never()).uploadTranslatedImage(any(byte[].class));
+    }
+
+    @Test
+    void preserveRegionsStayReadableButNeverBecomeProviderOrOverlayTargets() throws Exception {
+        image("message-preserve", png(300, 150), "image/png");
+        when(minioStorageService.uploadImage(any(byte[].class), anyString()))
+                .thenReturn(ImageStorageResult.notStored());
+        OcrRegion product = new OcrRegion("product", "불닭볶음면", List.of(
+                new OcrPoint(10, 10), new OcrPoint(120, 20),
+                new OcrPoint(115, 50), new OcrPoint(5, 40)), List.of(),
+                .98f, true, OcrBlockType.TEXT, List.of(new OcrDetectedLanguage("ko", .98f)), 0);
+        OcrRegion date = new OcrRegion("date", "2021.05.28", List.of(
+                new OcrPoint(10, 70), new OcrPoint(100, 70),
+                new OcrPoint(100, 90), new OcrPoint(10, 90)), List.of(),
+                .99f, true, OcrBlockType.TEXT, List.of(), 1);
+        OcrRegion decoration = new OcrRegion("decoration", "~", List.of(
+                new OcrPoint(130, 70), new OcrPoint(150, 70),
+                new OcrPoint(150, 85), new OcrPoint(130, 85)), List.of(),
+                .95f, true, OcrBlockType.TEXT, List.of(), 2);
+        when(ocrService.recognizeRegions(any(InputStream.class)))
+                .thenReturn(List.of(product, date, decoration));
+        when(workflowModule.execute(any())).thenReturn(successStructured(
+                "불닭볶음면\n2021.05.28", "Spicy noodles\n2021.05.28",
+                List.of(new ImageRegionTranslation("product", "Spicy noodles"))));
+
+        ImageTranslationPipelineResult result = successResult(pipeline.execute(request("message-preserve")));
+
+        assertThat(result.translation().translatedText()).endsWith("2021.05.28");
+        ArgumentCaptor<TranslationWorkflowRequest> request = ArgumentCaptor.forClass(TranslationWorkflowRequest.class);
+        verify(workflowModule).execute(request.capture());
+        assertThat(request.getValue().sourceText()).isEqualTo("불닭볶음면\n2021.05.28");
+        assertThat(request.getValue().explicitSourceLanguage()).isEqualTo("ko");
+        assertThat(request.getValue().imageRegions()).extracting(
+                com.linetranslate.bot.service.translation.ImageRegionTranslationInput::regionId,
+                com.linetranslate.bot.service.translation.ImageRegionTranslationInput::translatable)
+                .containsExactly(org.assertj.core.groups.Tuple.tuple("product", true),
+                        org.assertj.core.groups.Tuple.tuple("date", false));
     }
 
     private TrackingInputStream image(String messageId, byte[] bytes) throws Exception {
@@ -382,6 +469,25 @@ class ImageTranslationPipelineIntegrationTests {
                 new AiExecutionResult(translatedText, "openai", "gpt-test"),
                 10,
                 TranslationRequestKind.IMAGE_OCR));
+    }
+
+    private TranslationWorkflowOutcome successStructured(
+            String sourceText,
+            String translatedText,
+            List<ImageRegionTranslation> regions) {
+        return new TranslationWorkflowOutcome.Success(new TranslationWorkflowResult(
+                sourceText, "en", "zh-TW",
+                new AiExecutionResult(translatedText, "openai", "gpt-test"),
+                10, TranslationRequestKind.IMAGE_OCR, null, "faithful", "faithful-v1", regions));
+    }
+
+    private static OcrRegion region(
+            String id, String text, int x, int y, int width, int height, float confidence) {
+        return new OcrRegion(id, text, List.of(
+                new OcrPoint(x, y), new OcrPoint(x + width, y),
+                new OcrPoint(x + width, y + height), new OcrPoint(x, y + height)),
+                List.of(), confidence, true, OcrBlockType.TEXT,
+                List.of(new OcrDetectedLanguage("en", .98f)), 0);
     }
 
     private ImageTranslationPipelineResult successResult(ImageTranslationOutcome outcome) {

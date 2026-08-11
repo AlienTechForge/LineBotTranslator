@@ -30,20 +30,35 @@ public class TranslationWorkflowModule {
     private final CachedTranslationAdapter translationAdapter;
     private final TranslationRecordRepository translationRecordRepository;
     private final UserPreferencesModule userPreferencesModule;
+    private final StructuredImageTranslationAdapter structuredAdapter;
 
     public TranslationWorkflowModule(
             LanguageDetectionService languageDetectionService,
             CachedTranslationAdapter translationAdapter,
             TranslationRecordRepository translationRecordRepository,
             UserPreferencesModule userPreferencesModule) {
+        this(languageDetectionService, translationAdapter, translationRecordRepository,
+                userPreferencesModule, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public TranslationWorkflowModule(
+            LanguageDetectionService languageDetectionService,
+            CachedTranslationAdapter translationAdapter,
+            TranslationRecordRepository translationRecordRepository,
+            UserPreferencesModule userPreferencesModule,
+            StructuredImageTranslationAdapter structuredAdapter) {
         this.languageDetectionService = languageDetectionService;
         this.translationAdapter = translationAdapter;
         this.translationRecordRepository = translationRecordRepository;
         this.userPreferencesModule = userPreferencesModule;
+        this.structuredAdapter = structuredAdapter;
     }
 
     public TranslationWorkflowOutcome execute(TranslationWorkflowRequest request) {
-        String sourceLanguage = languageDetectionService.detectLanguage(request.sourceText());
+        String sourceLanguage = request.explicitSourceLanguage() == null
+                ? languageDetectionService.detectLanguage(request.sourceText())
+                : request.explicitSourceLanguage();
         UserPreferences preferences = userPreferencesModule.resolve(request.userProfile());
         String targetLanguage = request.requestedTargetLanguage() == null
                 ? defaultTargetLanguage(sourceLanguage, preferences)
@@ -53,21 +68,36 @@ public class TranslationWorkflowModule {
                 : TranslationStylePreset.find(request.requestedStylePresetId())
                         .orElse(preferences.translationStyle());
 
-        AiExecutionOutcome providerOutcome = request.requestedStylePresetId() == null
-                ? translationAdapter.translate(
-                        preferences,
-                        request.sourceText(),
-                        targetLanguage)
-                : translationAdapter.translate(
-                        preferences,
-                        request.sourceText(),
-                        targetLanguage,
-                        style);
-        if (providerOutcome instanceof AiExecutionOutcome.Failure failure) {
-            return new TranslationWorkflowOutcome.Failure(failure.failure());
+        AiExecutionResult execution;
+        java.util.List<ImageRegionTranslation> regionTranslations = java.util.List.of();
+        if (!request.imageRegions().isEmpty()) {
+            if (structuredAdapter == null) {
+                throw new IllegalStateException("Structured image translation adapter is unavailable");
+            }
+            try {
+                StructuredImageTranslationAdapter.Result structured = structuredAdapter.translate(
+                        preferences, request.imageRegions(), targetLanguage, style);
+                execution = structured.execution();
+                regionTranslations = structured.translations();
+            } catch (StructuredTranslationException unsafeMapping) {
+                // Keep the core translation useful, but never guess image-region identity.
+                AiExecutionOutcome degraded = translationAdapter.translate(
+                        preferences, request.sourceText(), targetLanguage, style);
+                if (degraded instanceof AiExecutionOutcome.Failure failure) {
+                    return new TranslationWorkflowOutcome.Failure(failure.failure());
+                }
+                execution = ((AiExecutionOutcome.Success) degraded).result();
+                log.warn("Structured image mapping degraded");
+            }
+        } else {
+            AiExecutionOutcome providerOutcome = request.requestedStylePresetId() == null
+                    ? translationAdapter.translate(preferences, request.sourceText(), targetLanguage)
+                    : translationAdapter.translate(preferences, request.sourceText(), targetLanguage, style);
+            if (providerOutcome instanceof AiExecutionOutcome.Failure failure) {
+                return new TranslationWorkflowOutcome.Failure(failure.failure());
+            }
+            execution = ((AiExecutionOutcome.Success) providerOutcome).result();
         }
-
-        AiExecutionResult execution = ((AiExecutionOutcome.Success) providerOutcome).result();
         long processingTimeMillis = Math.max(
                 0,
                 Duration.between(request.startedAt(), Instant.now()).toMillis());
@@ -83,7 +113,8 @@ public class TranslationWorkflowModule {
                 request.kind(),
                 recordId,
                 style.id(),
-                style.promptVersion()));
+                style.promptVersion(),
+                regionTranslations));
     }
 
     private String defaultTargetLanguage(String sourceLanguage, UserPreferences preferences) {
