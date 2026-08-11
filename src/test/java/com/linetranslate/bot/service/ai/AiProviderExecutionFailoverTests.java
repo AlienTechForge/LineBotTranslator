@@ -14,24 +14,22 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
-import com.linetranslate.bot.model.UserProfile;
+import com.linetranslate.bot.service.preference.UserPreferences;
+import static com.linetranslate.bot.testing.UserPreferencesFixtures.preferences;
 
 class AiProviderExecutionFailoverTests {
 
     private AiProviderAdapter openAi;
     private AiProviderAdapter gemini;
     private AiProviderExecutionModule module;
-    private UserProfile profile;
+    private UserPreferences profile;
 
     @BeforeEach
     void setUp() {
         openAi = adapter("openai", "gpt-test");
         gemini = adapter("gemini", "gemini-test");
         module = new AiProviderExecutionModule(List.of(openAi, gemini), "openai");
-        profile = UserProfile.builder()
-                .userId("U-test")
-                .preferredAiProvider("openai")
-                .build();
+        profile = preferences("openai", "gpt-test", "gemini-test");
     }
 
     @Test

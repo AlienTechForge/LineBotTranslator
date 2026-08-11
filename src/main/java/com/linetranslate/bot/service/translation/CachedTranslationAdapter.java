@@ -2,13 +2,13 @@ package com.linetranslate.bot.service.translation;
 
 import org.springframework.stereotype.Service;
 
-import com.linetranslate.bot.model.UserProfile;
 import com.linetranslate.bot.service.ai.AiExecutionFailure;
 import com.linetranslate.bot.service.ai.AiExecutionOutcome;
 import com.linetranslate.bot.service.ai.AiExecutionResult;
 import com.linetranslate.bot.service.ai.AiProviderException;
 import com.linetranslate.bot.service.ai.AiProviderExecutionModule;
 import com.linetranslate.bot.service.ai.AiProviderRoute;
+import com.linetranslate.bot.service.preference.UserPreferences;
 
 /**
  * Cache Adapter around provider execution. Failures are never cached.
@@ -30,18 +30,18 @@ public class CachedTranslationAdapter {
     }
 
     public AiExecutionOutcome translate(
-            UserProfile userProfile,
+            UserPreferences preferences,
             String text,
             String targetLanguage) {
-        return translate(userProfile, text, targetLanguage, properties.currentVariant());
+        return translate(preferences, text, targetLanguage, properties.currentVariant());
     }
 
     public AiExecutionOutcome translate(
-            UserProfile userProfile,
+            UserPreferences preferences,
             String text,
             String targetLanguage,
             TranslationCacheVariant variant) {
-        AiProviderRoute route = providerExecutionModule.planText(userProfile);
+        AiProviderRoute route = providerExecutionModule.planText(preferences);
         TranslationCacheKey key = TranslationCacheKeyFactory.create(
                 text,
                 targetLanguage,
@@ -50,7 +50,7 @@ public class CachedTranslationAdapter {
 
         return cacheStore.find(key).<AiExecutionOutcome>map(value -> value)
                 .orElseGet(() -> executeAndMaybeCache(
-                        userProfile,
+                        preferences,
                         text,
                         targetLanguage,
                         variant,
@@ -59,14 +59,14 @@ public class CachedTranslationAdapter {
     }
 
     private AiExecutionOutcome executeAndMaybeCache(
-            UserProfile userProfile,
+            UserPreferences preferences,
             String text,
             String targetLanguage,
             TranslationCacheVariant variant,
             AiProviderRoute route,
             TranslationCacheKey plannedKey) {
         AiExecutionOutcome outcome = providerExecutionModule.translateTextOutcome(
-                userProfile,
+                preferences,
                 text,
                 targetLanguage);
         if (outcome instanceof AiExecutionOutcome.Failure failure) {

@@ -15,7 +15,6 @@ import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.springframework.test.util.ReflectionTestUtils;
 
-import com.linetranslate.bot.config.AppConfig;
 import com.linetranslate.bot.config.GeminiConfig;
 import com.linetranslate.bot.model.TranslationRecord;
 import com.linetranslate.bot.model.UserProfile;
@@ -26,6 +25,8 @@ import com.linetranslate.bot.service.translation.CachedTranslationAdapter;
 import com.linetranslate.bot.service.translation.LanguageDetectionService;
 import com.linetranslate.bot.service.translation.TranslationService;
 import com.linetranslate.bot.service.translation.TranslationWorkflowModule;
+import com.linetranslate.bot.service.preference.UserPreferences;
+import com.linetranslate.bot.service.preference.UserPreferencesModule;
 
 class GeminiSafetyResponseTests {
 
@@ -155,7 +156,7 @@ class GeminiSafetyResponseTests {
 
         UserProfileRepository userRepository = Mockito.mock(UserProfileRepository.class);
         TranslationRecordRepository recordRepository = Mockito.mock(TranslationRecordRepository.class);
-        AppConfig appConfig = Mockito.mock(AppConfig.class);
+        UserPreferencesModule preferencesModule = Mockito.mock(UserPreferencesModule.class);
         UserProfile profile = UserProfile.builder()
                 .userId("U-test")
                 .preferredAiProvider("openai")
@@ -163,10 +164,12 @@ class GeminiSafetyResponseTests {
         when(userRepository.findByUserId("U-test")).thenReturn(Optional.of(profile));
         when(userRepository.save(Mockito.any(UserProfile.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
-        when(appConfig.getDefaultTargetLanguageForChinese()).thenReturn("en");
+        when(preferencesModule.profile("U-test")).thenReturn(profile);
+        when(preferencesModule.resolve(profile)).thenReturn(
+                com.linetranslate.bot.testing.UserPreferencesFixtures.preferences(profile));
         CachedTranslationAdapter translationAdapter = Mockito.mock(CachedTranslationAdapter.class);
         when(translationAdapter.translate(
-                Mockito.any(UserProfile.class),
+                Mockito.any(UserPreferences.class),
                 Mockito.eq("這是一段中文內容"),
                 Mockito.eq("en")))
                 .thenReturn(new AiExecutionOutcome.Success(
@@ -175,13 +178,11 @@ class GeminiSafetyResponseTests {
                 detector,
                 translationAdapter,
                 recordRepository,
-                userRepository,
-                appConfig);
+                preferencesModule);
 
         TranslationService translationService = new TranslationService(
                 workflowModule,
-                userRepository,
-                appConfig);
+                preferencesModule);
 
         String translated = translationService.processTranslationRequest(
                 "U-test", "這是一段中文內容");

@@ -29,6 +29,7 @@ import com.linetranslate.bot.model.UserProfile;
 import com.linetranslate.bot.service.ai.AiExecutionResult;
 import com.linetranslate.bot.service.ai.AiProviderException;
 import com.linetranslate.bot.service.ai.AiProviderExecutionModule;
+import com.linetranslate.bot.service.preference.UserPreferencesModule;
 import com.linetranslate.bot.service.storage.ImageStorageResult;
 import com.linetranslate.bot.service.storage.MinioStorageService;
 import com.linetranslate.bot.service.translation.TranslationRequestKind;
@@ -44,6 +45,7 @@ class ImageTranslationPipelineIntegrationTests {
     private OcrService ocrService;
     private TranslationWorkflowModule workflowModule;
     private AiProviderExecutionModule aiProviderExecutionModule;
+    private UserPreferencesModule userPreferencesModule;
     private MessagingApiBlobClient messagingApiBlobClient;
     private MinioStorageService minioStorageService;
     private ImageTranslationPipeline pipeline;
@@ -55,6 +57,7 @@ class ImageTranslationPipelineIntegrationTests {
         ocrService = mock(OcrService.class);
         workflowModule = mock(TranslationWorkflowModule.class);
         aiProviderExecutionModule = mock(AiProviderExecutionModule.class);
+        userPreferencesModule = mock(UserPreferencesModule.class);
         messagingApiBlobClient = mock(MessagingApiBlobClient.class);
         minioStorageService = mock(MinioStorageService.class);
         when(ocrServiceProvider.getIfAvailable()).thenReturn(ocrService);
@@ -62,12 +65,15 @@ class ImageTranslationPipelineIntegrationTests {
                 ocrServiceProvider,
                 workflowModule,
                 aiProviderExecutionModule,
+                userPreferencesModule,
                 messagingApiBlobClient,
                 minioStorageService);
         userProfile = UserProfile.builder()
                 .userId("U-image")
                 .preferredAiProvider("openai")
                 .build();
+        when(userPreferencesModule.resolve(userProfile)).thenReturn(
+                com.linetranslate.bot.testing.UserPreferencesFixtures.preferences(userProfile));
     }
 
     @Test

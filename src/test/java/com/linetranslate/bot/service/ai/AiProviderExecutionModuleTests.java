@@ -8,7 +8,8 @@ import java.util.Set;
 
 import org.junit.jupiter.api.Test;
 
-import com.linetranslate.bot.model.UserProfile;
+import com.linetranslate.bot.service.preference.UserPreferences;
+import static com.linetranslate.bot.testing.UserPreferencesFixtures.preferences;
 
 class AiProviderExecutionModuleTests {
 
@@ -16,14 +17,8 @@ class AiProviderExecutionModuleTests {
     void plannedTextRouteUsesTheEffectiveProviderAndModel() {
         FakeAdapter openAi = new FakeAdapter("openai", "gpt-default", Set.of("gpt-default", "gpt-selected"));
         AiProviderExecutionModule module = module(openAi);
-        UserProfile selected = UserProfile.builder()
-                .preferredAiProvider("openai")
-                .openaiPreferredModel("gpt-selected")
-                .build();
-        UserProfile unsupported = UserProfile.builder()
-                .preferredAiProvider("openai")
-                .openaiPreferredModel("gpt-unknown")
-                .build();
+        UserPreferences selected = preferences("openai", "gpt-selected", "gemini-default");
+        UserPreferences unsupported = preferences("openai", "gpt-unknown", "gemini-default");
 
         assertThat(module.planText(selected))
                 .isEqualTo(new AiProviderRoute("openai", "gpt-selected"));
@@ -35,11 +30,7 @@ class AiProviderExecutionModuleTests {
     void selectedModelIsSentToTheProviderAdapter() {
         FakeAdapter openAi = new FakeAdapter("openai", "gpt-default", Set.of("gpt-default", "gpt-selected"));
         AiProviderExecutionModule module = module(openAi);
-        UserProfile profile = UserProfile.builder()
-                .userId("U-test")
-                .preferredAiProvider("openai")
-                .openaiPreferredModel("gpt-selected")
-                .build();
+        UserPreferences profile = preferences("openai", "gpt-selected", "gemini-default");
 
         AiExecutionOutcome outcome = module.translateTextOutcome(profile, "hello", "zh-TW");
 
@@ -58,10 +49,7 @@ class AiProviderExecutionModuleTests {
         openAi.failure = failure(AiProviderException.Outcome.QUOTA_EXCEEDED, "openai", "gpt-default");
         FakeAdapter gemini = new FakeAdapter("gemini", "gemini-default", Set.of("gemini-default"));
         AiProviderExecutionModule module = module(openAi, gemini);
-        UserProfile profile = UserProfile.builder()
-                .userId("U-test")
-                .preferredAiProvider("openai")
-                .build();
+        UserPreferences profile = preferences("openai", "gpt-default", "gemini-default");
 
         AiExecutionOutcome outcome = module.translateTextOutcome(profile, "hello", "zh-TW");
 
@@ -83,7 +71,7 @@ class AiProviderExecutionModuleTests {
         AiProviderExecutionModule module = module(openAi, gemini);
 
         AiExecutionOutcome outcome = module.translateTextOutcome(
-                UserProfile.builder().preferredAiProvider("openai").build(),
+                preferences("openai", "gpt-default", "gemini-default"),
                 "unsafe",
                 "zh-TW");
 
@@ -100,7 +88,7 @@ class AiProviderExecutionModuleTests {
         openAi.capabilities = Set.of(AiProviderOperation.GENERATE_TEXT);
 
         AiExecutionOutcome outcome = module(openAi).translateTextOutcome(
-                UserProfile.builder().preferredAiProvider("openai").build(),
+                preferences("openai", "gpt-default", "gemini-default"),
                 "hello",
                 "zh-TW");
 

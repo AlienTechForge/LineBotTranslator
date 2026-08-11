@@ -11,8 +11,6 @@ import com.linecorp.bot.webhook.model.ImageMessageContent;
 import com.linecorp.bot.webhook.model.MessageEvent;
 import com.linecorp.bot.webhook.model.TextMessageContent;
 
-import com.linetranslate.bot.model.UserProfile;
-import com.linetranslate.bot.repository.UserProfileRepository;
 import com.linetranslate.bot.service.ocr.ImageTranslationService;
 import com.linetranslate.bot.service.translation.TranslationService;
 import com.linetranslate.bot.logging.SafeLog;
@@ -255,17 +253,6 @@ public class LineBotController {
      * @return 設置結果消息
      */
     private Message handleSetModelCommand(String userId, String modelName) {
-        // 獲取用戶當前的 AI 提供者
-        UserProfile userProfile = lineUserProfileService.getUserProfile(userId);
-        String provider = userProfile.getPreferredAiProvider();
-        if (provider == null) {
-            provider = "openai"; // 默認使用 OpenAI
-        }
-        
-        // 設置提供者
-        translationService.setPreferredProvider(userId, provider);
-        
-        // 設置模型
         String result = translationService.setPreferredModel(userId, modelName);
         return new TextMessage(result);
     }

@@ -25,6 +25,7 @@ import com.linetranslate.bot.model.UserProfile;
 import com.linetranslate.bot.repository.TranslationRecordRepository;
 import com.linetranslate.bot.repository.UserProfileRepository;
 import com.linetranslate.bot.service.line.LineUserProfileService;
+import com.linetranslate.bot.service.preference.UserPreferencesModule;
 
 @ExtendWith(MockitoExtension.class)
 class AdminServiceSdkContractTests {
@@ -43,6 +44,8 @@ class AdminServiceSdkContractTests {
     private GeminiConfig geminiConfig;
     @Mock
     private LineUserProfileService lineUserProfileService;
+    @Mock
+    private UserPreferencesModule userPreferencesModule;
 
     @Test
     void broadcastBuildsSdkTenPushMessageRequest() throws Exception {
@@ -58,7 +61,8 @@ class AdminServiceSdkContractTests {
                 appConfig,
                 openAiConfig,
                 geminiConfig,
-                lineUserProfileService);
+                lineUserProfileService,
+                userPreferencesModule);
 
         assertThat(service.broadcastMessage("系統通知")).isEqualTo(1);
 
