@@ -1,0 +1,121 @@
+package com.linetranslate.bot.service.line;
+
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+
+import com.linecorp.bot.client.base.Result;
+import com.linecorp.bot.messaging.client.MessagingApiClient;
+import com.linecorp.bot.messaging.model.ShowLoadingAnimationRequest;
+import com.linecorp.bot.webhook.model.GroupSource;
+import com.linecorp.bot.webhook.model.UserSource;
+import com.linetranslate.bot.service.line.intent.LineIntent;
+
+@ExtendWith(MockitoExtension.class)
+class LineLoadingAnimationAdapterTests {
+
+    @Mock
+    private MessagingApiClient messagingApiClient;
+
+    @Test
+    void privateTextTranslationDisplaysBoundedLoadingAnimation() {
+        var request = new ShowLoadingAnimationRequest("user-1", 20);
+        when(messagingApiClient.showLoadingAnimation(request))
+                .thenReturn(CompletableFuture.completedFuture(null));
+        var adapter = new LineLoadingAnimationAdapter(messagingApiClient);
+
+        adapter.beforeText(
+                new UserSource("user-1"),
+                new LineIntent.TranslateText("hello"));
+
+        verify(messagingApiClient).showLoadingAnimation(request);
+    }
+
+    @Test
+    void privateQuickTranslationDisplaysLoadingAnimation() {
+        var request = new ShowLoadingAnimationRequest("user-1", 20);
+        when(messagingApiClient.showLoadingAnimation(request))
+                .thenReturn(CompletableFuture.completedFuture(null));
+        var adapter = new LineLoadingAnimationAdapter(messagingApiClient);
+
+        adapter.beforeText(
+                new UserSource("user-1"),
+                new LineIntent.QuickTranslate("日文", "hello"));
+
+        verify(messagingApiClient).showLoadingAnimation(request);
+    }
+
+    @Test
+    void privateImageDisplaysLoadingAnimation() {
+        var request = new ShowLoadingAnimationRequest("user-1", 20);
+        when(messagingApiClient.showLoadingAnimation(request))
+                .thenReturn(CompletableFuture.completedFuture(null));
+        var adapter = new LineLoadingAnimationAdapter(messagingApiClient);
+
+        adapter.beforeImage(new UserSource("user-1"));
+
+        verify(messagingApiClient).showLoadingAnimation(request);
+    }
+
+    @Test
+    void commandsAndGroupMessagesDoNotCallUnsupportedEndpoint() {
+        var adapter = new LineLoadingAnimationAdapter(messagingApiClient);
+
+        adapter.beforeText(
+                new UserSource("user-1"),
+                new LineIntent.UserCommand(LineIntent.UserAction.HELP, ""));
+        adapter.beforeText(
+                new GroupSource("group-1", "user-1"),
+                new LineIntent.TranslateText("hello"));
+        adapter.beforeImage(new GroupSource("group-1", "user-1"));
+
+        verify(messagingApiClient, never()).showLoadingAnimation(
+                org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void lineFailureDoesNotEscapeIntoTranslationFlow() {
+        var request = new ShowLoadingAnimationRequest("user-1", 20);
+        when(messagingApiClient.showLoadingAnimation(request))
+                .thenReturn(CompletableFuture.failedFuture(
+                        new IllegalStateException("LINE unavailable")));
+        var adapter = new LineLoadingAnimationAdapter(messagingApiClient);
+
+        adapter.beforeText(
+                new UserSource("user-1"),
+                new LineIntent.TranslateText("hello"));
+
+        verify(messagingApiClient).showLoadingAnimation(request);
+    }
+
+    @Test
+    void slowLineResponseDoesNotBlockTranslationFlow() {
+        var request = new ShowLoadingAnimationRequest("user-1", 20);
+        var pendingResponse = new CompletableFuture<Result<Object>>();
+        when(messagingApiClient.showLoadingAnimation(request)).thenReturn(pendingResponse);
+        var adapter = new LineLoadingAnimationAdapter(messagingApiClient);
+        var executor = Executors.newSingleThreadExecutor();
+
+        try {
+            var invocation = executor.submit(() -> adapter.beforeText(
+                    new UserSource("user-1"),
+                    new LineIntent.TranslateText("hello")));
+
+            assertThatCode(() -> invocation.get(250, TimeUnit.MILLISECONDS))
+                    .doesNotThrowAnyException();
+        } finally {
+            pendingResponse.complete(null);
+            executor.shutdownNow();
+        }
+    }
+}
