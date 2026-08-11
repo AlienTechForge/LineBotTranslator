@@ -4,18 +4,17 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
-import java.util.LinkedHashSet;
 
 import org.springframework.stereotype.Service;
 
-import com.linetranslate.bot.config.AppConfig;
 import com.linetranslate.bot.logging.SafeLog;
 import com.linetranslate.bot.model.TranslationRecord;
 import com.linetranslate.bot.model.UserProfile;
 import com.linetranslate.bot.repository.TranslationRecordRepository;
-import com.linetranslate.bot.repository.UserProfileRepository;
 import com.linetranslate.bot.service.ai.AiExecutionOutcome;
 import com.linetranslate.bot.service.ai.AiExecutionResult;
+import com.linetranslate.bot.service.preference.UserPreferences;
+import com.linetranslate.bot.service.preference.UserPreferencesModule;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -30,30 +29,28 @@ public class TranslationWorkflowModule {
     private final LanguageDetectionService languageDetectionService;
     private final CachedTranslationAdapter translationAdapter;
     private final TranslationRecordRepository translationRecordRepository;
-    private final UserProfileRepository userProfileRepository;
-    private final AppConfig appConfig;
+    private final UserPreferencesModule userPreferencesModule;
 
     public TranslationWorkflowModule(
             LanguageDetectionService languageDetectionService,
             CachedTranslationAdapter translationAdapter,
             TranslationRecordRepository translationRecordRepository,
-            UserProfileRepository userProfileRepository,
-            AppConfig appConfig) {
+            UserPreferencesModule userPreferencesModule) {
         this.languageDetectionService = languageDetectionService;
         this.translationAdapter = translationAdapter;
         this.translationRecordRepository = translationRecordRepository;
-        this.userProfileRepository = userProfileRepository;
-        this.appConfig = appConfig;
+        this.userPreferencesModule = userPreferencesModule;
     }
 
     public TranslationWorkflowOutcome execute(TranslationWorkflowRequest request) {
         String sourceLanguage = languageDetectionService.detectLanguage(request.sourceText());
+        UserPreferences preferences = userPreferencesModule.resolve(request.userProfile());
         String targetLanguage = request.requestedTargetLanguage() == null
-                ? defaultTargetLanguage(sourceLanguage, request.userProfile())
+                ? defaultTargetLanguage(sourceLanguage, preferences)
                 : request.requestedTargetLanguage();
 
         AiExecutionOutcome providerOutcome = translationAdapter.translate(
-                request.userProfile(),
+                preferences,
                 request.sourceText(),
                 targetLanguage);
         if (providerOutcome instanceof AiExecutionOutcome.Failure failure) {
@@ -75,21 +72,18 @@ public class TranslationWorkflowModule {
                 request.kind()));
     }
 
-    private String defaultTargetLanguage(String sourceLanguage, UserProfile userProfile) {
+    private String defaultTargetLanguage(String sourceLanguage, UserPreferences preferences) {
         if (isChinese(sourceLanguage)) {
-            String preferredChineseTarget = userProfile.getPreferredChineseTargetLanguage();
-            return preferredChineseTarget == null || preferredChineseTarget.isBlank()
-                    ? appConfig.getDefaultTargetLanguageForChinese()
-                    : preferredChineseTarget;
+            return preferences.chineseTargetLanguage();
         }
 
-        String preferredLanguage = userProfile.getPreferredLanguage();
+        String preferredLanguage = preferences.targetLanguage();
         if (preferredLanguage != null
                 && !preferredLanguage.isBlank()
                 && !preferredLanguage.equalsIgnoreCase(sourceLanguage)) {
             return preferredLanguage;
         }
-        return appConfig.getDefaultTargetLanguageForOthers();
+        return preferences.fallbackTargetLanguage();
     }
 
     private void persistSuccess(
@@ -123,7 +117,7 @@ public class TranslationWorkflowModule {
             userProfile.setTextTranslations(userProfile.getTextTranslations() + 1);
         }
         updateRecentActivity(userProfile, execution.text(), targetLanguage);
-        userProfileRepository.save(userProfile);
+        userPreferencesModule.persistTranslationActivity(userProfile, targetLanguage);
 
         log.info("Translation workflow persisted: user={}, kind={}, provider={}, model={}",
                 SafeLog.user(userProfile.getUserId()),
@@ -143,10 +137,6 @@ public class TranslationWorkflowModule {
         if (userProfile.getRecentTranslations().size() > 5) {
             userProfile.getRecentTranslations().subList(5, userProfile.getRecentTranslations().size()).clear();
         }
-        if (userProfile.getRecentLanguages() == null) {
-            userProfile.setRecentLanguages(new LinkedHashSet<>());
-        }
-        userProfile.addRecentLanguage(targetLanguage);
     }
 
     private boolean isChinese(String language) {

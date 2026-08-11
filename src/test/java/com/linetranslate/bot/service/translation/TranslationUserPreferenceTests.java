@@ -3,6 +3,8 @@ package com.linetranslate.bot.service.translation;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
@@ -10,6 +12,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.util.Optional;
+import java.util.List;
+import java.util.Set;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -23,6 +27,9 @@ import com.linetranslate.bot.repository.TranslationRecordRepository;
 import com.linetranslate.bot.repository.UserProfileRepository;
 import com.linetranslate.bot.service.ai.AiExecutionOutcome;
 import com.linetranslate.bot.service.ai.AiExecutionResult;
+import com.linetranslate.bot.service.ai.AiProviderAdapter;
+import com.linetranslate.bot.service.preference.UserPreferences;
+import com.linetranslate.bot.service.preference.UserPreferencesModule;
 
 @ExtendWith(MockitoExtension.class)
 class TranslationUserPreferenceTests {
@@ -40,17 +47,26 @@ class TranslationUserPreferenceTests {
     @Mock
     private AppConfig appConfig;
     private TranslationService translationService;
+    private UserPreferencesModule userPreferencesModule;
     private UserProfile profile;
 
     @BeforeEach
     void setUp() {
+        AiProviderAdapter openAi = org.mockito.Mockito.mock(AiProviderAdapter.class);
+        when(openAi.providerName()).thenReturn("openai");
+        when(openAi.defaultModel()).thenReturn("gpt-test");
+        when(openAi.availableModels()).thenReturn(Set.of("gpt-test"));
+        when(appConfig.getDefaultAiProvider()).thenReturn("openai");
+        lenient().when(appConfig.getDefaultTargetLanguageForOthers()).thenReturn("en");
+        lenient().when(appConfig.getDefaultTargetLanguageForChinese()).thenReturn("en");
+        userPreferencesModule = new UserPreferencesModule(
+                userProfileRepository, appConfig, List.of(openAi));
         TranslationWorkflowModule workflowModule = new TranslationWorkflowModule(
                 languageDetectionService,
                 translationAdapter,
                 translationRecordRepository,
-                userProfileRepository,
-                appConfig);
-        translationService = new TranslationService(workflowModule, userProfileRepository, appConfig);
+                userPreferencesModule);
+        translationService = new TranslationService(workflowModule, userPreferencesModule);
         profile = UserProfile.builder()
                 .userId(USER_ID)
                 .preferredAiProvider("openai")
@@ -60,7 +76,7 @@ class TranslationUserPreferenceTests {
         lenient().when(userProfileRepository.findByUserId(USER_ID)).thenReturn(Optional.of(profile));
         lenient().when(userProfileRepository.save(any(UserProfile.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
-        lenient().when(translationAdapter.translate(any(UserProfile.class), anyString(), anyString()))
+        lenient().when(translationAdapter.translate(any(UserPreferences.class), anyString(), anyString()))
                 .thenReturn(new AiExecutionOutcome.Success(
                         new AiExecutionResult("translated", "openai", "gpt-test")));
     }
@@ -71,7 +87,10 @@ class TranslationUserPreferenceTests {
 
         translationService.processTranslationRequest(USER_ID, "hello");
 
-        verify(translationAdapter).translate(profile, "hello", "ja");
+        verify(translationAdapter).translate(
+                argThat(preferences -> "ja".equals(preferences.targetLanguage())),
+                eq("hello"),
+                eq("ja"));
     }
 
     @Test
@@ -80,7 +99,10 @@ class TranslationUserPreferenceTests {
 
         translationService.processTranslationRequest(USER_ID, "你好");
 
-        verify(translationAdapter).translate(profile, "你好", "en");
+        verify(translationAdapter).translate(
+                argThat(preferences -> "en".equals(preferences.chineseTargetLanguage())),
+                eq("你好"),
+                eq("en"));
     }
 
     @Test
@@ -91,7 +113,8 @@ class TranslationUserPreferenceTests {
 
         translationService.processTranslationRequest(USER_ID, "hello");
 
-        verify(translationAdapter).translate(profile, "hello", "zh-tw");
+        verify(translationAdapter).translate(
+                any(UserPreferences.class), eq("hello"), eq("zh-tw"));
     }
 
     @Test

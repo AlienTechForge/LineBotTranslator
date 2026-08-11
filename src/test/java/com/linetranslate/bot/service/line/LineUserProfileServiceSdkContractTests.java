@@ -20,6 +20,7 @@ import com.linecorp.bot.messaging.model.UserProfileResponse;
 import com.linetranslate.bot.model.UserProfile;
 import com.linetranslate.bot.repository.TranslationRecordRepository;
 import com.linetranslate.bot.repository.UserProfileRepository;
+import com.linetranslate.bot.service.preference.UserPreferencesModule;
 
 @ExtendWith(MockitoExtension.class)
 class LineUserProfileServiceSdkContractTests {
@@ -33,6 +34,9 @@ class LineUserProfileServiceSdkContractTests {
     @Mock
     private TranslationRecordRepository translationRecordRepository;
 
+    @Mock
+    private UserPreferencesModule userPreferencesModule;
+
     @Test
     void sdkTenProfileResponseIsPersisted() throws Exception {
         String userId = "U0123456789abcdef";
@@ -43,7 +47,8 @@ class LineUserProfileServiceSdkContractTests {
         when(userProfileRepository.findByUserId(userId)).thenReturn(Optional.empty());
 
         new LineUserProfileService(
-                messagingApiClient, userProfileRepository, translationRecordRepository)
+                messagingApiClient, userProfileRepository, translationRecordRepository,
+                userPreferencesModule)
                 .syncUserProfile(userId);
 
         ArgumentCaptor<UserProfile> captor = ArgumentCaptor.forClass(UserProfile.class);

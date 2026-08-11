@@ -15,7 +15,8 @@ import org.junit.jupiter.api.Test;
 
 import com.github.benmanes.caffeine.cache.Ticker;
 
-import com.linetranslate.bot.model.UserProfile;
+import com.linetranslate.bot.service.preference.UserPreferences;
+import static com.linetranslate.bot.testing.UserPreferencesFixtures.preferences;
 import com.linetranslate.bot.service.ai.AiExecutionFailure;
 import com.linetranslate.bot.service.ai.AiExecutionOutcome;
 import com.linetranslate.bot.service.ai.AiExecutionResult;
@@ -34,7 +35,7 @@ class TranslationCachingContractTests {
     private TranslationCacheProperties properties;
     private CaffeineTranslationCacheStore cacheStore;
     private CachedTranslationAdapter adapter;
-    private UserProfile profile;
+    private UserPreferences profile;
 
     @BeforeEach
     void setUp() {
@@ -49,10 +50,7 @@ class TranslationCachingContractTests {
         properties.setPromptVersion("translation-v1");
         cacheStore = new CaffeineTranslationCacheStore(properties, meterRegistry, ticker);
         adapter = new CachedTranslationAdapter(providerModule, cacheStore, properties);
-        profile = UserProfile.builder()
-                .userId("U-test")
-                .preferredAiProvider("openai")
-                .build();
+        profile = preferences("openai", "gpt-a", "gemini-a");
         when(providerModule.planText(profile)).thenReturn(new AiProviderRoute("openai", "gpt-a"));
     }
 

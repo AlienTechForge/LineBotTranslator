@@ -10,6 +10,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.util.Optional;
+import java.util.List;
+import java.util.Set;
 import java.util.stream.Stream;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -32,6 +34,9 @@ import com.linetranslate.bot.service.ai.AiExecutionFailure;
 import com.linetranslate.bot.service.ai.AiExecutionOutcome;
 import com.linetranslate.bot.service.ai.AiExecutionResult;
 import com.linetranslate.bot.service.ai.AiProviderException;
+import com.linetranslate.bot.service.ai.AiProviderAdapter;
+import com.linetranslate.bot.service.preference.UserPreferences;
+import com.linetranslate.bot.service.preference.UserPreferencesModule;
 import com.linetranslate.bot.util.LanguageUtils;
 
 @ExtendWith(MockitoExtension.class)
@@ -53,14 +58,16 @@ class TranslationDetectionContractTests {
 
     @BeforeEach
     void setUp() {
+        lenient().when(appConfig.getDefaultAiProvider()).thenReturn("openai");
+        lenient().when(appConfig.getDefaultTargetLanguageForOthers()).thenReturn("zh-TW");
+        lenient().when(appConfig.getDefaultTargetLanguageForChinese()).thenReturn("en");
         translationService = createService(languageDetectionService);
         when(userProfileRepository.findByUserId(USER_ID)).thenReturn(Optional.of(profile()));
-        when(userProfileRepository.save(any(UserProfile.class)))
+        lenient().when(userProfileRepository.save(any(UserProfile.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
-        lenient().when(translationAdapter.translate(any(UserProfile.class), anyString(), anyString()))
+        lenient().when(translationAdapter.translate(any(UserPreferences.class), anyString(), anyString()))
                 .thenReturn(new AiExecutionOutcome.Success(
                         new AiExecutionResult("翻譯結果", "openai", "gpt-test")));
-        lenient().when(appConfig.getDefaultTargetLanguageForOthers()).thenReturn("zh-TW");
     }
 
     @Test
@@ -139,7 +146,7 @@ class TranslationDetectionContractTests {
     @Test
     void fallbackSuccessPersistsTheProviderThatActuallyTranslated() {
         when(languageDetectionService.detectLanguage("hello")).thenReturn("en");
-        when(translationAdapter.translate(any(UserProfile.class), anyString(), anyString()))
+        when(translationAdapter.translate(any(UserPreferences.class), anyString(), anyString()))
                 .thenReturn(new AiExecutionOutcome.Success(
                         new AiExecutionResult("翻譯結果", "gemini", "gemini-test")));
 
@@ -156,7 +163,7 @@ class TranslationDetectionContractTests {
         when(userProfileRepository.findByUserId(USER_ID)).thenReturn(Optional.of(profile));
         when(languageDetectionService.detectLanguage("hello")).thenReturn("en");
         AiProviderException error = providerFailure();
-        when(translationAdapter.translate(any(UserProfile.class), anyString(), anyString()))
+        when(translationAdapter.translate(any(UserPreferences.class), anyString(), anyString()))
                 .thenReturn(new AiExecutionOutcome.Failure(
                         AiExecutionFailure.from(error, java.util.List.of())));
 
@@ -170,13 +177,18 @@ class TranslationDetectionContractTests {
     }
 
     private TranslationService createService(LanguageDetectionService detector) {
+        AiProviderAdapter provider = org.mockito.Mockito.mock(AiProviderAdapter.class);
+        lenient().when(provider.providerName()).thenReturn("openai");
+        lenient().when(provider.defaultModel()).thenReturn("gpt-test");
+        lenient().when(provider.availableModels()).thenReturn(Set.of("gpt-test"));
+        UserPreferencesModule preferencesModule = new UserPreferencesModule(
+                userProfileRepository, appConfig, List.of(provider));
         TranslationWorkflowModule workflowModule = new TranslationWorkflowModule(
                 detector,
                 translationAdapter,
                 translationRecordRepository,
-                userProfileRepository,
-                appConfig);
-        return new TranslationService(workflowModule, userProfileRepository, appConfig);
+                preferencesModule);
+        return new TranslationService(workflowModule, preferencesModule);
     }
 
     private TranslationRecord savedRecord() {

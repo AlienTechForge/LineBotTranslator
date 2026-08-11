@@ -16,6 +16,7 @@ import com.linetranslate.bot.service.ai.AiExecutionResult;
 import com.linetranslate.bot.service.ai.AiProviderExecutionModule;
 import com.linetranslate.bot.service.storage.ImageStorageResult;
 import com.linetranslate.bot.service.storage.MinioStorageService;
+import com.linetranslate.bot.service.preference.UserPreferencesModule;
 import com.linetranslate.bot.service.translation.TranslationRequestKind;
 import com.linetranslate.bot.service.translation.TranslationWorkflowModule;
 import com.linetranslate.bot.service.translation.TranslationWorkflowOutcome;
@@ -43,6 +44,7 @@ public class ImageTranslationPipeline {
     private final OcrService ocrService;
     private final TranslationWorkflowModule translationWorkflowModule;
     private final AiProviderExecutionModule aiProviderExecutionModule;
+    private final UserPreferencesModule userPreferencesModule;
     private final MessagingApiBlobClient messagingApiBlobClient;
     private final MinioStorageService minioStorageService;
 
@@ -50,11 +52,13 @@ public class ImageTranslationPipeline {
             ObjectProvider<OcrService> ocrServiceProvider,
             TranslationWorkflowModule translationWorkflowModule,
             AiProviderExecutionModule aiProviderExecutionModule,
+            UserPreferencesModule userPreferencesModule,
             MessagingApiBlobClient messagingApiBlobClient,
             MinioStorageService minioStorageService) {
         this.ocrService = ocrServiceProvider.getIfAvailable();
         this.translationWorkflowModule = translationWorkflowModule;
         this.aiProviderExecutionModule = aiProviderExecutionModule;
+        this.userPreferencesModule = userPreferencesModule;
         this.messagingApiBlobClient = messagingApiBlobClient;
         this.minioStorageService = minioStorageService;
     }
@@ -160,7 +164,7 @@ public class ImageTranslationPipeline {
         String dataUrl = "data:" + image.contentType() + ";base64,"
                 + Base64.getEncoder().encodeToString(image.bytes());
         AiExecutionResult result = aiProviderExecutionModule.processImage(
-                request.userProfile(), OCR_PROMPT, dataUrl);
+                userPreferencesModule.resolve(request.userProfile()), OCR_PROMPT, dataUrl);
         if (result == null) {
             throw new OcrProcessingException("AI image recognition returned no result");
         }

@@ -12,7 +12,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import com.linetranslate.bot.logging.SafeLog;
-import com.linetranslate.bot.model.UserProfile;
+import com.linetranslate.bot.service.preference.UserPreferences;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -49,13 +49,13 @@ public class AiProviderExecutionModule {
     }
 
     public AiExecutionOutcome translateTextOutcome(
-            UserProfile userProfile,
+            UserPreferences preferences,
             String text,
             String targetLanguage) {
         return executeWithFallback(
                 AiProviderOperation.TRANSLATE_TEXT,
-                preferredProvider(userProfile),
-                adapter -> preferredModel(adapter, userProfile),
+                preferredProvider(preferences),
+                adapter -> preferredModel(adapter, preferences),
                 model -> AiProviderRequest.translate(model, text, targetLanguage));
     }
 
@@ -63,8 +63,8 @@ public class AiProviderExecutionModule {
      * Resolves the primary text route without executing a provider request. Cache
      * callers use this immutable fact as part of their isolation key.
      */
-    public AiProviderRoute planText(UserProfile userProfile) {
-        String requestedProvider = preferredProvider(userProfile);
+    public AiProviderRoute planText(UserPreferences preferences) {
+        String requestedProvider = preferredProvider(preferences);
         AiProviderAdapter primary = adapters.get(requestedProvider);
         if (primary == null) {
             primary = adapters.get(alternateProvider(requestedProvider));
@@ -74,32 +74,32 @@ public class AiProviderExecutionModule {
         }
         return new AiProviderRoute(
                 primary.providerName(),
-                effectiveModel(primary, preferredModel(primary, userProfile)));
+                effectiveModel(primary, preferredModel(primary, preferences)));
     }
 
     public AiExecutionResult translateText(
-            UserProfile userProfile,
+            UserPreferences preferences,
             String text,
             String targetLanguage) {
-        return translateTextOutcome(userProfile, text, targetLanguage).resultOrThrow();
+        return translateTextOutcome(preferences, text, targetLanguage).resultOrThrow();
     }
 
     public AiExecutionOutcome processImageOutcome(
-            UserProfile userProfile,
+            UserPreferences preferences,
             String prompt,
             String imageData) {
         return executeWithFallback(
                 AiProviderOperation.PROCESS_IMAGE,
-                preferredProvider(userProfile),
-                adapter -> preferredModel(adapter, userProfile),
+                preferredProvider(preferences),
+                adapter -> preferredModel(adapter, preferences),
                 model -> AiProviderRequest.image(model, prompt, imageData));
     }
 
     public AiExecutionResult processImage(
-            UserProfile userProfile,
+            UserPreferences preferences,
             String prompt,
             String imageData) {
-        return processImageOutcome(userProfile, prompt, imageData).resultOrThrow();
+        return processImageOutcome(preferences, prompt, imageData).resultOrThrow();
     }
 
     public AiExecutionOutcome generateTextOutcome(
@@ -252,18 +252,16 @@ public class AiProviderExecutionModule {
         return new AiExecutionOutcome.Success(execution);
     }
 
-    private String preferredProvider(UserProfile userProfile) {
-        String preferred = userProfile == null ? null : userProfile.getPreferredAiProvider();
+    private String preferredProvider(UserPreferences preferences) {
+        String preferred = preferences == null ? null : preferences.provider();
         return normalizeProvider(preferred == null || preferred.isBlank() ? defaultProvider : preferred);
     }
 
-    private String preferredModel(AiProviderAdapter adapter, UserProfile userProfile) {
-        if (userProfile == null) {
+    private String preferredModel(AiProviderAdapter adapter, UserPreferences preferences) {
+        if (preferences == null) {
             return adapter.defaultModel();
         }
-        String preferred = "gemini".equals(normalizeProvider(adapter.providerName()))
-                ? userProfile.getGeminiPreferredModel()
-                : userProfile.getOpenaiPreferredModel();
+        String preferred = preferences.modelFor(normalizeProvider(adapter.providerName()));
         return effectiveModel(adapter, preferred);
     }
 

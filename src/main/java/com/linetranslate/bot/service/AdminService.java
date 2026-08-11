@@ -31,6 +31,8 @@ import com.linetranslate.bot.repository.TranslationRecordRepository;
 import com.linetranslate.bot.repository.UserProfileRepository;
 import com.linetranslate.bot.logging.SafeLog;
 import com.linetranslate.bot.service.line.LineUserProfileService;
+import com.linetranslate.bot.service.preference.UserPreferences;
+import com.linetranslate.bot.service.preference.UserPreferencesModule;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -53,6 +55,7 @@ public class AdminService {
     private final OpenAiConfig openAiConfig;
     private final GeminiConfig geminiConfig;
     private final LineUserProfileService lineUserProfileService;
+    private final UserPreferencesModule userPreferencesModule;
     
     @Autowired
     public AdminService(
@@ -62,7 +65,8 @@ public class AdminService {
             AppConfig appConfig,
             OpenAiConfig openAiConfig,
             GeminiConfig geminiConfig,
-            LineUserProfileService lineUserProfileService) {
+            LineUserProfileService lineUserProfileService,
+            UserPreferencesModule userPreferencesModule) {
         this.translationRecordRepository = translationRecordRepository;
         this.userProfileRepository = userProfileRepository;
         this.messagingApiClient = messagingApiClient;
@@ -70,6 +74,7 @@ public class AdminService {
         this.openAiConfig = openAiConfig;
         this.geminiConfig = geminiConfig;
         this.lineUserProfileService = lineUserProfileService;
+        this.userPreferencesModule = userPreferencesModule;
         this.dateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     }
 
@@ -272,6 +277,7 @@ public class AdminService {
         }
         
         UserProfile user = userOpt.get();
+        UserPreferences preferences = userPreferencesModule.resolve(user);
         Map<String, Object> userInfo = new HashMap<>();
         
         // 基本信息
@@ -286,13 +292,17 @@ public class AdminService {
         userInfo.put("imageTranslationCount", user.getImageTranslations());
         
         // 用戶設置
-        userInfo.put("preferredLanguage", user.getPreferredLanguage() != null ? user.getPreferredLanguage() : "N/A");
-        userInfo.put("preferredChineseTargetLanguage", user.getPreferredChineseTargetLanguage() != null ? user.getPreferredChineseTargetLanguage() : "N/A");
-        userInfo.put("preferredAiProvider", user.getPreferredAiProvider() != null ? user.getPreferredAiProvider() : "N/A");
-        userInfo.put("openaiPreferredModel", user.getOpenaiPreferredModel() != null ? user.getOpenaiPreferredModel() : "N/A");
-        userInfo.put("geminiPreferredModel", user.getGeminiPreferredModel() != null ? user.getGeminiPreferredModel() : "N/A");
+        userInfo.put("preferredLanguage", preferences.targetLanguage());
+        userInfo.put("preferredChineseTargetLanguage", preferences.chineseTargetLanguage());
+        userInfo.put("preferredAiProvider", preferences.provider());
+        userInfo.put("openaiPreferredModel", valueOrUnavailable(preferences.modelFor("openai")));
+        userInfo.put("geminiPreferredModel", valueOrUnavailable(preferences.modelFor("gemini")));
         
         return userInfo;
+    }
+
+    private static String valueOrUnavailable(String value) {
+        return value == null || value.isBlank() ? "N/A" : value;
     }
     
     /**

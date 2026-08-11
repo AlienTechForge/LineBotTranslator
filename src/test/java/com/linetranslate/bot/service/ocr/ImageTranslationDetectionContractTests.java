@@ -25,7 +25,6 @@ import org.springframework.test.util.ReflectionTestUtils;
 import com.linecorp.bot.client.base.BlobContent;
 import com.linecorp.bot.client.base.Result;
 import com.linecorp.bot.messaging.client.MessagingApiBlobClient;
-import com.linetranslate.bot.config.AppConfig;
 import com.linetranslate.bot.model.TranslationRecord;
 import com.linetranslate.bot.model.UserProfile;
 import com.linetranslate.bot.repository.TranslationRecordRepository;
@@ -35,6 +34,8 @@ import com.linetranslate.bot.service.ai.AiExecutionOutcome;
 import com.linetranslate.bot.service.ai.AiExecutionResult;
 import com.linetranslate.bot.service.ai.AiProviderException;
 import com.linetranslate.bot.service.ai.AiProviderExecutionModule;
+import com.linetranslate.bot.service.preference.UserPreferences;
+import com.linetranslate.bot.service.preference.UserPreferencesModule;
 import com.linetranslate.bot.service.storage.ImageStorageResult;
 import com.linetranslate.bot.service.storage.MinioStorageService;
 import com.linetranslate.bot.service.translation.CachedTranslationAdapter;
@@ -61,7 +62,7 @@ class ImageTranslationDetectionContractTests {
     @Mock
     private UserProfileRepository userProfileRepository;
     @Mock
-    private AppConfig appConfig;
+    private UserPreferencesModule userPreferencesModule;
     @Mock
     private MinioStorageService minioStorageService;
     @Mock
@@ -75,16 +76,19 @@ class ImageTranslationDetectionContractTests {
     @BeforeEach
     void setUp() throws Exception {
         when(ocrServiceProvider.getIfAvailable()).thenReturn(ocrService);
+        UserPreferences preferences = com.linetranslate.bot.testing.UserPreferencesFixtures.preferences(
+                "openai", "gpt-test", "gemini-test");
+        when(userPreferencesModule.resolve(any(UserProfile.class))).thenReturn(preferences);
         TranslationWorkflowModule workflowModule = new TranslationWorkflowModule(
                 languageDetectionService,
                 translationAdapter,
                 translationRecordRepository,
-                userProfileRepository,
-                appConfig);
+                userPreferencesModule);
         ImageTranslationPipeline pipeline = new ImageTranslationPipeline(
                 ocrServiceProvider,
                 workflowModule,
                 aiServiceFactory,
+                userPreferencesModule,
                 messagingApiBlobClient,
                 minioStorageService);
         imageTranslationService = new ImageTranslationService(pipeline, userProfileRepository);
@@ -105,8 +109,7 @@ class ImageTranslationDetectionContractTests {
                 .thenReturn(ImageStorageResult.stored("https://storage.example/image.jpg"));
         when(ocrService.recognizeText(any(ByteArrayInputStream.class))).thenReturn("hello");
         when(languageDetectionService.detectLanguage("hello")).thenReturn("en");
-        when(appConfig.getDefaultTargetLanguageForOthers()).thenReturn("zh-TW");
-        lenient().when(translationAdapter.translate(any(UserProfile.class), anyString(), anyString()))
+        lenient().when(translationAdapter.translate(any(UserPreferences.class), anyString(), anyString()))
                 .thenReturn(new AiExecutionOutcome.Success(
                         new AiExecutionResult("翻譯結果", "openai", "gpt-test")));
     }
@@ -124,7 +127,7 @@ class ImageTranslationDetectionContractTests {
 
     @Test
     void imageFallbackPersistsTheProviderThatActuallyTranslated() {
-        when(translationAdapter.translate(any(UserProfile.class), anyString(), anyString()))
+        when(translationAdapter.translate(any(UserPreferences.class), anyString(), anyString()))
                 .thenReturn(new AiExecutionOutcome.Success(
                         new AiExecutionResult("翻譯結果", "gemini", "gemini-test")));
 
@@ -160,7 +163,7 @@ class ImageTranslationDetectionContractTests {
                         "correlation-1",
                         -1,
                         null);
-        when(translationAdapter.translate(any(UserProfile.class), anyString(), anyString()))
+        when(translationAdapter.translate(any(UserPreferences.class), anyString(), anyString()))
                 .thenReturn(new AiExecutionOutcome.Failure(
                         AiExecutionFailure.from(error, java.util.List.of())));
 

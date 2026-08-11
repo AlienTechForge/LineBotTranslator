@@ -12,6 +12,9 @@ import com.linetranslate.bot.model.UserProfile;
 import com.linetranslate.bot.repository.TranslationRecordRepository;
 import com.linetranslate.bot.repository.UserProfileRepository;
 import com.linetranslate.bot.logging.SafeLog;
+import com.linetranslate.bot.service.preference.UserPreferences;
+import com.linetranslate.bot.service.preference.UserPreferencesModule;
+import com.linetranslate.bot.util.LanguageUtils;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -22,15 +25,18 @@ public class LineUserProfileService {
     private final MessagingApiClient messagingApiClient;
     private final UserProfileRepository userProfileRepository;
     private final TranslationRecordRepository translationRecordRepository;
+    private final UserPreferencesModule userPreferencesModule;
 
     @Autowired
     public LineUserProfileService(
             MessagingApiClient messagingApiClient,
             UserProfileRepository userProfileRepository,
-            TranslationRecordRepository translationRecordRepository) {
+            TranslationRecordRepository translationRecordRepository,
+            UserPreferencesModule userPreferencesModule) {
         this.messagingApiClient = messagingApiClient;
         this.userProfileRepository = userProfileRepository;
         this.translationRecordRepository = translationRecordRepository;
+        this.userPreferencesModule = userPreferencesModule;
     }
 
     /**
@@ -198,10 +204,16 @@ public class LineUserProfileService {
             info.append("文字翻譯：").append(textTranslations).append("\n");
             info.append("圖片翻譯：").append(imageTranslations).append("\n\n");
 
-            // 顯示偏好設置
-            // info.append("【系統設置】\n");
-            // String aiProvider = profile.getPreferredAiProvider();
-            // info.append("偏好的 AI 引擎：").append(aiProvider != null ? aiProvider : "預設").append("\n");
+            UserPreferences preferences = userPreferencesModule.resolve(profile);
+            info.append("【翻譯設定】\n");
+            info.append("AI 引擎：").append(preferences.provider()).append("\n");
+            info.append("AI 模型：").append(preferences.model()).append("\n");
+            info.append("預設翻譯語言：")
+                    .append(LanguageUtils.toChineseName(preferences.targetLanguage()))
+                    .append("\n");
+            info.append("中文翻譯目標：")
+                    .append(LanguageUtils.toChineseName(preferences.chineseTargetLanguage()))
+                    .append("\n");
 
             return info.toString();
         } else {

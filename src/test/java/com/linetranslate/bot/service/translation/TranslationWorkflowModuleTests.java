@@ -8,6 +8,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.time.Instant;
+import java.util.List;
+import java.util.Map;
 import java.util.stream.Stream;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -18,23 +20,23 @@ import org.junit.jupiter.params.provider.MethodSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 
-import com.linetranslate.bot.config.AppConfig;
 import com.linetranslate.bot.model.TranslationRecord;
 import com.linetranslate.bot.model.UserProfile;
 import com.linetranslate.bot.repository.TranslationRecordRepository;
-import com.linetranslate.bot.repository.UserProfileRepository;
 import com.linetranslate.bot.service.ai.AiExecutionFailure;
 import com.linetranslate.bot.service.ai.AiExecutionOutcome;
 import com.linetranslate.bot.service.ai.AiExecutionResult;
 import com.linetranslate.bot.service.ai.AiProviderException;
+import com.linetranslate.bot.service.preference.UserPreferences;
+import com.linetranslate.bot.service.preference.UserPreferencesModule;
 
 class TranslationWorkflowModuleTests {
 
     private LanguageDetectionService languageDetection;
     private CachedTranslationAdapter translationAdapter;
     private TranslationRecordRepository recordRepository;
-    private UserProfileRepository userProfileRepository;
-    private AppConfig appConfig;
+    private UserPreferencesModule userPreferencesModule;
+    private UserPreferences preferences;
     private TranslationWorkflowModule module;
 
     @BeforeEach
@@ -42,16 +44,16 @@ class TranslationWorkflowModuleTests {
         languageDetection = Mockito.mock(LanguageDetectionService.class);
         translationAdapter = Mockito.mock(CachedTranslationAdapter.class);
         recordRepository = Mockito.mock(TranslationRecordRepository.class);
-        userProfileRepository = Mockito.mock(UserProfileRepository.class);
-        appConfig = Mockito.mock(AppConfig.class);
-        when(appConfig.getDefaultTargetLanguageForChinese()).thenReturn("en");
-        when(appConfig.getDefaultTargetLanguageForOthers()).thenReturn("zh-TW");
+        userPreferencesModule = Mockito.mock(UserPreferencesModule.class);
+        preferences = new UserPreferences(
+                "zh-TW", "en", "zh-TW", "openai", "gpt-default",
+                Map.of("openai", "gpt-default"), List.of());
+        when(userPreferencesModule.resolve(any(UserProfile.class))).thenReturn(preferences);
         module = new TranslationWorkflowModule(
                 languageDetection,
                 translationAdapter,
                 recordRepository,
-                userProfileRepository,
-                appConfig);
+                userPreferencesModule);
     }
 
     @ParameterizedTest
@@ -62,7 +64,7 @@ class TranslationWorkflowModuleTests {
             int expectedImageCount) {
         UserProfile profile = profile();
         when(languageDetection.detectLanguage("hello")).thenReturn("en");
-        when(translationAdapter.translate(profile, "hello", "zh-TW"))
+        when(translationAdapter.translate(preferences, "hello", "zh-TW"))
                 .thenReturn(success("你好"));
 
         TranslationWorkflowOutcome outcome = module.execute(new TranslationWorkflowRequest(
@@ -79,21 +81,20 @@ class TranslationWorkflowModuleTests {
         assertThat(result.sourceLanguage()).isEqualTo("en");
         assertThat(result.targetLanguage()).isEqualTo("zh-TW");
         verify(languageDetection).detectLanguage("hello");
-        verify(translationAdapter).translate(profile, "hello", "zh-TW");
+        verify(translationAdapter).translate(preferences, "hello", "zh-TW");
         verify(recordRepository).save(any(TranslationRecord.class));
-        verify(userProfileRepository).save(profile);
+        verify(userPreferencesModule).persistTranslationActivity(profile, "zh-TW");
         assertThat(profile.getTotalTranslations()).isEqualTo(1);
         assertThat(profile.getTextTranslations()).isEqualTo(expectedTextCount);
         assertThat(profile.getImageTranslations()).isEqualTo(expectedImageCount);
         assertThat(profile.getRecentTranslations()).containsExactly("你好");
-        assertThat(profile.getRecentLanguagesList()).containsExactly("zh-TW");
     }
 
     @Test
     void explicitTargetStillDetectsSourceExactlyOnceAndPersistsActualProvider() {
         UserProfile profile = profile();
         when(languageDetection.detectLanguage("hello")).thenReturn("en");
-        when(translationAdapter.translate(profile, "hello", "ja"))
+        when(translationAdapter.translate(preferences, "hello", "ja"))
                 .thenReturn(success("こんにちは"));
 
         TranslationWorkflowOutcome outcome = module.execute(new TranslationWorkflowRequest(
@@ -127,7 +128,7 @@ class TranslationWorkflowModuleTests {
                 "correlation-1",
                 429,
                 null);
-        when(translationAdapter.translate(profile, "hello", "zh-TW"))
+        when(translationAdapter.translate(preferences, "hello", "zh-TW"))
                 .thenReturn(new AiExecutionOutcome.Failure(AiExecutionFailure.from(error, java.util.List.of())));
 
         TranslationWorkflowOutcome outcome = module.execute(new TranslationWorkflowRequest(
@@ -143,7 +144,7 @@ class TranslationWorkflowModuleTests {
         assertThat(((TranslationWorkflowOutcome.Failure) outcome).failure().outcome())
                 .isEqualTo(AiProviderException.Outcome.QUOTA_EXCEEDED);
         verify(recordRepository, never()).save(any());
-        verify(userProfileRepository, never()).save(any());
+        verify(userPreferencesModule, never()).persistTranslationActivity(any(), any());
         assertThat(profile.getTotalTranslations()).isZero();
         assertThat(profile.getRecentTranslations()).isEmpty();
     }
