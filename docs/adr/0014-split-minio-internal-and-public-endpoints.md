@@ -1,7 +1,10 @@
 # ADR 0014：分離 MinIO 內部與外部 endpoint
 
-- Status: Accepted
-- Date: 2026-08-11
+## Status
+
+Accepted
+
+Date: 2026-08-11
 
 ## Context
 
