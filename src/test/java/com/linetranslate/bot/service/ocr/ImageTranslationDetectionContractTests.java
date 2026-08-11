@@ -81,13 +81,13 @@ class ImageTranslationDetectionContractTests {
                 translationRecordRepository,
                 userProfileRepository,
                 appConfig);
-        imageTranslationService = new ImageTranslationService(
+        ImageTranslationPipeline pipeline = new ImageTranslationPipeline(
                 ocrServiceProvider,
                 workflowModule,
                 aiServiceFactory,
                 messagingApiBlobClient,
-                userProfileRepository,
                 minioStorageService);
+        imageTranslationService = new ImageTranslationService(pipeline, userProfileRepository);
         ReflectionTestUtils.setField(imageTranslationService, "ocrEnabled", true);
 
         userProfile = UserProfile.builder()
