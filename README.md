@@ -67,10 +67,12 @@ OCR_ENABLED=true
 
 # 可選 MinIO 圖片儲存；停用或不可用時圖片翻譯仍可繼續
 MINIO_ENABLED=true
-MINIO_ENDPOINT=http://localhost:9000
+MINIO_ENDPOINT=http://127.0.0.1:9000
+MINIO_PUBLIC_ENDPOINT=https://s3.example.com
 MINIO_ACCESS_KEY=your_minio_access_key
 MINIO_SECRET_KEY=your_minio_secret_key
 MINIO_BUCKET_NAME=linebot-images
+MINIO_REGION=us-east-1
 
 # 管理員配置
 ADMIN_USERS=U123456789abcdef,U987654321abcdef

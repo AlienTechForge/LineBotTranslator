@@ -11,6 +11,7 @@ import java.util.function.LongSupplier;
 
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -22,6 +23,7 @@ import io.minio.Http.Method;
 import io.minio.MakeBucketArgs;
 import io.minio.MinioClient;
 import io.minio.PutObjectArgs;
+import io.minio.errors.ErrorResponseException;
 import lombok.extern.slf4j.Slf4j;
 
 @Service
@@ -29,6 +31,7 @@ import lombok.extern.slf4j.Slf4j;
 public class MinioStorageService {
 
     private final MinioClient minioClient;
+    private final MinioClient publicUrlSigner;
     private final String bucketName;
     private final long retryIntervalMs;
     private final LongSupplier currentTimeMs;
@@ -38,12 +41,14 @@ public class MinioStorageService {
 
     @Autowired
     public MinioStorageService(
-            ObjectProvider<MinioClient> minioClientProvider,
+            @Qualifier("minioClient") ObjectProvider<MinioClient> minioClientProvider,
+            @Qualifier("minioPublicClient") ObjectProvider<MinioClient> publicUrlSignerProvider,
             @Value("${minio.bucket-name}") String bucketName,
             @Value("${minio.enabled:${MINIO_ENABLED:true}}") boolean enabled,
             @Value("${minio.retry-interval-ms:${MINIO_RETRY_INTERVAL_MS:30000}}") long retryIntervalMs) {
         this(
                 minioClientProvider.getIfAvailable(),
+                publicUrlSignerProvider.getIfAvailable(minioClientProvider::getIfAvailable),
                 bucketName,
                 enabled,
                 retryIntervalMs,
@@ -56,10 +61,21 @@ public class MinioStorageService {
             boolean enabled,
             long retryIntervalMs,
             LongSupplier currentTimeMs) {
+        this(minioClient, minioClient, bucketName, enabled, retryIntervalMs, currentTimeMs);
+    }
+
+    MinioStorageService(
+            MinioClient minioClient,
+            MinioClient publicUrlSigner,
+            String bucketName,
+            boolean enabled,
+            long retryIntervalMs,
+            LongSupplier currentTimeMs) {
         if (retryIntervalMs <= 0) {
             throw new IllegalArgumentException("MinIO retry interval must be greater than zero");
         }
         this.minioClient = minioClient;
+        this.publicUrlSigner = publicUrlSigner == null ? minioClient : publicUrlSigner;
         this.bucketName = bucketName;
         this.retryIntervalMs = retryIntervalMs;
         this.currentTimeMs = currentTimeMs;
@@ -93,7 +109,7 @@ public class MinioStorageService {
             }
 
             try {
-                String url = minioClient.getPresignedObjectUrl(
+                String url = publicUrlSigner.getPresignedObjectUrl(
                         GetPresignedObjectUrlArgs.builder()
                                 .bucket(bucketName)
                                 .object(objectName)
@@ -188,8 +204,32 @@ public class MinioStorageService {
             log.warn(
                     "MinIO storage state changed: state=unavailable, bucket={}, failure={}",
                     bucketName,
-                    SafeLog.failure(failure));
+                    safeFailure(failure));
         }
+    }
+
+    static String safeFailure(Exception failure) {
+        Throwable current = failure;
+        while (current != null) {
+            if (current instanceof ErrorResponseException responseFailure) {
+                String code = responseFailure.errorResponse() == null
+                        ? "unknown"
+                        : safeToken(responseFailure.errorResponse().code());
+                int status = responseFailure.response() == null
+                        ? 0
+                        : responseFailure.response().code();
+                return "ErrorResponseException[s3Code=" + code + ",httpStatus=" + status + "]";
+            }
+            current = current.getCause();
+        }
+        return SafeLog.failure(failure);
+    }
+
+    private static String safeToken(String value) {
+        if (value == null || !value.matches("[A-Za-z0-9._-]{1,64}")) {
+            return "unknown";
+        }
+        return value;
     }
 
     private String generateObjectName(String contentType) {

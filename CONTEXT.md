@@ -68,11 +68,12 @@
 7. 只有成功 Translation Workflow 才建立 Translation Record 並增加成功翻譯計數；失敗不可留下假成功紀錄。
 8. Translation Cache 只保存可安全重用且 model identity 一致的成功；failure、safety blocked 與 model mismatch 不寫入。
 9. Image Translation pipeline 不在 singleton/thread field 保存 request state；MinIO 是 optional side effect，storage degraded 時仍可繼續 OCR/翻譯。
-10. Runtime Settings 只保存 allowlisted 非敏感欄位，具有 schema version、revision、operator 與 timestamp；Mongo 讀取失敗時回 deployment defaults。
-11. 每個 Provider Attempt 產生一個 Usage Event；app 不做跨 provider fallback；accounting failure 採 fail-open，不可改變 provider outcome。
-12. Usage Event 與 logs 遵守 data minimization；credential、使用者原文、OCR 結果、signed URL 與第三方完整 payload 不得記錄。
-13. Translation Action 必須以 `recordId + userId` 驗證 ownership；同一來源紀錄與 target 的 durable claim 只允許一次 Provider Attempt。
-14. Translation Style 只接受 catalog 內的 stable ID；單次 style 不可修改使用者預設，無效或已移除的 stored style 回退 faithful。
+10. MinIO 內部 S3 操作使用 `MINIO_ENDPOINT`；外部 presigned URL 由 `MINIO_PUBLIC_ENDPOINT` 獨立簽署，避免流量被迫繞過 reverse proxy。
+11. Runtime Settings 只保存 allowlisted 非敏感欄位，具有 schema version、revision、operator 與 timestamp；Mongo 讀取失敗時回 deployment defaults。
+12. 每個 Provider Attempt 產生一個 Usage Event；app 不做跨 provider fallback；accounting failure 採 fail-open，不可改變 provider outcome。
+13. Usage Event 與 logs 遵守 data minimization；credential、使用者原文、OCR 結果、signed URL 與第三方完整 payload 不得記錄。
+14. Translation Action 必須以 `recordId + userId` 驗證 ownership；同一來源紀錄與 target 的 durable claim 只允許一次 Provider Attempt。
+15. Translation Style 只接受 catalog 內的 stable ID；單次 style 不可修改使用者預設，無效或已移除的 stored style 回退 faithful。
 
 ## 端到端流程
 

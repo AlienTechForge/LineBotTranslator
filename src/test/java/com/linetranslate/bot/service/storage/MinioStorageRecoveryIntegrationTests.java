@@ -3,6 +3,7 @@ package com.linetranslate.bot.service.storage;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -19,12 +20,18 @@ import io.minio.BucketExistsArgs;
 import io.minio.GetPresignedObjectUrlArgs;
 import io.minio.MinioClient;
 import io.minio.PutObjectArgs;
+import io.minio.errors.ErrorResponseException;
+import io.minio.messages.ErrorResponse;
+import okhttp3.Response;
 
 @ExtendWith(MockitoExtension.class)
 class MinioStorageRecoveryIntegrationTests {
 
     @Mock
     private MinioClient minioClient;
+
+    @Mock
+    private MinioClient publicUrlSigner;
 
     private AtomicLong clock;
 
@@ -86,6 +93,44 @@ class MinioStorageRecoveryIntegrationTests {
 
         assertThat(result.stored()).isTrue();
         assertThat(result.url()).isEmpty();
+    }
+
+    @Test
+    void storageTrafficUsesInternalClientWhileSignedUrlsUsePublicEndpointClient() throws Exception {
+        when(minioClient.bucketExists(any(BucketExistsArgs.class))).thenReturn(true);
+        when(publicUrlSigner.getPresignedObjectUrl(any(GetPresignedObjectUrlArgs.class)))
+                .thenReturn("https://s3.azndev.com/line-bot/images/signed.png?signature=safe");
+        MinioStorageService service = new MinioStorageService(
+                minioClient,
+                publicUrlSigner,
+                "line-bot",
+                true,
+                1_000,
+                clock::get);
+
+        ImageStorageResult result = service.uploadImage(new byte[] {1, 2}, "image/png");
+
+        assertThat(result.url()).contains(
+                "https://s3.azndev.com/line-bot/images/signed.png?signature=safe");
+        verify(minioClient).bucketExists(any(BucketExistsArgs.class));
+        verify(minioClient).putObject(any(PutObjectArgs.class));
+        verify(minioClient, never()).getPresignedObjectUrl(any(GetPresignedObjectUrlArgs.class));
+        verify(publicUrlSigner).getPresignedObjectUrl(any(GetPresignedObjectUrlArgs.class));
+    }
+
+    @Test
+    void s3FailureDiagnosticsExposeOnlySafeCodeAndStatus() {
+        ErrorResponse responseBody = mock(ErrorResponse.class);
+        Response response = mock(Response.class);
+        ErrorResponseException failure = mock(ErrorResponseException.class);
+        when(responseBody.code()).thenReturn("InvalidAccessKeyId");
+        when(response.code()).thenReturn(403);
+        when(failure.errorResponse()).thenReturn(responseBody);
+        when(failure.response()).thenReturn(response);
+
+        assertThat(MinioStorageService.safeFailure(failure))
+                .isEqualTo("ErrorResponseException[s3Code=InvalidAccessKeyId,httpStatus=403]")
+                .doesNotContain("secret", "message", "request");
     }
 
     private MinioStorageService service(long retryIntervalMs) {

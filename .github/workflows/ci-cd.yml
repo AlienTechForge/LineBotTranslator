@@ -38,6 +38,7 @@ jobs:
       MINIO_RECOVERY_UPSTREAM_ENDPOINT: http://127.0.0.1:9000
       MINIO_ACCESS_KEY: linebot-test
       MINIO_SECRET_KEY: linebot-test-secret
+      MINIO_REGION: us-east-1
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -168,9 +169,11 @@ jobs:
           OCR_ENABLED: ${{ secrets.OCR_ENABLED }}
           ADMIN_USERS: ${{ secrets.ADMIN_USERS }}
           MINIO_ENDPOINT: ${{ secrets.MINIO_ENDPOINT }}
+          MINIO_PUBLIC_ENDPOINT: ${{ secrets.MINIO_PUBLIC_ENDPOINT }}
           MINIO_ACCESS_KEY: ${{ secrets.MINIO_ACCESS_KEY }}
           MINIO_SECRET_KEY: ${{ secrets.MINIO_SECRET_KEY }}
           MINIO_BUCKET_NAME: ${{ secrets.MINIO_BUCKET_NAME }}
+          MINIO_REGION: ${{ vars.MINIO_REGION || 'us-east-1' }}
           MINIO_ENABLED: ${{ vars.MINIO_ENABLED || 'true' }}
           MINIO_RETRY_INTERVAL_MS: ${{ vars.MINIO_RETRY_INTERVAL_MS || '30000' }}
           MINIO_CONNECT_TIMEOUT_MS: ${{ vars.MINIO_CONNECT_TIMEOUT_MS || '3000' }}
