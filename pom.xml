@@ -56,15 +56,14 @@
 		</dependency>
 		<dependency>
 			<groupId>com.linecorp.bot</groupId>
-			<artifactId>line-bot-spring-boot-client</artifactId>
+			<artifactId>line-bot-parser</artifactId>
 			<version>${line.bot.sdk.version}</version>
 		</dependency>
 		<dependency>
 			<groupId>com.linecorp.bot</groupId>
-			<artifactId>line-bot-spring-boot-handler</artifactId>
+			<artifactId>line-bot-spring-boot-client</artifactId>
 			<version>${line.bot.sdk.version}</version>
 		</dependency>
-
 		<!-- OpenAI API 客戶端 -->
 		<dependency>
 			<groupId>com.openai</groupId>

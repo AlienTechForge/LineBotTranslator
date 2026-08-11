@@ -6,8 +6,6 @@ import java.util.List;
 
 import com.linecorp.bot.messaging.model.Message;
 import com.linecorp.bot.messaging.model.TextMessage;
-import com.linecorp.bot.spring.boot.handler.annotation.EventMapping;
-import com.linecorp.bot.spring.boot.handler.annotation.LineMessageHandler;
 import com.linecorp.bot.webhook.model.Event;
 import com.linecorp.bot.webhook.model.ImageMessageContent;
 import com.linecorp.bot.webhook.model.MessageEvent;
@@ -26,8 +24,9 @@ import com.linetranslate.bot.config.GeminiConfig;
 import lombok.extern.slf4j.Slf4j;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Component;
 
-@LineMessageHandler
+@Component
 @Slf4j
 public class LineBotController {
 
@@ -57,7 +56,6 @@ public class LineBotController {
     /**
      * 處理文本消息事件
      */
-    @EventMapping
     public Message handleTextMessageEvent(MessageEvent event, TextMessageContent content) {
         String userId = event.source().userId();
         String receivedText = content.text();
@@ -83,7 +81,6 @@ public class LineBotController {
     /**
      * 處理圖片消息事件
      */
-    @EventMapping
     public Message handleImageMessageEvent(MessageEvent event, ImageMessageContent content) {
         String userId = event.source().userId();
         String messageId = content.id();
@@ -104,7 +101,6 @@ public class LineBotController {
     /**
      * 處理其他未定義的事件
      */
-    @EventMapping
     public void handleDefaultMessageEvent(Event event) {
         log.info("收到未處理的事件: type={}",
                 event == null ? "unknown" : event.getClass().getSimpleName());
