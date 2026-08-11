@@ -1,6 +1,8 @@
 # LINE Bot 翻譯機器人
 
-這是一個基於 Spring Boot 開發的 LINE Bot 翻譯機器人，使用 OpenAI 和 Google Gemini 進行文字翻譯，以及 Google Cloud Vision API 進行圖片文字識別與翻譯。
+這是一個基於 Spring Boot 的 LINE Bot 翻譯機器人，使用 OpenAI 或 Google Gemini 翻譯文字；圖片可使用 Google Cloud Vision OCR，未啟用或不可用時由支援圖片的 AI provider 辨識。
+
+共同 domain 名稱與架構決策請先閱讀 [Domain glossary 與系統脈絡](CONTEXT.md) 及 [Architecture Decision Records](docs/adr/README.md)。
 
 ## 功能特點
 
@@ -8,7 +10,7 @@
 - **多語言翻譯**：支持多種語言之間的翻譯，包括中文、英文、日文、韓文等
 - **圖片文字識別**：使用 OCR 技術識別圖片中的文字並翻譯
 - **用戶偏好設定**：允許用戶設置偏好的 AI 引擎和默認翻譯語言
-- **翻譯記憶**：記住用戶最近使用的語言，提供快速翻譯選項
+- **最近活動**：保留最近使用語言與有限筆翻譯活動，供狀態與偏好使用
 - **管理員統計**：為管理員提供系統使用統計信息
 
 ## 技術架構
@@ -18,6 +20,7 @@
 - **翻譯引擎**：OpenAI GPT-4o、Google Gemini
 - **OCR 技術**：Google Cloud Vision API
 - **消息平台**：LINE Messaging API（LINE Bot SDK for Java 10.1）
+- **架構文件**：[Domain glossary 與系統脈絡](CONTEXT.md)、[Architecture Decision Records](docs/adr/README.md)
 
 ## 環境配置
 
@@ -66,6 +69,13 @@ GOOGLE_CLOUD_VISION_API_KEY=your_google_cloud_vision_api_key
 OCR_ENABLED=true
 AI_DEFAULT_PROVIDER=openai
 
+# 可選 MinIO 圖片儲存；停用或不可用時圖片翻譯仍可繼續
+MINIO_ENABLED=true
+MINIO_ENDPOINT=http://localhost:9000
+MINIO_ACCESS_KEY=your_minio_access_key
+MINIO_SECRET_KEY=your_minio_secret_key
+MINIO_BUCKET_NAME=linebot-images
+
 # 管理員配置
 ADMIN_USERS=U123456789abcdef,U987654321abcdef
 ```
@@ -96,21 +106,15 @@ java -jar target/linebot-translator-0.0.1-SNAPSHOT.jar
 
 ## 部署
 
-本應用程式可以部署在任何支持 Java 運行環境的伺服器上。建議使用以下方式部署：
+正式部署由 `.github/workflows/ci-cd.yml` 執行 Maven quality gate，建立並推送 immutable GHCR image，再由 self-hosted runner 執行 `scripts/deploy.sh`、readiness 檢查與失敗 rollback。也可在其他支援 Java 17 或 Docker 的環境自行部署。
 
-1. **Docker 容器**：使用 Dockerfile 建立容器映像
-2. **雲端平台**：如 AWS、Google Cloud、Heroku 等
-3. **專用伺服器**：在 VPS 或實體伺服器上運行
-
-維運日誌必須遵守[日誌資料安全政策](docs/logging-data-policy.md)，不得記錄 credentials、使用者原文、OCR 結果、signed URL 或第三方 API payload。
+維運日誌必須遵守 [日誌資料安全政策](docs/logging-data-policy.md)，不得記錄 credentials、使用者原文、OCR 結果、signed URL 或第三方 API payload。
 
 ## 使用指南
 
 ### 文本翻譯
 
-- **自動翻譯**：直接發送文字，機器人會自動檢測語言並翻譯
-    - 中文 → 英文
-    - 其他語言 → 中文
+- **自動翻譯**：直接發送文字，機器人會自動檢測來源語言，再依個人偏好與 runtime defaults 決定目標語言
 
 - **指定翻譯**：使用特定格式指定翻譯語言
     - 格式 1：`翻譯成[語言] [文字]`，例如：`翻譯成日文 你好`
@@ -126,14 +130,21 @@ java -jar target/linebot-translator-0.0.1-SNAPSHOT.jar
 - `/help` - 顯示幫助信息
 - `/about` - 關於此機器人
 - `/setai openai|gemini` - 設置偏好的 AI 引擎
-- `/setlang [語言]` - 設置默認翻譯語言
+- `/setmodel [模型]` - 設置偏好的 AI 模型
+- `/models` - 顯示可用模型
+- `/外文翻譯 [語言]` - 設置外文的目標語言
+- `/中文翻譯 [語言]` - 設置中文的目標語言
 - `/lang` - 顯示語言選擇菜單
+- `/status` - 查看目前偏好與翻譯統計
 - `/profile` - 查看用戶資料
 
 ### 管理員命令
 
 - `/admin stats` - 顯示系統統計信息
 - `/admin today` - 顯示今日統計信息
+- `/admin users` - 顯示最近活躍用戶
+- `/admin config` - 查看或變更非敏感 runtime settings
+- `/admin usage` - 查看 provider attempt 使用量與成本報表
 
 ## 貢獻與支持
 
