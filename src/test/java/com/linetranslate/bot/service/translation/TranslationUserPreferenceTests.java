@@ -56,7 +56,7 @@ class TranslationUserPreferenceTests {
         when(openAi.providerName()).thenReturn("openai");
         when(openAi.defaultModel()).thenReturn("gpt-test");
         when(openAi.availableModels()).thenReturn(Set.of("gpt-test"));
-        when(appConfig.getDefaultAiProvider()).thenReturn("openai");
+        lenient().when(appConfig.getDefaultAiProvider()).thenReturn("openai");
         lenient().when(appConfig.getDefaultTargetLanguageForOthers()).thenReturn("en");
         lenient().when(appConfig.getDefaultTargetLanguageForChinese()).thenReturn("en");
         userPreferencesModule = new UserPreferencesModule(

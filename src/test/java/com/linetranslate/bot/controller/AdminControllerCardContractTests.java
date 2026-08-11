@@ -88,6 +88,16 @@ class AdminControllerCardContractTests {
         verify(adminService, never()).broadcastMessage(anyString());
     }
 
+    @Test
+    void configUpdatePassesOperatorAndRawValueToPersistentModuleSeam() {
+        when(adminService.isAdmin(ADMIN_ID)).thenReturn(true);
+        when(adminService.setOcrEnabled("maybe", ADMIN_ID)).thenReturn("invalid");
+
+        controller.handleCommand(ADMIN_ID, "config ocr maybe");
+
+        verify(adminService).setOcrEnabled("maybe", ADMIN_ID);
+    }
+
     private static Stream<String> adminCommands() {
         return Stream.of(
                 "", "help", "isadmin",

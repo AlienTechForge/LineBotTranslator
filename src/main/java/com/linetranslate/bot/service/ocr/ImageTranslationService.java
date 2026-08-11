@@ -4,13 +4,15 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.Optional;
 
-import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import com.linetranslate.bot.logging.SafeLog;
 import com.linetranslate.bot.model.UserProfile;
 import com.linetranslate.bot.repository.UserProfileRepository;
 import com.linetranslate.bot.service.ai.AiExecutionFailure;
+import com.linetranslate.bot.service.settings.RuntimeSettings;
+import com.linetranslate.bot.service.settings.RuntimeSettingsSource;
 import com.linetranslate.bot.service.translation.TranslationWorkflowResult;
 import com.linetranslate.bot.util.LanguageUtils;
 
@@ -23,23 +25,32 @@ public class ImageTranslationService {
 
     private final ImageTranslationPipeline imageTranslationPipeline;
     private final UserProfileRepository userProfileRepository;
+    private final RuntimeSettingsSource runtimeSettingsSource;
 
-    @Value("${app.ocr.enabled:true}")
-    private boolean ocrEnabled;
+    @Autowired
+    public ImageTranslationService(
+            ImageTranslationPipeline imageTranslationPipeline,
+            UserProfileRepository userProfileRepository,
+            RuntimeSettingsSource runtimeSettingsSource) {
+        this.imageTranslationPipeline = imageTranslationPipeline;
+        this.userProfileRepository = userProfileRepository;
+        this.runtimeSettingsSource = runtimeSettingsSource;
+    }
 
+    /** Compatibility constructor for focused unit tests. */
     public ImageTranslationService(
             ImageTranslationPipeline imageTranslationPipeline,
             UserProfileRepository userProfileRepository) {
-        this.imageTranslationPipeline = imageTranslationPipeline;
-        this.userProfileRepository = userProfileRepository;
+        this(imageTranslationPipeline, userProfileRepository, () -> null);
     }
 
     public boolean isOcrEnabled() {
-        return ocrEnabled;
+        RuntimeSettings settings = runtimeSettingsSource.current();
+        return settings == null || settings.ocrEnabled();
     }
 
     public String processImageTranslation(String userId, String messageId) {
-        if (!ocrEnabled) {
+        if (!isOcrEnabled()) {
             return "OCR 功能目前已停用。請稍後再試。";
         }
 

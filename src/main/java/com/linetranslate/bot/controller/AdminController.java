@@ -63,7 +63,7 @@ public class AdminController {
                     ? inputError("請指定要查詢的用戶 ID。例如：/admin user U123456789")
                     : handleUserCommand(userId, param);
             case "nickname" -> handleNicknameCommand(param);
-            case "config" -> handleConfigCommand(param);
+            case "config" -> handleConfigCommand(userId, param);
             case "usage" -> handleUsageCommand(param);
             case "add" -> param.isEmpty()
                     ? inputError("請指定要新增的管理員用戶 ID。例如：/admin add U123456789")
@@ -161,7 +161,7 @@ public class AdminController {
                 adminService.setUserDisplayName(parts[0], parts[1].trim()));
     }
 
-    private Message handleConfigCommand(String param) {
+    private Message handleConfigCommand(String operatorId, String param) {
         if (param.isEmpty()) {
             String body = adminService.getSystemConfig()
                     + "\n\n可用指令：\n"
@@ -182,12 +182,12 @@ public class AdminController {
         }
 
         String result = switch (subCommand) {
-            case "c2lang" -> adminService.setDefaultTargetLanguageForChinese(value);
-            case "lang" -> adminService.setDefaultTargetLanguageForOthers(value);
-            case "ai" -> adminService.setDefaultAiProvider(value);
-            case "openai" -> adminService.setOpenAiDefaultModel(value);
-            case "gemini" -> adminService.setGeminiDefaultModel(value);
-            case "ocr" -> adminService.setOcrEnabled(isEnabled(value));
+            case "c2lang" -> adminService.setDefaultTargetLanguageForChinese(value, operatorId);
+            case "lang" -> adminService.setDefaultTargetLanguageForOthers(value, operatorId);
+            case "ai" -> adminService.setDefaultAiProvider(value, operatorId);
+            case "openai" -> adminService.setOpenAiDefaultModel(value, operatorId);
+            case "gemini" -> adminService.setGeminiDefaultModel(value, operatorId);
+            case "ocr" -> adminService.setOcrEnabled(value, operatorId);
             default -> null;
         };
 
@@ -224,12 +224,6 @@ public class AdminController {
 
     private Message inputError(String message) {
         return cardRenderer.error("需要更多資料", message);
-    }
-
-    private static boolean isEnabled(String value) {
-        return value.equalsIgnoreCase("on")
-                || value.equals("開")
-                || value.equals("啟用");
     }
 
     private static String value(Map<String, Object> source, String key) {

@@ -11,6 +11,7 @@ import static org.mockito.Mockito.when;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -25,6 +26,7 @@ import com.linetranslate.bot.service.ai.AiProviderAdapter;
 import com.linetranslate.bot.service.ai.AiProviderOperation;
 import com.linetranslate.bot.service.ai.AiProviderRequest;
 import com.linetranslate.bot.service.ai.AiProviderResponse;
+import com.linetranslate.bot.service.settings.RuntimeSettings;
 
 @ExtendWith(MockitoExtension.class)
 class UserPreferencesModuleTests {
@@ -131,6 +133,56 @@ class UserPreferencesModuleTests {
         assertThat(module.resolve(profile).recentLanguages())
                 .containsExactly("pt", "ja", "en", "ko", "fr");
         verify(repository).save(profile);
+    }
+
+    @Test
+    void runtimeDefaultsAreReadDynamicallyWithoutRebuildingTheModule() {
+        AtomicReference<RuntimeSettings> runtime = new AtomicReference<>(settings(
+                "en", "ja", "openai", "gpt-selected", "gemini-default"));
+        UserPreferencesModule dynamicModule = new UserPreferencesModule(
+                repository,
+                runtime::get,
+                List.of(
+                        adapter("openai", "gpt-default", "gpt-default", "gpt-selected"),
+                        adapter("gemini", "gemini-default", "gemini-default", "gemini-fast")));
+
+        assertThat(dynamicModule.resolve(profile))
+                .extracting(
+                        UserPreferences::targetLanguage,
+                        UserPreferences::chineseTargetLanguage,
+                        UserPreferences::provider,
+                        UserPreferences::model)
+                .containsExactly("en", "ja", "openai", "gpt-selected");
+
+        runtime.set(settings("ko", "fr", "gemini", "gpt-default", "gemini-fast"));
+
+        assertThat(dynamicModule.resolve(profile))
+                .extracting(
+                        UserPreferences::targetLanguage,
+                        UserPreferences::chineseTargetLanguage,
+                        UserPreferences::provider,
+                        UserPreferences::model)
+                .containsExactly("ko", "fr", "gemini", "gemini-fast");
+    }
+
+    private static RuntimeSettings settings(
+            String otherLanguage,
+            String chineseLanguage,
+            String provider,
+            String openAiModel,
+            String geminiModel) {
+        return new RuntimeSettings(
+                chineseLanguage,
+                otherLanguage,
+                provider,
+                openAiModel,
+                geminiModel,
+                true,
+                1,
+                1,
+                null,
+                "U-admin",
+                RuntimeSettings.Source.PERSISTED);
     }
 
     private static AiProviderAdapter adapter(

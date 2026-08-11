@@ -1,6 +1,5 @@
 package com.linetranslate.bot.service;
 
-import java.lang.reflect.Field;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -33,6 +32,11 @@ import com.linetranslate.bot.logging.SafeLog;
 import com.linetranslate.bot.service.line.LineUserProfileService;
 import com.linetranslate.bot.service.preference.UserPreferences;
 import com.linetranslate.bot.service.preference.UserPreferencesModule;
+import com.linetranslate.bot.service.settings.InvalidRuntimeSettingException;
+import com.linetranslate.bot.service.settings.RuntimeSettingKey;
+import com.linetranslate.bot.service.settings.RuntimeSettings;
+import com.linetranslate.bot.service.settings.RuntimeSettingsModule;
+import com.linetranslate.bot.service.settings.RuntimeSettingsPersistenceException;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -51,13 +55,34 @@ public class AdminService {
     private final UserProfileRepository userProfileRepository;
     private final MessagingApiClient messagingApiClient;
     private final DateTimeFormatter dateTimeFormatter;
-    private final AppConfig appConfig;
     private final OpenAiConfig openAiConfig;
     private final GeminiConfig geminiConfig;
     private final LineUserProfileService lineUserProfileService;
     private final UserPreferencesModule userPreferencesModule;
+    private final RuntimeSettingsModule runtimeSettingsModule;
     
     @Autowired
+    public AdminService(
+            TranslationRecordRepository translationRecordRepository,
+            UserProfileRepository userProfileRepository,
+            MessagingApiClient messagingApiClient,
+            OpenAiConfig openAiConfig,
+            GeminiConfig geminiConfig,
+            LineUserProfileService lineUserProfileService,
+            UserPreferencesModule userPreferencesModule,
+            RuntimeSettingsModule runtimeSettingsModule) {
+        this.translationRecordRepository = translationRecordRepository;
+        this.userProfileRepository = userProfileRepository;
+        this.messagingApiClient = messagingApiClient;
+        this.openAiConfig = openAiConfig;
+        this.geminiConfig = geminiConfig;
+        this.lineUserProfileService = lineUserProfileService;
+        this.userPreferencesModule = userPreferencesModule;
+        this.runtimeSettingsModule = runtimeSettingsModule;
+        this.dateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+    }
+
+    /** Compatibility constructor for focused SDK contract tests. */
     public AdminService(
             TranslationRecordRepository translationRecordRepository,
             UserProfileRepository userProfileRepository,
@@ -67,15 +92,9 @@ public class AdminService {
             GeminiConfig geminiConfig,
             LineUserProfileService lineUserProfileService,
             UserPreferencesModule userPreferencesModule) {
-        this.translationRecordRepository = translationRecordRepository;
-        this.userProfileRepository = userProfileRepository;
-        this.messagingApiClient = messagingApiClient;
-        this.appConfig = appConfig;
-        this.openAiConfig = openAiConfig;
-        this.geminiConfig = geminiConfig;
-        this.lineUserProfileService = lineUserProfileService;
-        this.userPreferencesModule = userPreferencesModule;
-        this.dateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+        this(translationRecordRepository, userProfileRepository, messagingApiClient,
+                openAiConfig, geminiConfig, lineUserProfileService,
+                userPreferencesModule, null);
     }
 
     /**
@@ -432,28 +451,29 @@ public class AdminService {
      * @return 系統配置信息字符串
      */
     public String getSystemConfig() {
+        RuntimeSettings runtime = runtimeSettingsModule.current();
         StringBuilder configBuilder = new StringBuilder();
         configBuilder.append("⚙️ 系統配置信息\n\n");
         
         // 翻譯相關配置
         configBuilder.append("【翻譯設定】\n");
-        configBuilder.append("• 中文翻譯默認目標語言: ").append(appConfig.getDefaultTargetLanguageForChinese()).append("\n");
-        configBuilder.append("• 其他語言翻譯默認目標語言: ").append(appConfig.getDefaultTargetLanguageForOthers()).append("\n");
-        configBuilder.append("• OCR 功能: ").append(appConfig.isOcrEnabled() ? "已啟用" : "已禁用").append("\n\n");
+        configBuilder.append("• 中文翻譯默認目標語言: ").append(runtime.defaultTargetLanguageForChinese()).append("\n");
+        configBuilder.append("• 其他語言翻譯默認目標語言: ").append(runtime.defaultTargetLanguageForOthers()).append("\n");
+        configBuilder.append("• OCR 功能: ").append(runtime.ocrEnabled() ? "已啟用" : "已禁用").append("\n\n");
         
         // AI 提供者配置
         configBuilder.append("【AI 提供者設定】\n");
-        configBuilder.append("• 默認 AI 提供者: ").append(appConfig.getDefaultAiProvider()).append("\n\n");
+        configBuilder.append("• 默認 AI 提供者: ").append(runtime.defaultAiProvider()).append("\n\n");
         
         // OpenAI 配置
         configBuilder.append("【OpenAI 設定】\n");
-        configBuilder.append("• 默認模型: ").append(openAiConfig.getModelName()).append("\n");
+        configBuilder.append("• 默認模型: ").append(runtime.openAiDefaultModel()).append("\n");
         configBuilder.append("• 可用模型: ").append(String.join(", ", openAiConfig.getAvailableModels())).append("\n");
         configBuilder.append("• API 狀態: ").append(openAiConfig.getApiKey() != null && !openAiConfig.getApiKey().isEmpty() ? "已配置" : "未配置").append("\n\n");
         
         // Gemini 配置
         configBuilder.append("【Gemini 設定】\n");
-        configBuilder.append("• 默認模型: ").append(geminiConfig.getModelName()).append("\n");
+        configBuilder.append("• 默認模型: ").append(runtime.geminiDefaultModel()).append("\n");
         configBuilder.append("• 可用模型: ").append(String.join(", ", geminiConfig.getAvailableModels())).append("\n");
         configBuilder.append("• API 狀態: ").append(geminiConfig.getApiKey() != null && !geminiConfig.getApiKey().isEmpty() ? "已配置" : "未配置").append("\n\n");
         
@@ -477,20 +497,12 @@ public class AdminService {
      * @param language 語言代碼
      * @return 操作結果訊息
      */
-    public String setDefaultTargetLanguageForChinese(String language) {
-        try {
-            // 使用反射修改 AppConfig 中的屬性值
-            Field field = AppConfig.class.getDeclaredField("defaultTargetLanguageForChinese");
-            field.setAccessible(true);
-            String oldValue = (String) field.get(appConfig);
-            field.set(appConfig, language);
-            
-            log.info("已將中文翻譯默認目標語言從 {} 修改為 {}", oldValue, language);
-            return "✅ 已將中文翻譯默認目標語言設置為: " + language;
-        } catch (Exception e) {
-            log.error("設置中文翻譯默認目標語言失敗: failure={}", SafeLog.failure(e));
-            return "❌ 設置失敗，請稍後再試";
-        }
+    public String setDefaultTargetLanguageForChinese(String language, String operatorId) {
+        return updateSetting(
+                RuntimeSettingKey.DEFAULT_CHINESE_TARGET_LANGUAGE,
+                language,
+                operatorId,
+                "✅ 已將中文翻譯默認目標語言設置為: " + language);
     }
     
     /**
@@ -499,20 +511,12 @@ public class AdminService {
      * @param language 語言代碼
      * @return 操作結果訊息
      */
-    public String setDefaultTargetLanguageForOthers(String language) {
-        try {
-            // 使用反射修改 AppConfig 中的屬性值
-            Field field = AppConfig.class.getDeclaredField("defaultTargetLanguageForOthers");
-            field.setAccessible(true);
-            String oldValue = (String) field.get(appConfig);
-            field.set(appConfig, language);
-            
-            log.info("已將其他語言翻譯默認目標語言從 {} 修改為 {}", oldValue, language);
-            return "✅ 已將其他語言翻譯默認目標語言設置為: " + language;
-        } catch (Exception e) {
-            log.error("設置其他語言翻譯默認目標語言失敗: failure={}", SafeLog.failure(e));
-            return "❌ 設置失敗，請稍後再試";
-        }
+    public String setDefaultTargetLanguageForOthers(String language, String operatorId) {
+        return updateSetting(
+                RuntimeSettingKey.DEFAULT_OTHER_TARGET_LANGUAGE,
+                language,
+                operatorId,
+                "✅ 已將其他語言翻譯默認目標語言設置為: " + language);
     }
     
     /**
@@ -521,24 +525,12 @@ public class AdminService {
      * @param provider AI 提供者 (openai 或 gemini)
      * @return 操作結果訊息
      */
-    public String setDefaultAiProvider(String provider) {
-        if (!"openai".equalsIgnoreCase(provider) && !"gemini".equalsIgnoreCase(provider)) {
-            return "❌ 無效的 AI 提供者。有效值為: openai, gemini";
-        }
-        
-        try {
-            // 使用反射修改 AppConfig 中的屬性值
-            Field field = AppConfig.class.getDeclaredField("defaultAiProvider");
-            field.setAccessible(true);
-            String oldValue = (String) field.get(appConfig);
-            field.set(appConfig, provider.toLowerCase());
-            
-            log.info("已將默認 AI 提供者從 {} 修改為 {}", oldValue, provider.toLowerCase());
-            return "✅ 已將默認 AI 提供者設置為: " + provider.toLowerCase();
-        } catch (Exception e) {
-            log.error("設置默認 AI 提供者失敗: failure={}", SafeLog.failure(e));
-            return "❌ 設置失敗，請稍後再試";
-        }
+    public String setDefaultAiProvider(String provider, String operatorId) {
+        return updateSetting(
+                RuntimeSettingKey.DEFAULT_AI_PROVIDER,
+                provider,
+                operatorId,
+                "✅ 已將默認 AI 提供者設置為: " + provider);
     }
     
     /**
@@ -547,30 +539,12 @@ public class AdminService {
      * @param model 模型名稱
      * @return 操作結果訊息
      */
-    public String setOpenAiDefaultModel(String model) {
-        // 檢查模型是否在可用列表中
-        if (!openAiConfig.getAvailableModels().contains(model)) {
-            return "❌ 無效的 OpenAI 模型。可用模型: " + String.join(", ", openAiConfig.getAvailableModels());
-        }
-        
-        try {
-            // 使用反射修改 OpenAiConfig 中的屬性值
-            Field field = OpenAiConfig.class.getDeclaredField("modelName");
-            field.setAccessible(true);
-            String oldValue = (String) field.get(openAiConfig);
-            field.set(openAiConfig, model);
-            
-            // 同時更新 AppConfig 中的默認模型
-            Field appField = AppConfig.class.getDeclaredField("openaiDefaultModel");
-            appField.setAccessible(true);
-            appField.set(appConfig, model);
-            
-            log.info("已將 OpenAI 默認模型從 {} 修改為 {}", oldValue, model);
-            return "✅ 已將 OpenAI 默認模型設置為: " + model;
-        } catch (Exception e) {
-            log.error("設置 OpenAI 默認模型失敗: failure={}", SafeLog.failure(e));
-            return "❌ 設置失敗，請稍後再試";
-        }
+    public String setOpenAiDefaultModel(String model, String operatorId) {
+        return updateSetting(
+                RuntimeSettingKey.OPENAI_DEFAULT_MODEL,
+                model,
+                operatorId,
+                "✅ 已將 OpenAI 默認模型設置為: " + model);
     }
     
     /**
@@ -579,30 +553,12 @@ public class AdminService {
      * @param model 模型名稱
      * @return 操作結果訊息
      */
-    public String setGeminiDefaultModel(String model) {
-        // 檢查模型是否在可用列表中
-        if (!geminiConfig.getAvailableModels().contains(model)) {
-            return "❌ 無效的 Gemini 模型。可用模型: " + String.join(", ", geminiConfig.getAvailableModels());
-        }
-        
-        try {
-            // 使用反射修改 GeminiConfig 中的屬性值
-            Field field = GeminiConfig.class.getDeclaredField("modelName");
-            field.setAccessible(true);
-            String oldValue = (String) field.get(geminiConfig);
-            field.set(geminiConfig, model);
-            
-            // 同時更新 AppConfig 中的默認模型
-            Field appField = AppConfig.class.getDeclaredField("geminiDefaultModel");
-            appField.setAccessible(true);
-            appField.set(appConfig, model);
-            
-            log.info("已將 Gemini 默認模型從 {} 更改為 {}", oldValue, model);
-            return "✅ 已將 Gemini 默認模型設置為: " + model;
-        } catch (Exception e) {
-            log.error("設置 Gemini 默認模型失敗: failure={}", SafeLog.failure(e));
-            return "❌ 設置失敗，請稍後再試";
-        }
+    public String setGeminiDefaultModel(String model, String operatorId) {
+        return updateSetting(
+                RuntimeSettingKey.GEMINI_DEFAULT_MODEL,
+                model,
+                operatorId,
+                "✅ 已將 Gemini 默認模型設置為: " + model);
     }
     
     /**
@@ -611,19 +567,33 @@ public class AdminService {
      * @param enabled 是否啟用 OCR
      * @return 操作結果訊息
      */
-    public String setOcrEnabled(boolean enabled) {
+    public String setOcrEnabled(String enabled, String operatorId) {
         try {
-            // 使用反射修改 AppConfig 中的屬性值
-            Field field = AppConfig.class.getDeclaredField("ocrEnabled");
-            field.setAccessible(true);
-            boolean oldValue = (boolean) field.get(appConfig);
-            field.set(appConfig, enabled);
-            
-            log.info("已將 OCR 功能從 {} 更改為 {}", oldValue, enabled);
-            return "✅ 已" + (enabled ? "啟用" : "禁用") + " OCR 功能";
-        } catch (Exception e) {
-            log.error("設置 OCR 功能失敗: failure={}", SafeLog.failure(e));
-            return "❌ 設置失敗，請稍後再試";
+            RuntimeSettings updated = runtimeSettingsModule.update(
+                    RuntimeSettingKey.OCR_ENABLED, enabled, operatorId);
+            return "✅ 已" + (updated.ocrEnabled() ? "啟用" : "禁用") + " OCR 功能";
+        } catch (InvalidRuntimeSettingException failure) {
+            return "❌ 無效的設定值，請確認格式與可用選項";
+        } catch (RuntimeSettingsPersistenceException failure) {
+            log.error("持久化 OCR 設定失敗: failure={}", SafeLog.failure(failure));
+            return "❌ 設置未能保存，請稍後再試";
+        }
+    }
+
+    private String updateSetting(
+            RuntimeSettingKey key,
+            String value,
+            String operatorId,
+            String successMessage) {
+        try {
+            runtimeSettingsModule.update(key, value, operatorId);
+            return successMessage;
+        } catch (InvalidRuntimeSettingException failure) {
+            return "❌ 無效的設定值，請確認格式與可用選項";
+        } catch (RuntimeSettingsPersistenceException failure) {
+            log.error("持久化 runtime 設定失敗: key={}, failure={}",
+                    key, SafeLog.failure(failure));
+            return "❌ 設置未能保存，請稍後再試";
         }
     }
     
