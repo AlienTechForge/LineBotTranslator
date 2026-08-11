@@ -9,6 +9,7 @@ import com.linecorp.bot.messaging.model.Message;
 import com.linecorp.bot.webhook.model.Event;
 import com.linecorp.bot.webhook.model.ImageMessageContent;
 import com.linecorp.bot.webhook.model.MessageEvent;
+import com.linecorp.bot.webhook.model.PostbackEvent;
 import com.linecorp.bot.webhook.model.ReplyEvent;
 import com.linecorp.bot.webhook.model.TextMessageContent;
 import com.linetranslate.bot.controller.LineBotController;
@@ -33,6 +34,9 @@ public class LineWebhookEventProcessor implements WebhookEventProcessor {
     }
 
     private Message route(Event event) {
+        if (event instanceof PostbackEvent postbackEvent) {
+            return lineBotController.handlePostbackEvent(postbackEvent);
+        }
         if (event instanceof MessageEvent messageEvent) {
             if (messageEvent.message() instanceof TextMessageContent text) {
                 return lineBotController.handleTextMessageEvent(messageEvent, text);

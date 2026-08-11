@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 import java.util.Map;
@@ -41,10 +42,12 @@ class AdminControllerCardContractTests {
     void unauthorizedInteractionReturnsCardWithoutAdminData() {
         when(adminService.isAdmin("U-intruder")).thenReturn(false);
 
-        Message response = controller.handleCommand("U-intruder", "stats");
+        Message response = controller.handleCommand("U-intruder", "config ocr off");
 
         assertThat(response).isInstanceOf(FlexMessage.class);
         assertThat(((FlexMessage) response).altText()).contains("沒有管理員權限");
+        verify(adminService).isAdmin("U-intruder");
+        verifyNoMoreInteractions(adminService);
     }
 
     @ParameterizedTest(name = "admin command {0} renders a card")
