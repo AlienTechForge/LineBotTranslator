@@ -45,8 +45,8 @@ class OverlaySafetyPolicyTests {
                 100, 100, enabled()).safe()).isFalse();
 
         OcrRegion c1 = region("c1", 0, 0, 30, 50, .9f, true);
-        OcrRegion c2 = region("c2", 35, 0, 30, 50, .9f, true);
-        OcrRegion c3 = region("c3", 70, 0, 30, 50, .9f, true);
+        OcrRegion c2 = region("c2", 38, 0, 30, 50, .9f, true);
+        OcrRegion c3 = region("c3", 76, 0, 24, 50, .9f, true);
         OverlaySafetyPlan total = policy.evaluate(List.of(
                 new ImageRegionOverlay(c1, "one"), new ImageRegionOverlay(c2, "two"),
                 new ImageRegionOverlay(c3, "three")), 100, 100, enabled());
@@ -68,8 +68,24 @@ class OverlaySafetyPolicyTests {
         assertThat(plan.skipped()).isEqualTo(2);
     }
 
+    @Test
+    void adjacentParagraphsRemainSafeWhenOnlyCleanupPaddingOverlaps() {
+        OcrRegion first = region("first", 10, 10, 60, 20, .98f, true);
+        OcrRegion second = region("second", 10, 33, 60, 20, .98f, true);
+        ImageTranslationProperties limits = new ImageTranslationProperties(
+                1000, 100, 10000, .6f, true, .2, .5);
+
+        OverlaySafetyPlan plan = policy.evaluate(List.of(
+                new ImageRegionOverlay(first, "第一行"),
+                new ImageRegionOverlay(second, "第二行")), 100, 100, limits);
+
+        assertThat(plan.safe()).isTrue();
+        assertThat(plan.overlays()).extracting(value -> value.region().id())
+                .containsExactly("first", "second");
+    }
+
     private static ImageTranslationProperties enabled() {
-        return new ImageTranslationProperties(1000, 100, 10000, .6f, true, .2, .4);
+        return new ImageTranslationProperties(1000, 100, 10000, .6f, true, .25, .4);
     }
 
     private static OcrRegion region(String id, int x, int y, int width, int height,
