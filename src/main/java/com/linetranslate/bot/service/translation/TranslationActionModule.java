@@ -52,13 +52,13 @@ public class TranslationActionModule {
             return TranslationResponse.plain("不支援指定的目標語言。");
         }
         String targetLanguage = LanguageUtils.toLanguageCode(requestedTargetLanguage);
-        String claimId = claimId(userId, sourceRecordId, targetLanguage);
+        String claimId = claimId(userId, sourceRecordId, targetLanguage, null);
         TranslationActionClaim claim = newClaim(
-                claimId, userId, sourceRecordId, targetLanguage);
+                claimId, userId, sourceRecordId, targetLanguage, null);
         try {
             claimRepository.insert(claim);
         } catch (DuplicateKeyException duplicate) {
-            return replayExisting(claimId, userId, sourceRecordId, targetLanguage);
+            return replayExisting(claimId, userId, sourceRecordId, targetLanguage, null);
         }
 
         TranslationResponse response;
@@ -82,16 +82,60 @@ public class TranslationActionModule {
         return response;
     }
 
+    public TranslationResponse executeStyle(
+            String userId,
+            String sourceRecordId,
+            String requestedStylePresetId) {
+        TranslationRecord sourceRecord = recordRepository
+                .findByIdAndUserId(sourceRecordId, userId)
+                .orElse(null);
+        if (sourceRecord == null) {
+            return TranslationResponse.plain("找不到可操作的翻譯結果。");
+        }
+        TranslationStylePreset style = TranslationStylePreset.find(requestedStylePresetId)
+                .orElse(null);
+        if (style == null) {
+            return TranslationResponse.plain("不支援指定的翻譯風格。");
+        }
+        if (!LanguageUtils.isSupported(sourceRecord.getTargetLanguage())) {
+            return TranslationResponse.plain("原翻譯的目標語言已失效。");
+        }
+        String targetLanguage = LanguageUtils.toLanguageCode(sourceRecord.getTargetLanguage());
+        String claimId = claimId(userId, sourceRecordId, targetLanguage, style.id());
+        TranslationActionClaim claim = newClaim(
+                claimId, userId, sourceRecordId, targetLanguage, style.id());
+        try {
+            claimRepository.insert(claim);
+        } catch (DuplicateKeyException duplicate) {
+            return replayExisting(
+                    claimId, userId, sourceRecordId, targetLanguage, style.id());
+        }
+
+        TranslationResponse response;
+        try {
+            response = translationService.translateExisting(
+                    userId, sourceRecord.getSourceText(), targetLanguage, style.id());
+        } catch (RuntimeException failure) {
+            log.warn("Translation style action failed: user={}, record={}, failure={}",
+                    SafeLog.user(userId), SafeLog.metadata(sourceRecordId), SafeLog.failure(failure));
+            response = TranslationResponse.plain("風格翻譯未完成，請建立新的翻譯請求。");
+        }
+        completeClaim(claim, response);
+        return response;
+    }
+
     private TranslationResponse replayExisting(
             String claimId,
             String userId,
             String sourceRecordId,
-            String targetLanguage) {
+            String targetLanguage,
+            String stylePresetId) {
         TranslationActionClaim existing = claimRepository.findById(claimId).orElse(null);
         if (existing == null
                 || !Objects.equals(existing.getUserId(), userId)
                 || !Objects.equals(existing.getSourceRecordId(), sourceRecordId)
-                || !Objects.equals(existing.getTargetLanguage(), targetLanguage)) {
+                || !Objects.equals(existing.getTargetLanguage(), targetLanguage)
+                || !Objects.equals(existing.getStylePresetId(), stylePresetId)) {
             return TranslationResponse.plain("此操作目前無法執行。");
         }
         if (existing.getStatus() == TranslationActionClaim.Status.COMPLETED
@@ -111,27 +155,48 @@ public class TranslationActionModule {
             String id,
             String userId,
             String sourceRecordId,
-            String targetLanguage) {
+            String targetLanguage,
+            String stylePresetId) {
         LocalDateTime now = LocalDateTime.now();
         return TranslationActionClaim.builder()
                 .id(id)
                 .userId(userId)
                 .sourceRecordId(sourceRecordId)
                 .targetLanguage(targetLanguage)
+                .stylePresetId(stylePresetId)
                 .status(TranslationActionClaim.Status.PROCESSING)
                 .createdAt(now)
                 .updatedAt(now)
                 .build();
     }
 
-    private String claimId(String userId, String sourceRecordId, String targetLanguage) {
+    private String claimId(
+            String userId,
+            String sourceRecordId,
+            String targetLanguage,
+            String stylePresetId) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] input = (userId + "\0" + sourceRecordId + "\0" + targetLanguage)
+            String identity = userId + "\0" + sourceRecordId + "\0" + targetLanguage;
+            if (stylePresetId != null) {
+                identity += "\0" + stylePresetId;
+            }
+            byte[] input = identity
                     .getBytes(StandardCharsets.UTF_8);
             return HexFormat.of().formatHex(digest.digest(input));
         } catch (NoSuchAlgorithmException impossible) {
             throw new IllegalStateException("SHA-256 unavailable", impossible);
         }
+    }
+
+    private void completeClaim(TranslationActionClaim claim, TranslationResponse response) {
+        claim.setUpdatedAt(LocalDateTime.now());
+        if (response.actionable()) {
+            claim.setStatus(TranslationActionClaim.Status.COMPLETED);
+            claim.setResultRecordId(response.recordId());
+        } else {
+            claim.setStatus(TranslationActionClaim.Status.FAILED);
+        }
+        claimRepository.save(claim);
     }
 }

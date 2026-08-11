@@ -14,6 +14,7 @@ import org.junit.jupiter.api.Test;
 
 import com.linetranslate.bot.service.preference.UserPreferences;
 import com.linetranslate.bot.service.settings.RuntimeSettings;
+import com.linetranslate.bot.service.translation.TranslationStylePreset;
 import com.linetranslate.bot.service.usage.AiUsageEventSink;
 
 class AiProviderExecutionModuleTests {
@@ -47,6 +48,25 @@ class AiProviderExecutionModuleTests {
         AiExecutionFailure failure = ((AiExecutionOutcome.Failure) outcome).failure();
         assertThat(failure.outcome()).isEqualTo(AiProviderException.Outcome.RATE_LIMITED);
         assertThat(failure.attempts()).hasSize(1);
+    }
+
+    @Test
+    void versionedStyleContractReachesTheOnlyProviderAdapter() {
+        FakeAdapter adapter = new FakeAdapter(
+                "openai/gpt-4o-mini", Set.of("openai/gpt-4o-mini"));
+
+        module(adapter).translateTextOutcome(
+                preferences("openai/gpt-4o-mini"),
+                "hello",
+                "zh-TW",
+                TranslationStylePreset.BUSINESS);
+
+        assertThat(adapter.requests).singleElement().satisfies(request -> {
+            assertThat(request.translationStyleId()).isEqualTo("business");
+            assertThat(request.translationPromptVersion()).isEqualTo("business-v1");
+            assertThat(request.translationStyleInstruction())
+                    .isEqualTo(TranslationStylePreset.BUSINESS.promptRule());
+        });
     }
 
     @Test

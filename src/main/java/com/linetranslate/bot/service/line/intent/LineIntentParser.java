@@ -8,6 +8,7 @@ import java.util.regex.Pattern;
 import org.springframework.stereotype.Component;
 
 import com.linetranslate.bot.util.LanguageUtils;
+import com.linetranslate.bot.service.translation.TranslationStylePreset;
 
 /** Pure parser and validation boundary shared by LINE message and postback input. */
 @Component
@@ -66,7 +67,11 @@ public class LineIntentParser {
             case "models" -> argument.codePointCount(0, argument.length()) > MAX_MODEL_QUERY_CODE_POINTS
                     ? invalid(LineIntent.InvalidReason.MODEL_QUERY_TOO_LONG)
                     : user(LineIntent.UserAction.MODELS, argument);
+            case "styles" -> user(LineIntent.UserAction.STYLES);
+            case "style" -> style(argument);
+            case "translate-style" -> styledTranslation(argument);
             case "retranslate" -> retranslate(argument);
+            case "restyle" -> restyle(argument);
             case "外文翻譯" -> argument.isEmpty()
                     ? invalid(LineIntent.InvalidReason.FOREIGN_LANGUAGE_REQUIRED)
                     : user(LineIntent.UserAction.SET_FOREIGN_LANGUAGE, argument);
@@ -100,6 +105,38 @@ public class LineIntentParser {
 
     private static LineIntent.UserCommand user(LineIntent.UserAction action) {
         return user(action, "");
+    }
+
+    private static LineIntent style(String argument) {
+        if (argument.isEmpty()) {
+            return invalid(LineIntent.InvalidReason.STYLE_REQUIRED);
+        }
+        return TranslationStylePreset.find(argument)
+                .<LineIntent>map(preset -> user(LineIntent.UserAction.SET_STYLE, preset.id()))
+                .orElseGet(() -> new LineIntent.Invalid(
+                        LineIntent.InvalidReason.INVALID_STYLE, argument));
+    }
+
+    private static LineIntent styledTranslation(String argument) {
+        String[] parts = argument.split("\\s+", 2);
+        if (parts.length != 2 || parts[1].isBlank()) {
+            return invalid(LineIntent.InvalidReason.STYLED_TRANSLATION_FORMAT);
+        }
+        return TranslationStylePreset.find(parts[0])
+                .<LineIntent>map(preset -> new LineIntent.StyledTranslate(
+                        preset.id(), parts[1].trim()))
+                .orElseGet(() -> new LineIntent.Invalid(
+                        LineIntent.InvalidReason.INVALID_STYLE, parts[0]));
+    }
+
+    private static LineIntent restyle(String argument) {
+        String[] parts = argument.split("\\s+", 2);
+        if (parts.length != 2 || !TRANSLATION_RECORD_ID.matcher(parts[0]).matches()) {
+            return invalid(LineIntent.InvalidReason.TRANSLATION_ACTION_FORMAT);
+        }
+        return TranslationStylePreset.find(parts[1])
+                .<LineIntent>map(preset -> new LineIntent.Restyle(parts[0], preset.id()))
+                .orElseGet(() -> invalid(LineIntent.InvalidReason.TRANSLATION_ACTION_FORMAT));
     }
 
     private static LineIntent retranslate(String argument) {

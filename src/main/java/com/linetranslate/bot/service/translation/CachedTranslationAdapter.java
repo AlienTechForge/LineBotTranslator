@@ -33,14 +33,41 @@ public class CachedTranslationAdapter {
             UserPreferences preferences,
             String text,
             String targetLanguage) {
-        return translate(preferences, text, targetLanguage, properties.currentVariant());
+        TranslationStylePreset preset = preferences == null
+                ? TranslationStylePreset.defaultPreset()
+                : preferences.translationStyle();
+        return translate(preferences, text, targetLanguage, preset);
     }
 
     public AiExecutionOutcome translate(
             UserPreferences preferences,
             String text,
             String targetLanguage,
+            TranslationStylePreset preset) {
+        TranslationStylePreset effective = preset == null
+                ? TranslationStylePreset.defaultPreset()
+                : preset;
+        return translate(preferences, text, targetLanguage,
+                properties.currentVariant(effective), effective);
+    }
+
+    /** Compatibility seam retained for focused cache identity tests. */
+    AiExecutionOutcome translate(
+            UserPreferences preferences,
+            String text,
+            String targetLanguage,
             TranslationCacheVariant variant) {
+        TranslationStylePreset preset = TranslationStylePreset.find(variant.style())
+                .orElse(TranslationStylePreset.defaultPreset());
+        return translate(preferences, text, targetLanguage, variant, preset);
+    }
+
+    private AiExecutionOutcome translate(
+            UserPreferences preferences,
+            String text,
+            String targetLanguage,
+            TranslationCacheVariant variant,
+            TranslationStylePreset preset) {
         AiProviderRoute route = providerExecutionModule.planText(preferences);
         TranslationCacheKey key = TranslationCacheKeyFactory.create(
                 text,
@@ -54,6 +81,7 @@ public class CachedTranslationAdapter {
                         text,
                         targetLanguage,
                         variant,
+                        preset,
                         route,
                         key));
     }
@@ -63,12 +91,14 @@ public class CachedTranslationAdapter {
             String text,
             String targetLanguage,
             TranslationCacheVariant variant,
+            TranslationStylePreset preset,
             AiProviderRoute route,
             TranslationCacheKey plannedKey) {
         AiExecutionOutcome outcome = providerExecutionModule.translateTextOutcome(
                 preferences,
                 text,
-                targetLanguage);
+                targetLanguage,
+                preset);
         if (outcome instanceof AiExecutionOutcome.Failure failure) {
             cacheStore.recordSkipped(skipReason(failure.failure()));
             return outcome;

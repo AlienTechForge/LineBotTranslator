@@ -48,6 +48,7 @@ class UserPreferencesModuleTests {
         profile.setPreferredLanguage("legacy-language");
         profile.setPreferredModel("retired-model");
         profile.setRecentLanguages(null);
+        profile.setPreferredTranslationStyle("retired-style");
         UserPreferencesModule module = module(settings("en", "ja", "openai/gpt-4o-mini"));
 
         UserPreferences preferences = module.resolve(profile);
@@ -56,7 +57,22 @@ class UserPreferencesModuleTests {
         assertThat(preferences.chineseTargetLanguage()).isEqualTo("ja");
         assertThat(preferences.model()).isEqualTo("openai/gpt-4o-mini");
         assertThat(preferences.recentLanguages()).isEmpty();
+        assertThat(preferences.translationStyle())
+                .isEqualTo(com.linetranslate.bot.service.translation.TranslationStylePreset.defaultPreset());
         verify(repository, never()).save(any());
+    }
+
+    @Test
+    void styleUpdatePersistsOnlyValidatedStableId() {
+        UserPreferencesModule module = module(settings("en", "ja", "openai/gpt-4o-mini"));
+
+        UserPreferenceChange change = module.updateTranslationStyle(USER_ID, "business");
+
+        assertThat(profile.getPreferredTranslationStyle()).isEqualTo("business");
+        assertThat(change.current().translationStyle().id()).isEqualTo("business");
+        verify(repository).save(profile);
+        assertThatThrownBy(() -> module.updateTranslationStyle(USER_ID, "retired-style"))
+                .isInstanceOf(InvalidUserPreferenceException.class);
     }
 
     @Test

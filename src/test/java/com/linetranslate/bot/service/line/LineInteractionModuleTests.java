@@ -85,6 +85,28 @@ class LineInteractionModuleTests {
     }
 
     @Test
+    void oneTimeStyleAndResultRestyleUseTypedInteractionPaths() {
+        TranslationResponse styled = new TranslationResponse(
+                "您好", "您好", "record-2", "en", "zh-TW", "formal", "formal-v1");
+        TextMessage rendered = new TextMessage("rendered");
+        when(translationService.processStyledTranslationResponse(
+                "U-user", "hello", "formal"))
+                .thenReturn(styled);
+        when(translationActionModule.executeStyle("U-user", "record-1", "formal"))
+                .thenReturn(styled);
+        when(renderer.translation(styled)).thenReturn(rendered);
+
+        assertThat(module.execute("U-user", new LineIntent.StyledTranslate("formal", "hello")))
+                .isSameAs(rendered);
+        assertThat(module.execute("U-user", new LineIntent.Restyle("record-1", "formal")))
+                .isSameAs(rendered);
+
+        verify(translationService).processStyledTranslationResponse(
+                "U-user", "hello", "formal");
+        verify(translationActionModule).executeStyle("U-user", "record-1", "formal");
+    }
+
+    @Test
     void adminCommandUsesTypedAdminParserAndAuthorizedExecutionModule() {
         AdminIntent intent = AdminIntent.action(AdminIntent.Action.USAGE_SUMMARY, "", "");
         Message rendered = new TextMessage("usage");

@@ -28,7 +28,9 @@ public class LineLoadingAnimationAdapter implements LineLoadingFeedback {
     public void beforeText(Source source, LineIntent intent) {
         if (intent instanceof LineIntent.TranslateText
                 || intent instanceof LineIntent.QuickTranslate
-                || intent instanceof LineIntent.Retranslate) {
+                || intent instanceof LineIntent.StyledTranslate
+                || intent instanceof LineIntent.Retranslate
+                || intent instanceof LineIntent.Restyle) {
             show(source);
         }
     }

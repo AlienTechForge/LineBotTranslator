@@ -30,6 +30,7 @@ public class UserProfile {
     private String statusMessage;
     private String preferredLanguage;      // 用戶偏好的語言 (翻譯目標)
     private String preferredModel;         // 用戶偏好的 OpenRouter 模型 slug
+    private String preferredTranslationStyle; // stable TranslationStylePreset ID
     private String preferredChineseTargetLanguage; // 用戶偏好的中文翻譯目標語言
 
     @Builder.Default

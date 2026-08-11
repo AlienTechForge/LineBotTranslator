@@ -2,6 +2,7 @@ package com.linetranslate.bot.service.translation;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -45,9 +46,7 @@ class TranslationCachingContractTests {
         properties = new TranslationCacheProperties();
         properties.setTtl(Duration.ofMinutes(10));
         properties.setMaxEntries(100);
-        properties.setStyle("neutral");
         properties.setGlossaryVersion("none");
-        properties.setPromptVersion("translation-v1");
         cacheStore = new CaffeineTranslationCacheStore(properties, meterRegistry, ticker);
         adapter = new CachedTranslationAdapter(providerModule, cacheStore, properties);
         profile = preferences("openai", "gpt-a", "gemini-a");
@@ -57,20 +56,26 @@ class TranslationCachingContractTests {
     @Test
     void successfulTranslationHitAvoidsASecondProviderCall() {
         AiExecutionOutcome success = success("你好", "openai", "gpt-a", false);
-        when(providerModule.translateTextOutcome(profile, "hello", "zh-TW"))
+        when(providerModule.translateTextOutcome(
+                profile, "hello", "zh-TW", TranslationStylePreset.FAITHFUL))
                 .thenReturn(success);
 
         assertThat(adapter.translate(profile, "hello", "zh-TW")).isEqualTo(success);
         assertThat(adapter.translate(profile, "hello", "zh-TW")).isEqualTo(success);
 
-        verify(providerModule).translateTextOutcome(profile, "hello", "zh-TW");
+        verify(providerModule).translateTextOutcome(
+                profile, "hello", "zh-TW", TranslationStylePreset.FAITHFUL);
         assertThat(cacheStore.stats().hitCount()).isEqualTo(1);
         assertThat(cacheStore.stats().missCount()).isEqualTo(1);
     }
 
     @Test
     void providerModelStyleGlossaryAndPromptVersionsAreIsolated() {
-        when(providerModule.translateTextOutcome(profile, "hello", "zh-TW"))
+        when(providerModule.translateTextOutcome(
+                org.mockito.ArgumentMatchers.eq(profile),
+                org.mockito.ArgumentMatchers.eq("hello"),
+                org.mockito.ArgumentMatchers.eq("zh-TW"),
+                any(TranslationStylePreset.class)))
                 .thenReturn(success("v1", "openai", "gpt-a", false))
                 .thenReturn(success("v2", "gemini", "gemini-a", false))
                 .thenReturn(success("v3", "openai", "gpt-b", false))
@@ -79,34 +84,39 @@ class TranslationCachingContractTests {
                 .thenReturn(success("v6", "openai", "gpt-b", false));
 
         assertThat(adapter.translate(profile, "hello", "zh-TW",
-                new TranslationCacheVariant("neutral", "none", "translation-v1")))
+                new TranslationCacheVariant("faithful", "none", "faithful-v1")))
                 .isEqualTo(success("v1", "openai", "gpt-a", false));
 
         when(providerModule.planText(profile)).thenReturn(new AiProviderRoute("gemini", "gemini-a"));
         assertThat(adapter.translate(profile, "hello", "zh-TW",
-                new TranslationCacheVariant("neutral", "none", "translation-v1")))
+                new TranslationCacheVariant("faithful", "none", "faithful-v1")))
                 .isEqualTo(success("v2", "gemini", "gemini-a", false));
 
         when(providerModule.planText(profile)).thenReturn(new AiProviderRoute("openai", "gpt-b"));
         assertThat(adapter.translate(profile, "hello", "zh-TW",
-                new TranslationCacheVariant("neutral", "none", "translation-v1")))
+                new TranslationCacheVariant("faithful", "none", "faithful-v1")))
                 .isEqualTo(success("v3", "openai", "gpt-b", false));
         assertThat(adapter.translate(profile, "hello", "zh-TW",
-                new TranslationCacheVariant("formal", "none", "translation-v1")))
+                new TranslationCacheVariant("formal", "none", "formal-v1")))
                 .isEqualTo(success("v4", "openai", "gpt-b", false));
         assertThat(adapter.translate(profile, "hello", "zh-TW",
-                new TranslationCacheVariant("formal", "glossary-v2", "translation-v1")))
+                new TranslationCacheVariant("formal", "glossary-v2", "formal-v1")))
                 .isEqualTo(success("v5", "openai", "gpt-b", false));
         assertThat(adapter.translate(profile, "hello", "zh-TW",
-                new TranslationCacheVariant("formal", "glossary-v2", "translation-v2")))
+                new TranslationCacheVariant("formal", "glossary-v2", "formal-v2")))
                 .isEqualTo(success("v6", "openai", "gpt-b", false));
 
-        verify(providerModule, times(6)).translateTextOutcome(profile, "hello", "zh-TW");
+        verify(providerModule, times(6)).translateTextOutcome(
+                org.mockito.ArgumentMatchers.eq(profile),
+                org.mockito.ArgumentMatchers.eq("hello"),
+                org.mockito.ArgumentMatchers.eq("zh-TW"),
+                any(TranslationStylePreset.class));
     }
 
     @Test
     void entryExpiresAfterConfiguredTtl() {
-        when(providerModule.translateTextOutcome(profile, "hello", "zh-TW"))
+        when(providerModule.translateTextOutcome(
+                profile, "hello", "zh-TW", TranslationStylePreset.FAITHFUL))
                 .thenReturn(success("first", "openai", "gpt-a", false))
                 .thenReturn(success("second", "openai", "gpt-a", false));
 
@@ -116,7 +126,8 @@ class TranslationCachingContractTests {
         assertThat(adapter.translate(profile, "hello", "zh-TW"))
                 .isEqualTo(success("second", "openai", "gpt-a", false));
 
-        verify(providerModule, times(2)).translateTextOutcome(profile, "hello", "zh-TW");
+        verify(providerModule, times(2)).translateTextOutcome(
+                profile, "hello", "zh-TW", TranslationStylePreset.FAITHFUL);
     }
 
     @Test
@@ -125,11 +136,14 @@ class TranslationCachingContractTests {
         meterRegistry = new SimpleMeterRegistry();
         cacheStore = new CaffeineTranslationCacheStore(properties, meterRegistry, ticker);
         adapter = new CachedTranslationAdapter(providerModule, cacheStore, properties);
-        when(providerModule.translateTextOutcome(profile, "one", "zh-TW"))
+        when(providerModule.translateTextOutcome(
+                profile, "one", "zh-TW", TranslationStylePreset.FAITHFUL))
                 .thenReturn(success("一", "openai", "gpt-a", false));
-        when(providerModule.translateTextOutcome(profile, "two", "zh-TW"))
+        when(providerModule.translateTextOutcome(
+                profile, "two", "zh-TW", TranslationStylePreset.FAITHFUL))
                 .thenReturn(success("二", "openai", "gpt-a", false));
-        when(providerModule.translateTextOutcome(profile, "three", "zh-TW"))
+        when(providerModule.translateTextOutcome(
+                profile, "three", "zh-TW", TranslationStylePreset.FAITHFUL))
                 .thenReturn(success("三", "openai", "gpt-a", false));
 
         adapter.translate(profile, "one", "zh-TW");
@@ -146,11 +160,14 @@ class TranslationCachingContractTests {
         AiExecutionOutcome failure = failure(AiProviderException.Outcome.TRANSPORT_ERROR);
         AiExecutionOutcome blocked = failure(AiProviderException.Outcome.SAFETY_BLOCKED);
         AiExecutionOutcome fallback = success("fallback", "gemini", "gemini-a", true);
-        when(providerModule.translateTextOutcome(profile, "failure", "zh-TW"))
+        when(providerModule.translateTextOutcome(
+                profile, "failure", "zh-TW", TranslationStylePreset.FAITHFUL))
                 .thenReturn(failure);
-        when(providerModule.translateTextOutcome(profile, "blocked", "zh-TW"))
+        when(providerModule.translateTextOutcome(
+                profile, "blocked", "zh-TW", TranslationStylePreset.FAITHFUL))
                 .thenReturn(blocked);
-        when(providerModule.translateTextOutcome(profile, "fallback", "zh-TW"))
+        when(providerModule.translateTextOutcome(
+                profile, "fallback", "zh-TW", TranslationStylePreset.FAITHFUL))
                 .thenReturn(fallback);
 
         adapter.translate(profile, "failure", "zh-TW");
@@ -160,22 +177,27 @@ class TranslationCachingContractTests {
         adapter.translate(profile, "fallback", "zh-TW");
         adapter.translate(profile, "fallback", "zh-TW");
 
-        verify(providerModule, times(2)).translateTextOutcome(profile, "failure", "zh-TW");
-        verify(providerModule, times(2)).translateTextOutcome(profile, "blocked", "zh-TW");
-        verify(providerModule, times(2)).translateTextOutcome(profile, "fallback", "zh-TW");
+        verify(providerModule, times(2)).translateTextOutcome(
+                profile, "failure", "zh-TW", TranslationStylePreset.FAITHFUL);
+        verify(providerModule, times(2)).translateTextOutcome(
+                profile, "blocked", "zh-TW", TranslationStylePreset.FAITHFUL);
+        verify(providerModule, times(2)).translateTextOutcome(
+                profile, "fallback", "zh-TW", TranslationStylePreset.FAITHFUL);
         assertThat(cacheStore.estimatedSize()).isZero();
     }
 
     @Test
     void nonFallbackRouteMismatchIsNeverCached() {
         AiExecutionOutcome unexpectedRoute = success("unexpected", "gemini", "gemini-a", false);
-        when(providerModule.translateTextOutcome(profile, "hello", "zh-TW"))
+        when(providerModule.translateTextOutcome(
+                profile, "hello", "zh-TW", TranslationStylePreset.FAITHFUL))
                 .thenReturn(unexpectedRoute);
 
         adapter.translate(profile, "hello", "zh-TW");
         adapter.translate(profile, "hello", "zh-TW");
 
-        verify(providerModule, times(2)).translateTextOutcome(profile, "hello", "zh-TW");
+        verify(providerModule, times(2)).translateTextOutcome(
+                profile, "hello", "zh-TW", TranslationStylePreset.FAITHFUL);
         assertThat(cacheStore.estimatedSize()).isZero();
     }
 
@@ -183,13 +205,15 @@ class TranslationCachingContractTests {
     void providerResolvedModelIsTheStoredKeyAndCanBeReadThroughThePlannedAlias() {
         when(providerModule.planText(profile)).thenReturn(new AiProviderRoute("openai", "gpt-alias"));
         AiExecutionOutcome resolved = success("resolved", "openai", "gpt-versioned", false);
-        when(providerModule.translateTextOutcome(profile, "hello", "zh-TW"))
+        when(providerModule.translateTextOutcome(
+                profile, "hello", "zh-TW", TranslationStylePreset.FAITHFUL))
                 .thenReturn(resolved);
 
         assertThat(adapter.translate(profile, "hello", "zh-TW")).isEqualTo(resolved);
         assertThat(adapter.translate(profile, "hello", "zh-TW")).isEqualTo(resolved);
 
-        verify(providerModule).translateTextOutcome(profile, "hello", "zh-TW");
+        verify(providerModule).translateTextOutcome(
+                profile, "hello", "zh-TW", TranslationStylePreset.FAITHFUL);
         assertThat(cacheStore.keys())
                 .singleElement()
                 .extracting(TranslationCacheKey::model)
@@ -199,7 +223,8 @@ class TranslationCachingContractTests {
     @Test
     void keysAndMetricsNeverContainUserText() {
         String sensitiveText = "private-user-message-123";
-        when(providerModule.translateTextOutcome(profile, sensitiveText, "zh-TW"))
+        when(providerModule.translateTextOutcome(
+                profile, sensitiveText, "zh-TW", TranslationStylePreset.FAITHFUL))
                 .thenReturn(success("安全", "openai", "gpt-a", false));
 
         adapter.translate(profile, sensitiveText, "zh-TW");

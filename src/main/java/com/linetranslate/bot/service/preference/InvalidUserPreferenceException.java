@@ -5,7 +5,8 @@ public class InvalidUserPreferenceException extends IllegalArgumentException {
     public enum Kind {
         LANGUAGE,
         PROVIDER,
-        MODEL
+        MODEL,
+        STYLE
     }
 
     private final Kind kind;

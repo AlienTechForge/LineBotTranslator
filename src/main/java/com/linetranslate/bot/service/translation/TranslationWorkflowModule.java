@@ -48,11 +48,21 @@ public class TranslationWorkflowModule {
         String targetLanguage = request.requestedTargetLanguage() == null
                 ? defaultTargetLanguage(sourceLanguage, preferences)
                 : request.requestedTargetLanguage();
+        TranslationStylePreset style = request.requestedStylePresetId() == null
+                ? preferences.translationStyle()
+                : TranslationStylePreset.find(request.requestedStylePresetId())
+                        .orElse(preferences.translationStyle());
 
-        AiExecutionOutcome providerOutcome = translationAdapter.translate(
-                preferences,
-                request.sourceText(),
-                targetLanguage);
+        AiExecutionOutcome providerOutcome = request.requestedStylePresetId() == null
+                ? translationAdapter.translate(
+                        preferences,
+                        request.sourceText(),
+                        targetLanguage)
+                : translationAdapter.translate(
+                        preferences,
+                        request.sourceText(),
+                        targetLanguage,
+                        style);
         if (providerOutcome instanceof AiExecutionOutcome.Failure failure) {
             return new TranslationWorkflowOutcome.Failure(failure.failure());
         }
@@ -62,7 +72,7 @@ public class TranslationWorkflowModule {
                 0,
                 Duration.between(request.startedAt(), Instant.now()).toMillis());
         String recordId = persistSuccess(
-                request, sourceLanguage, targetLanguage, execution, processingTimeMillis);
+                request, sourceLanguage, targetLanguage, style, execution, processingTimeMillis);
 
         return new TranslationWorkflowOutcome.Success(new TranslationWorkflowResult(
                 request.sourceText(),
@@ -71,7 +81,9 @@ public class TranslationWorkflowModule {
                 execution,
                 processingTimeMillis,
                 request.kind(),
-                recordId));
+                recordId,
+                style.id(),
+                style.promptVersion()));
     }
 
     private String defaultTargetLanguage(String sourceLanguage, UserPreferences preferences) {
@@ -92,6 +104,7 @@ public class TranslationWorkflowModule {
             TranslationWorkflowRequest request,
             String sourceLanguage,
             String targetLanguage,
+            TranslationStylePreset style,
             AiExecutionResult execution,
             long processingTimeMillis) {
         TranslationRecord record = TranslationRecord.builder()
@@ -102,6 +115,8 @@ public class TranslationWorkflowModule {
                 .translatedText(execution.text())
                 .aiProvider(execution.providerName())
                 .modelName(execution.modelName())
+                .stylePresetId(style.id())
+                .stylePromptVersion(style.promptVersion())
                 .createdAt(LocalDateTime.now())
                 .processingTimeMs(processingTimeMillis)
                 .isImageTranslation(request.kind().isImage())

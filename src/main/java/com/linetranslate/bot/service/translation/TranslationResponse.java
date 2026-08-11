@@ -9,10 +9,23 @@ public record TranslationResponse(
         String translatedText,
         String recordId,
         String sourceLanguage,
-        String targetLanguage) {
+        String targetLanguage,
+        String stylePresetId,
+        String stylePromptVersion) {
+
+    public TranslationResponse(
+            String displayText,
+            String translatedText,
+            String recordId,
+            String sourceLanguage,
+            String targetLanguage) {
+        this(displayText, translatedText, recordId, sourceLanguage, targetLanguage,
+                TranslationStylePreset.defaultPreset().id(),
+                TranslationStylePreset.defaultPreset().promptVersion());
+    }
 
     public static TranslationResponse plain(String displayText) {
-        return new TranslationResponse(displayText, null, null, null, null);
+        return new TranslationResponse(displayText, null, null, null, null, null, null);
     }
 
     public static TranslationResponse success(
@@ -23,7 +36,9 @@ public record TranslationResponse(
                 result.translatedText(),
                 result.recordId(),
                 result.sourceLanguage(),
-                result.targetLanguage());
+                result.targetLanguage(),
+                result.stylePresetId(),
+                result.stylePromptVersion());
     }
 
     public static TranslationResponse fromRecord(TranslationRecord record) {
@@ -35,7 +50,9 @@ public record TranslationResponse(
                 record.getTranslatedText(),
                 record.getId(),
                 record.getSourceLanguage(),
-                record.getTargetLanguage());
+                record.getTargetLanguage(),
+                TranslationStylePreset.resolve(record.getStylePresetId()).id(),
+                validPromptVersion(record));
     }
 
     public boolean actionable() {
@@ -45,5 +62,16 @@ public record TranslationResponse(
                 && !translatedText.isBlank()
                 && targetLanguage != null
                 && !targetLanguage.isBlank();
+    }
+
+    private static String validPromptVersion(TranslationRecord record) {
+        TranslationStylePreset preset = TranslationStylePreset.find(record.getStylePresetId())
+                .orElse(null);
+        if (preset == null) {
+            return TranslationStylePreset.defaultPreset().promptVersion();
+        }
+        return record.getStylePromptVersion() == null || record.getStylePromptVersion().isBlank()
+                ? preset.promptVersion()
+                : record.getStylePromptVersion();
     }
 }

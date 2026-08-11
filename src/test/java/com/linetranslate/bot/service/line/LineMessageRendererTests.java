@@ -86,7 +86,8 @@ class LineMessageRendererTests {
     @Test
     void actionableTranslationUsesClipboardAndOpaquePostbacks() {
         var response = new TranslationResponse(
-                "完整翻譯訊息", "翻譯結果", "507f1f77bcf86cd799439011", "en", "ja");
+                "完整翻譯訊息", "翻譯結果", "507f1f77bcf86cd799439011", "en", "ja",
+                "faithful", "faithful-v1");
 
         TextMessage rendered = (TextMessage) renderer.translation(response);
 
@@ -106,6 +107,11 @@ class LineMessageRendererTests {
                     assertThat(action.data()).startsWith("command=").hasSizeLessThanOrEqualTo(300);
                     assertThat(action.data()).doesNotContain("翻譯結果", "完整翻譯訊息");
                 });
+        assertThat(actions.stream()
+                .filter(PostbackAction.class::isInstance)
+                .map(PostbackAction.class::cast)
+                .map(PostbackAction::data))
+                .anySatisfy(data -> assertThat(data).contains("restyle"));
     }
 
     @Test

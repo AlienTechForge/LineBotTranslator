@@ -120,6 +120,43 @@ class TranslationActionModuleTests {
         verify(translationService, never()).translateExisting(any(), any(), any());
     }
 
+    @Test
+    void styleActionIsAuthorizedClaimedAndDoesNotChangeTargetLanguage() {
+        TranslationRecord source = record("source-1", "U-user", "hello", "你好", "zh-TW");
+        TranslationResponse translated = new TranslationResponse(
+                "您好", "您好", "result-1", "en", "zh-TW", "formal", "formal-v1");
+        when(recordRepository.findByIdAndUserId("source-1", "U-user"))
+                .thenReturn(Optional.of(source));
+        when(claimRepository.insert(any(TranslationActionClaim.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+        when(translationService.translateExisting("U-user", "hello", "zh-TW", "formal"))
+                .thenReturn(translated);
+
+        assertThat(module.executeStyle("U-user", "source-1", "formal"))
+                .isEqualTo(translated);
+
+        ArgumentCaptor<TranslationActionClaim> captor =
+                ArgumentCaptor.forClass(TranslationActionClaim.class);
+        verify(claimRepository).save(captor.capture());
+        assertThat(captor.getValue().getTargetLanguage()).isEqualTo("zh-TW");
+        assertThat(captor.getValue().getStylePresetId()).isEqualTo("formal");
+        assertThat(captor.getValue().getStatus())
+                .isEqualTo(TranslationActionClaim.Status.COMPLETED);
+    }
+
+    @Test
+    void invalidStyleNeverCreatesClaimOrCallsProvider() {
+        TranslationRecord source = record("source-1", "U-user", "hello", "你好", "zh-TW");
+        when(recordRepository.findByIdAndUserId("source-1", "U-user"))
+                .thenReturn(Optional.of(source));
+
+        TranslationResponse response = module.executeStyle("U-user", "source-1", "retired");
+
+        assertThat(response.actionable()).isFalse();
+        verify(claimRepository, never()).insert(any(TranslationActionClaim.class));
+        verify(translationService, never()).translateExisting(any(), any(), any(), any());
+    }
+
     private static TranslationRecord record(
             String id,
             String userId,

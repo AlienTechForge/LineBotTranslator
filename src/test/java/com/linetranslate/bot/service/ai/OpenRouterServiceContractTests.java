@@ -50,13 +50,16 @@ class OpenRouterServiceContractTests {
         OpenRouterService adapter = new OpenRouterService(config, httpClient, objectMapper, catalog);
 
         AiProviderResponse result = adapter.execute(AiProviderRequest.translate(
-                "anthropic/claude-sonnet-4", "hello", "zh-TW"));
+                "anthropic/claude-sonnet-4", "hello", "zh-TW",
+                "business", "business-v1", "Use concise business terminology."));
 
         assertThat(captured.get().url().encodedPath()).isEqualTo("/api/v1/chat/completions");
         assertThat(captured.get().header("Authorization")).isEqualTo("Bearer test-key");
         JsonNode body = objectMapper.readTree(requestBody(captured.get()));
         assertThat(body.path("model").asText()).isEqualTo("anthropic/claude-sonnet-4");
         assertThat(body.path("messages").get(0).path("role").asText()).isEqualTo("system");
+        assertThat(body.path("messages").get(0).path("content").asText())
+                .contains("business-v1", "Use concise business terminology.");
         assertThat(body.path("messages").get(1).path("content").asText()).isEqualTo("hello");
         assertThat(result.text()).isEqualTo("你好");
         assertThat(result.model()).isEqualTo("anthropic/claude-sonnet-4");

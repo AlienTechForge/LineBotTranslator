@@ -70,6 +70,20 @@ class LineLoadingAnimationAdapterTests {
     }
 
     @Test
+    void privateStyleTranslationDisplaysLoadingAnimation() {
+        var request = new ShowLoadingAnimationRequest("user-1", 20);
+        when(messagingApiClient.showLoadingAnimation(request))
+                .thenReturn(CompletableFuture.completedFuture(null));
+        var adapter = new LineLoadingAnimationAdapter(messagingApiClient);
+
+        adapter.beforeText(
+                new UserSource("user-1"),
+                new LineIntent.StyledTranslate("formal", "hello"));
+
+        verify(messagingApiClient).showLoadingAnimation(request);
+    }
+
+    @Test
     void privateImageDisplaysLoadingAnimation() {
         var request = new ShowLoadingAnimationRequest("user-1", 20);
         when(messagingApiClient.showLoadingAnimation(request))

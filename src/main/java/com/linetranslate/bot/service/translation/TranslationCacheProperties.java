@@ -22,13 +22,7 @@ public class TranslationCacheProperties {
     private long maxEntries = 1_000;
 
     @NotBlank
-    private String style = "neutral";
-
-    @NotBlank
     private String glossaryVersion = "none";
-
-    @NotBlank
-    private String promptVersion = "translation-v1";
 
     public Duration getTtl() {
         return ttl;
@@ -46,14 +40,6 @@ public class TranslationCacheProperties {
         this.maxEntries = maxEntries;
     }
 
-    public String getStyle() {
-        return style;
-    }
-
-    public void setStyle(String style) {
-        this.style = style;
-    }
-
     public String getGlossaryVersion() {
         return glossaryVersion;
     }
@@ -62,15 +48,11 @@ public class TranslationCacheProperties {
         this.glossaryVersion = glossaryVersion;
     }
 
-    public String getPromptVersion() {
-        return promptVersion;
-    }
-
-    public void setPromptVersion(String promptVersion) {
-        this.promptVersion = promptVersion;
-    }
-
-    public TranslationCacheVariant currentVariant() {
-        return new TranslationCacheVariant(style, glossaryVersion, promptVersion);
+    public TranslationCacheVariant currentVariant(TranslationStylePreset preset) {
+        TranslationStylePreset effective = preset == null
+                ? TranslationStylePreset.defaultPreset()
+                : preset;
+        return new TranslationCacheVariant(
+                effective.id(), glossaryVersion, effective.promptVersion());
     }
 }
