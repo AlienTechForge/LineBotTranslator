@@ -113,7 +113,8 @@ public class MongoConfig extends AbstractMongoClientConfiguration {
   "pictureUrl": "用戶頭像URL",
   "statusMessage": "用戶狀態訊息",
   "preferredLanguage": "偏好的翻譯語言",
-  "preferredAiProvider": "偏好的AI提供者(openai或gemini)",
+  "preferredModel": "偏好的 OpenRouter 模型 slug",
+  "preferredChineseTargetLanguage": "中文原文的偏好目標語言",
   "recentTranslations": ["最近的翻譯1", "最近的翻譯2", ...],
   "recentLanguages": ["最近使用的語言1", "最近使用的語言2", ...],
   "firstInteractionAt": "首次互動時間",
@@ -160,7 +161,8 @@ public class UserProfile {
     private String pictureUrl;                // 頭像 URL
     private String statusMessage;             // 狀態訊息
     private String preferredLanguage;         // 偏好的翻譯語言
-    private String preferredAiProvider;       // 偏好的 AI 提供者 (openai 或 gemini)
+    private String preferredModel;            // 偏好的 OpenRouter 模型 slug
+    private String preferredChineseTargetLanguage; // 中文原文的偏好目標語言
 
     @Builder.Default
     private List<String> recentTranslations = new ArrayList<>();  // 最近的翻譯
@@ -212,7 +214,7 @@ public class TranslationRecord {
     private String sourceLanguage;        // 原始語言
     private String targetLanguage;        // 目標語言
     private String translatedText;        // 翻譯後文字
-    private String aiProvider;            // 使用的 AI 提供者 (openai 或 gemini)
+    private String aiProvider;            // openrouter（歷史資料可能保留舊維度）
     private String modelName;             // 使用的模型名稱
     private LocalDateTime createdAt;      // 創建時間
     private double processingTimeMs;      // 處理時間 (毫秒)
@@ -279,9 +281,10 @@ public interface TranslationRecordRepository extends MongoRepository<Translation
    - `TranslationService` 解析翻譯請求格式
    - 使用 `LanguageDetectionService` 檢測源語言
    - 根據用戶偏好或默認規則選擇目標語言
-   - 使用 `AiServiceFactory` 獲取適當的 AI 服務
-   - 執行翻譯並返回結果
-   - 保存翻譯記錄並更新用戶資料
+   - `UserPreferencesModule` resolve 目標語言與 OpenRouter model
+   - `CachedTranslationAdapter` 查 bounded、model-aware cache
+   - `AiProviderExecutionModule` 驗證 model capability 並呼叫唯一 OpenRouter Adapter
+   - 成功後保存實際 provider/model metadata，並更新用戶資料
 
 2. **圖片翻譯流程**：
    - 用戶發送圖片
@@ -294,23 +297,26 @@ public interface TranslationRecordRepository extends MongoRepository<Translation
 
 ### AI 服務整合
 
-1. **AiService 介面**：
+1. **AiProviderAdapter Interface**：
    ```java
-   public interface AiService {
-       String translateText(String text, String targetLanguage);
-       String processImage(String prompt, String imageUrl);
-       String getProviderName();
-       String getModelName();
+   public interface AiProviderAdapter {
+       String providerName();
+       String defaultModel();
+       Set<String> availableModels();
+       Set<AiProviderOperation> capabilities();
+       AiProviderResponse execute(AiProviderRequest request);
    }
    ```
 
-2. **OpenAI 實現**：
-   - 使用 OpenAI API 進行文字翻譯和圖片處理
-   - 支持 GPT-4o 模型
+2. **OpenRouter Implementation**：
+   - `OpenRouterService` 是唯一 Adapter，呼叫 `/api/v1/chat/completions`
+   - 文字翻譯、AI language detection 與 image-capable model 共用 typed request/outcome
+   - Authorization 使用 `OPEN_ROUTE_API_KEY`，provider response body 與 key 不進 logs
 
-3. **Google Gemini 實現**：
-   - 使用 Google Gemini API 進行文字翻譯和圖片處理
-   - 支持 Gemini 1.5 Pro 模型
+3. **Model Catalog Seam**：
+   - `OpenRouterModelCatalog` 從 `/api/v1/models` 探索 text-output models
+   - catalog 保存 capability/pricing snapshot，採 TTL cache 與 stale/default fallback
+   - LINE `/models [關鍵字]` 搜尋，`/model <slug>` 保存個人選擇
 
 ### OCR 實現
 
@@ -320,31 +326,17 @@ public interface TranslationRecordRepository extends MongoRepository<Translation
 
 2. **AI 模型備用方案**：
    - 當 Google Cloud Vision API 不可用時
-   - 使用 OpenAI 或 Gemini 的圖片處理能力進行 OCR
+   - 使用已選擇且支援 image input 的 OpenRouter model 進行辨識
 
 ## 系統性能與優化
 
 ### 緩存策略
 
-使用 Spring Cache 進行翻譯結果緩存：
-
-```java
-@Cacheable(value = "translations", key = "{#text, #targetLanguage, #aiService.providerName}")
-public String translateWithService(AiService aiService, String text, String targetLanguage) {
-    return aiService.translateText(text, targetLanguage);
-}
-```
+`CachedTranslationAdapter` 使用 Caffeine bounded cache。Identity 包含 source digest、target、planned provider/model、style、glossary version 與 prompt version；只保存 model identity 一致的成功結果，failure 與 safety blocked 不寫入。TTL 與 maximum entries 由部署 variables 控制。
 
 ### 異步處理
 
-使用 Spring 的 `@Async` 註解進行異步處理：
-
-```java
-@Async
-public CompletableFuture<String> processImageAsync(String userId, String messageId) {
-    // 異步處理圖片
-}
-```
+`WebhookIngestionModule` 使用 bounded `Executor` 非同步處理已 claim 的 LINE event。Queue 滿時釋放 claim 並回 `503`，由 LINE redelivery；reply retry 不重複執行 business operation。
 
 ## 安全性考慮
 
@@ -362,9 +354,9 @@ public CompletableFuture<String> processImageAsync(String userId, String message
    - 各功能模塊解耦
    - 介面定義清晰
 
-2. **可插拔的 AI 服務**：
-   - 通過 `AiServiceFactory` 實現 AI 服務的動態選擇
-   - 便於添加新的 AI 提供者
+2. **動態 AI model catalog**：
+   - 通過 `AiModelCatalog` 探索與驗證 OpenRouter models
+   - 新 model 不需新增 provider-specific connector
 
 3. **配置驅動**：
    - 大部分功能可通過配置啟用/禁用
