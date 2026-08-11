@@ -20,7 +20,6 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import com.linecorp.bot.client.base.BlobContent;
 import com.linecorp.bot.client.base.Result;
@@ -92,7 +91,6 @@ class ImageTranslationDetectionContractTests {
                 messagingApiBlobClient,
                 minioStorageService);
         imageTranslationService = new ImageTranslationService(pipeline, userProfileRepository);
-        ReflectionTestUtils.setField(imageTranslationService, "ocrEnabled", true);
 
         userProfile = UserProfile.builder()
                 .userId("U-test")
@@ -174,4 +172,5 @@ class ImageTranslationDetectionContractTests {
         assertThat(userProfile.getTotalTranslations()).isZero();
         assertThat(userProfile.getImageTranslations()).isZero();
     }
+
 }

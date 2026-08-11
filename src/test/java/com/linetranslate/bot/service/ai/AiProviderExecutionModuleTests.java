@@ -5,10 +5,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.Test;
 
 import com.linetranslate.bot.service.preference.UserPreferences;
+import com.linetranslate.bot.service.settings.RuntimeSettings;
 import static com.linetranslate.bot.testing.UserPreferencesFixtures.preferences;
 
 class AiProviderExecutionModuleTests {
@@ -98,8 +100,40 @@ class AiProviderExecutionModuleTests {
         assertThat(openAi.requests).isEmpty();
     }
 
+    @Test
+    void providerAndModelDefaultsFollowRuntimeUpdates() {
+        FakeAdapter openAi = new FakeAdapter(
+                "openai", "gpt-default", Set.of("gpt-default", "gpt-selected"));
+        FakeAdapter gemini = new FakeAdapter(
+                "gemini", "gemini-default", Set.of("gemini-default", "gemini-selected"));
+        AtomicReference<RuntimeSettings> runtime = new AtomicReference<>(settings(
+                "gemini", "gpt-selected", "gemini-selected"));
+        AiProviderExecutionModule module = new AiProviderExecutionModule(
+                List.of(openAi, gemini), runtime::get);
+
+        module.generateTextOutcome(null, null, "first");
+        runtime.set(settings("openai", "gpt-selected", "gemini-default"));
+        module.generateTextOutcome(null, null, "second");
+
+        assertThat(gemini.requests).singleElement()
+                .extracting(AiProviderRequest::model)
+                .isEqualTo("gemini-selected");
+        assertThat(openAi.requests).singleElement()
+                .extracting(AiProviderRequest::model)
+                .isEqualTo("gpt-selected");
+    }
+
     private static AiProviderExecutionModule module(AiProviderAdapter... adapters) {
         return new AiProviderExecutionModule(List.of(adapters), "openai");
+    }
+
+    private static RuntimeSettings settings(
+            String provider,
+            String openAiModel,
+            String geminiModel) {
+        return new RuntimeSettings(
+                "en", "zh-TW", provider, openAiModel, geminiModel, true,
+                1, 1, null, "U-admin", RuntimeSettings.Source.PERSISTED);
     }
 
     private static AiProviderException failure(

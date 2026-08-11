@@ -8,11 +8,13 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.function.Function;
 
-import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import com.linetranslate.bot.logging.SafeLog;
 import com.linetranslate.bot.service.preference.UserPreferences;
+import com.linetranslate.bot.service.settings.RuntimeSettings;
+import com.linetranslate.bot.service.settings.RuntimeSettingsSource;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -25,27 +27,32 @@ import lombok.extern.slf4j.Slf4j;
 public class AiProviderExecutionModule {
 
     private final Map<String, AiProviderAdapter> adapters;
-    private final String defaultProvider;
+    private final RuntimeSettingsSource runtimeSettingsSource;
 
+    @Autowired
     public AiProviderExecutionModule(
             List<AiProviderAdapter> adapters,
-            @Value("${app.ai.default-provider:openai}") String defaultProvider) {
+            RuntimeSettingsSource runtimeSettingsSource) {
         Map<String, AiProviderAdapter> indexedAdapters = new LinkedHashMap<>();
         for (AiProviderAdapter adapter : adapters) {
             indexedAdapters.put(normalizeProvider(adapter.providerName()), adapter);
         }
         this.adapters = Map.copyOf(indexedAdapters);
-        String configuredDefault = normalizeProvider(defaultProvider);
-        this.defaultProvider = indexedAdapters.containsKey(configuredDefault)
-                ? configuredDefault
-                : indexedAdapters.keySet().stream().findFirst().orElse(configuredDefault);
+        this.runtimeSettingsSource = runtimeSettingsSource;
 
         if (indexedAdapters.isEmpty()) {
             log.warn("No AI provider Adapter is configured");
         } else {
             log.info("AI provider execution Module initialized: default={}, adapters={}",
-                    this.defaultProvider, indexedAdapters.keySet());
+                    defaultProvider(), indexedAdapters.keySet());
         }
+    }
+
+    /** Compatibility constructor for focused unit tests. */
+    public AiProviderExecutionModule(
+            List<AiProviderAdapter> adapters,
+            String defaultProvider) {
+        this(adapters, fixedSettings(adapters, defaultProvider));
     }
 
     public AiExecutionOutcome translateTextOutcome(
@@ -106,13 +113,19 @@ public class AiProviderExecutionModule {
             String provider,
             String requestedModel,
             String prompt) {
-        String normalizedProvider = normalizeProvider(provider == null ? defaultProvider : provider);
+        RuntimeSettings settings = runtimeSettingsSource.current();
+        String normalizedProvider = normalizeProvider(provider == null
+                ? effectiveDefaultProvider(settings)
+                : provider);
+        String effectiveRequestedModel = requestedModel == null || requestedModel.isBlank()
+                ? settings.modelFor(normalizedProvider)
+                : requestedModel;
         return executeWithFallback(
                 AiProviderOperation.GENERATE_TEXT,
                 normalizedProvider,
                 adapter -> normalizedProvider.equals(normalizeProvider(adapter.providerName()))
-                        ? requestedModel
-                        : adapter.defaultModel(),
+                        ? effectiveRequestedModel
+                        : settings.modelFor(adapter.providerName()),
                 model -> AiProviderRequest.generate(model, prompt));
     }
 
@@ -254,12 +267,14 @@ public class AiProviderExecutionModule {
 
     private String preferredProvider(UserPreferences preferences) {
         String preferred = preferences == null ? null : preferences.provider();
-        return normalizeProvider(preferred == null || preferred.isBlank() ? defaultProvider : preferred);
+        return normalizeProvider(preferred == null || preferred.isBlank()
+                ? defaultProvider()
+                : preferred);
     }
 
     private String preferredModel(AiProviderAdapter adapter, UserPreferences preferences) {
         if (preferences == null) {
-            return adapter.defaultModel();
+            return runtimeSettingsSource.current().modelFor(adapter.providerName());
         }
         String preferred = preferences.modelFor(normalizeProvider(adapter.providerName()));
         return effectiveModel(adapter, preferred);
@@ -288,6 +303,43 @@ public class AiProviderExecutionModule {
             return "openai";
         }
         return "gemini".equals(provider.trim().toLowerCase(Locale.ROOT)) ? "gemini" : "openai";
+    }
+
+    private String defaultProvider() {
+        return effectiveDefaultProvider(runtimeSettingsSource.current());
+    }
+
+    private String effectiveDefaultProvider(RuntimeSettings settings) {
+        String configured = normalizeProvider(settings.defaultAiProvider());
+        return adapters.containsKey(configured)
+                ? configured
+                : adapters.keySet().stream().findFirst().orElse(configured);
+    }
+
+    private static RuntimeSettingsSource fixedSettings(
+            List<AiProviderAdapter> adapters,
+            String defaultProvider) {
+        return () -> new RuntimeSettings(
+                "en",
+                "zh-TW",
+                normalizeProvider(defaultProvider),
+                adapterDefault(adapters, "openai"),
+                adapterDefault(adapters, "gemini"),
+                true,
+                1,
+                0,
+                null,
+                null,
+                RuntimeSettings.Source.DEPLOYMENT_DEFAULTS);
+    }
+
+    private static String adapterDefault(List<AiProviderAdapter> adapters, String provider) {
+        return adapters.stream()
+                .filter(adapter -> provider.equals(normalizeProvider(adapter.providerName())))
+                .map(AiProviderAdapter::defaultModel)
+                .filter(model -> model != null && !model.isBlank())
+                .findFirst()
+                .orElse("unavailable");
     }
 
     private AiProviderException adapterFailure(
