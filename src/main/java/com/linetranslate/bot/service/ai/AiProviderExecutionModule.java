@@ -15,6 +15,7 @@ import com.linetranslate.bot.logging.SafeLog;
 import com.linetranslate.bot.service.preference.UserPreferences;
 import com.linetranslate.bot.service.settings.RuntimeSettings;
 import com.linetranslate.bot.service.settings.RuntimeSettingsSource;
+import com.linetranslate.bot.service.usage.AiUsageEventSink;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -28,17 +29,20 @@ public class AiProviderExecutionModule {
 
     private final Map<String, AiProviderAdapter> adapters;
     private final RuntimeSettingsSource runtimeSettingsSource;
+    private final AiUsageEventSink usageEventSink;
 
     @Autowired
     public AiProviderExecutionModule(
             List<AiProviderAdapter> adapters,
-            RuntimeSettingsSource runtimeSettingsSource) {
+            RuntimeSettingsSource runtimeSettingsSource,
+            AiUsageEventSink usageEventSink) {
         Map<String, AiProviderAdapter> indexedAdapters = new LinkedHashMap<>();
         for (AiProviderAdapter adapter : adapters) {
             indexedAdapters.put(normalizeProvider(adapter.providerName()), adapter);
         }
         this.adapters = Map.copyOf(indexedAdapters);
         this.runtimeSettingsSource = runtimeSettingsSource;
+        this.usageEventSink = usageEventSink;
 
         if (indexedAdapters.isEmpty()) {
             log.warn("No AI provider Adapter is configured");
@@ -52,18 +56,33 @@ public class AiProviderExecutionModule {
     public AiProviderExecutionModule(
             List<AiProviderAdapter> adapters,
             String defaultProvider) {
-        this(adapters, fixedSettings(adapters, defaultProvider));
+        this(adapters, fixedSettings(adapters, defaultProvider), noOpUsageSink());
+    }
+
+    public AiProviderExecutionModule(
+            List<AiProviderAdapter> adapters,
+            RuntimeSettingsSource runtimeSettingsSource) {
+        this(adapters, runtimeSettingsSource, noOpUsageSink());
+    }
+
+    public AiProviderExecutionModule(
+            List<AiProviderAdapter> adapters,
+            String defaultProvider,
+            AiUsageEventSink usageEventSink) {
+        this(adapters, fixedSettings(adapters, defaultProvider), usageEventSink);
     }
 
     public AiExecutionOutcome translateTextOutcome(
             UserPreferences preferences,
             String text,
             String targetLanguage) {
-        return executeWithFallback(
+        AiExecutionOutcome outcome = executeWithFallback(
                 AiProviderOperation.TRANSLATE_TEXT,
                 preferredProvider(preferences),
                 adapter -> preferredModel(adapter, preferences),
                 model -> AiProviderRequest.translate(model, text, targetLanguage));
+        recordUsage(AiProviderOperation.TRANSLATE_TEXT, outcome);
+        return outcome;
     }
 
     /**
@@ -95,11 +114,13 @@ public class AiProviderExecutionModule {
             UserPreferences preferences,
             String prompt,
             String imageData) {
-        return executeWithFallback(
+        AiExecutionOutcome outcome = executeWithFallback(
                 AiProviderOperation.PROCESS_IMAGE,
                 preferredProvider(preferences),
                 adapter -> preferredModel(adapter, preferences),
                 model -> AiProviderRequest.image(model, prompt, imageData));
+        recordUsage(AiProviderOperation.PROCESS_IMAGE, outcome);
+        return outcome;
     }
 
     public AiExecutionResult processImage(
@@ -120,13 +141,15 @@ public class AiProviderExecutionModule {
         String effectiveRequestedModel = requestedModel == null || requestedModel.isBlank()
                 ? settings.modelFor(normalizedProvider)
                 : requestedModel;
-        return executeWithFallback(
+        AiExecutionOutcome outcome = executeWithFallback(
                 AiProviderOperation.GENERATE_TEXT,
                 normalizedProvider,
                 adapter -> normalizedProvider.equals(normalizeProvider(adapter.providerName()))
                         ? effectiveRequestedModel
                         : settings.modelFor(adapter.providerName()),
                 model -> AiProviderRequest.generate(model, prompt));
+        recordUsage(AiProviderOperation.GENERATE_TEXT, outcome);
+        return outcome;
     }
 
     public AiExecutionResult generateText(String provider, String requestedModel, String prompt) {
@@ -331,6 +354,20 @@ public class AiProviderExecutionModule {
                 null,
                 null,
                 RuntimeSettings.Source.DEPLOYMENT_DEFAULTS);
+    }
+
+    private void recordUsage(AiProviderOperation operation, AiExecutionOutcome outcome) {
+        try {
+            usageEventSink.record(operation, outcome);
+        } catch (RuntimeException failure) {
+            log.warn("AI usage accounting degraded: operation={}, failure={}",
+                    operation, SafeLog.failure(failure));
+        }
+    }
+
+    private static AiUsageEventSink noOpUsageSink() {
+        return (operation, outcome) -> {
+        };
     }
 
     private static String adapterDefault(List<AiProviderAdapter> adapters, String provider) {

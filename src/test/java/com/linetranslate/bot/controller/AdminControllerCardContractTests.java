@@ -107,7 +107,8 @@ class AdminControllerCardContractTests {
                 "config", "config c2lang en", "config lang zh-TW",
                 "config ai openai", "config openai gpt-4o",
                 "config gemini gemini-1.5-pro", "config ocr on", "config unknown",
-                "usage", "usage month 2026-08", "usage provider openai",
+                "usage", "usage day 2026-08-11", "usage month 2026-08",
+                "usage provider openai", "usage model gpt-4o", "usage type image",
                 "usage summary", "usage unknown",
                 "add", "add U-target", "remove", "remove U-target", "unknown");
     }

@@ -24,8 +24,6 @@ public interface TranslationRecordRepository extends MongoRepository<Translation
 
     long countByAiProvider(String aiProvider);
 
-    List<TranslationRecord> findByAiProvider(String aiProvider);
-
     long countByIsImageTranslation(boolean isImageTranslation);
 
     long countByCreatedAtBetween(LocalDateTime start, LocalDateTime end);

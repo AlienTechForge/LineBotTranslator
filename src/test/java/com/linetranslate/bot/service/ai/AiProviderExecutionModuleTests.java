@@ -1,6 +1,9 @@
 package com.linetranslate.bot.service.ai;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.verify;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -11,6 +14,7 @@ import org.junit.jupiter.api.Test;
 
 import com.linetranslate.bot.service.preference.UserPreferences;
 import com.linetranslate.bot.service.settings.RuntimeSettings;
+import com.linetranslate.bot.service.usage.AiUsageEventSink;
 import static com.linetranslate.bot.testing.UserPreferencesFixtures.preferences;
 
 class AiProviderExecutionModuleTests {
@@ -121,6 +125,42 @@ class AiProviderExecutionModuleTests {
         assertThat(openAi.requests).singleElement()
                 .extracting(AiProviderRequest::model)
                 .isEqualTo("gpt-selected");
+    }
+
+    @Test
+    void completedProviderOutcomeIsSentToUsageAccountingSeam() {
+        FakeAdapter openAi = new FakeAdapter(
+                "openai", "gpt-default", Set.of("gpt-default"));
+        AiUsageEventSink sink = mock(AiUsageEventSink.class);
+        AiProviderExecutionModule module = new AiProviderExecutionModule(
+                List.of(openAi), "openai", sink);
+
+        AiExecutionOutcome outcome = module.translateTextOutcome(
+                preferences("openai", "gpt-default", "gemini-default"),
+                "hello",
+                "zh-TW");
+
+        verify(sink).record(AiProviderOperation.TRANSLATE_TEXT, outcome);
+    }
+
+    @Test
+    void accountingOutageDoesNotChangeProviderOutcome() {
+        FakeAdapter openAi = new FakeAdapter(
+                "openai", "gpt-default", Set.of("gpt-default"));
+        AiUsageEventSink sink = mock(AiUsageEventSink.class);
+        doThrow(new IllegalStateException("mongo unavailable"))
+                .when(sink).record(
+                        org.mockito.ArgumentMatchers.eq(AiProviderOperation.TRANSLATE_TEXT),
+                        org.mockito.ArgumentMatchers.any(AiExecutionOutcome.class));
+        AiProviderExecutionModule module = new AiProviderExecutionModule(
+                List.of(openAi), "openai", sink);
+
+        AiExecutionOutcome outcome = module.translateTextOutcome(
+                preferences("openai", "gpt-default", "gemini-default"),
+                "hello",
+                "zh-TW");
+
+        assertThat(outcome).isInstanceOf(AiExecutionOutcome.Success.class);
     }
 
     private static AiProviderExecutionModule module(AiProviderAdapter... adapters) {
