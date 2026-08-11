@@ -3,6 +3,8 @@ package com.linetranslate.bot.service;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.YearMonth;
+import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -37,12 +39,18 @@ import com.linetranslate.bot.service.settings.RuntimeSettingKey;
 import com.linetranslate.bot.service.settings.RuntimeSettings;
 import com.linetranslate.bot.service.settings.RuntimeSettingsModule;
 import com.linetranslate.bot.service.settings.RuntimeSettingsPersistenceException;
+import com.linetranslate.bot.service.usage.AiUsageAccountingModule;
+import com.linetranslate.bot.service.usage.UsageContentKind;
+import com.linetranslate.bot.service.usage.UsageQuery;
+import com.linetranslate.bot.service.usage.UsageReportRenderer;
 
 import lombok.extern.slf4j.Slf4j;
 
 @Service
 @Slf4j
 public class AdminService {
+
+    private static final ZoneId REPORTING_ZONE = ZoneId.of("Asia/Taipei");
 
     @Value("${admin.users:}")
     private List<String> adminUsers;
@@ -60,6 +68,8 @@ public class AdminService {
     private final LineUserProfileService lineUserProfileService;
     private final UserPreferencesModule userPreferencesModule;
     private final RuntimeSettingsModule runtimeSettingsModule;
+    private final AiUsageAccountingModule usageAccountingModule;
+    private final UsageReportRenderer usageReportRenderer;
     
     @Autowired
     public AdminService(
@@ -70,7 +80,9 @@ public class AdminService {
             GeminiConfig geminiConfig,
             LineUserProfileService lineUserProfileService,
             UserPreferencesModule userPreferencesModule,
-            RuntimeSettingsModule runtimeSettingsModule) {
+            RuntimeSettingsModule runtimeSettingsModule,
+            AiUsageAccountingModule usageAccountingModule,
+            UsageReportRenderer usageReportRenderer) {
         this.translationRecordRepository = translationRecordRepository;
         this.userProfileRepository = userProfileRepository;
         this.messagingApiClient = messagingApiClient;
@@ -79,6 +91,8 @@ public class AdminService {
         this.lineUserProfileService = lineUserProfileService;
         this.userPreferencesModule = userPreferencesModule;
         this.runtimeSettingsModule = runtimeSettingsModule;
+        this.usageAccountingModule = usageAccountingModule;
+        this.usageReportRenderer = usageReportRenderer;
         this.dateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     }
 
@@ -94,7 +108,7 @@ public class AdminService {
             UserPreferencesModule userPreferencesModule) {
         this(translationRecordRepository, userProfileRepository, messagingApiClient,
                 openAiConfig, geminiConfig, lineUserProfileService,
-                userPreferencesModule, null);
+                userPreferencesModule, null, null, null);
     }
 
     /**
@@ -603,11 +617,7 @@ public class AdminService {
  * @return API 使用量和費用統計信息
  */
 public String getApiUsageStats() {
-    // 獲取當前年月
-    LocalDate now = LocalDate.now();
-    String yearMonth = now.format(DateTimeFormatter.ofPattern("yyyy-MM"));
-    
-    return getApiUsageStatsByMonth(yearMonth);
+    return getApiUsageStatsByMonth(YearMonth.now(REPORTING_ZONE).toString());
 }
 
 /**
@@ -618,30 +628,10 @@ public String getApiUsageStats() {
  */
 public String getApiUsageStatsByMonth(String month) {
     try {
-        // 解析年月
-        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM");
-        LocalDate startDate = LocalDate.parse(month + "-01", DateTimeFormatter.ofPattern("yyyy-MM-dd"));
-        
-        // 計算該月的開始和結束日期
-        LocalDate endDate = startDate.plusMonths(1).minusDays(1);
-        
-        // 查詢該月的翻譯記錄
-        List<TranslationRecord> records = translationRecordRepository.findByCreatedAtBetween(
-                startDate.atStartOfDay(),
-                endDate.atTime(LocalTime.MAX)
-        );
-        
-        // 如果沒有記錄，返回提示信息
-        if (records.isEmpty()) {
-            return "💰 " + month + " 的 API 使用量和費用\n\n該月沒有任何 API 使用記錄。";
-        }
-        
-        // 統計使用量和費用
-        return calculateApiUsageStats(records, month);
-        
-    } catch (Exception e) {
-        log.error("獲取 API 使用量和費用統計失敗: failure={}", SafeLog.failure(e));
-        return "❌ 獲取 API 使用量和費用統計失敗，請稍後再試";
+        YearMonth parsed = YearMonth.parse(month);
+        return renderUsage(month, UsageQuery.forMonth(parsed, REPORTING_ZONE));
+    } catch (java.time.format.DateTimeParseException failure) {
+        return "❌ 月份格式無效，請使用 YYYY-MM";
     }
 }
 
@@ -655,23 +645,9 @@ public String getApiUsageStatsByProvider(String provider) {
     if (!"openai".equalsIgnoreCase(provider) && !"gemini".equalsIgnoreCase(provider)) {
         return "❌ 無效的 AI 提供者。請使用 'openai' 或 'gemini'。";
     }
-    
-    try {
-        // 查詢該提供者的所有翻譯記錄
-        List<TranslationRecord> records = translationRecordRepository.findByAiProvider(provider.toLowerCase());
-        
-        // 如果沒有記錄，返回提示信息
-        if (records.isEmpty()) {
-            return "💰 " + provider + " 的 API 使用量和費用\n\n沒有任何 " + provider + " 的 API 使用記錄。";
-        }
-        
-        // 統計使用量和費用
-        return calculateApiUsageStats(records, provider + " 提供者");
-        
-    } catch (Exception e) {
-        log.error("獲取 API 使用量和費用統計失敗: failure={}", SafeLog.failure(e));
-        return "❌ 獲取 API 使用量和費用統計失敗，請稍後再試";
-    }
+    return renderUsage(
+            provider + " 提供者",
+            UsageQuery.all().withProvider(provider));
 }
 
 /**
@@ -680,289 +656,46 @@ public String getApiUsageStatsByProvider(String provider) {
  * @return API 使用量和費用摘要信息
  */
 public String getApiUsageSummary() {
+    return renderUsage("全部期間", UsageQuery.all());
+}
+
+public String getApiUsageStatsByDay(String day) {
     try {
-        // 查詢所有翻譯記錄
-        List<TranslationRecord> allRecords = translationRecordRepository.findAll();
-        
-        // 如果沒有記錄，返回提示信息
-        if (allRecords.isEmpty()) {
-            return "💰 API 使用量和費用摘要\n\n沒有任何 API 使用記錄。";
-        }
-        
-        // 按月份分組統計
-        Map<String, List<TranslationRecord>> recordsByMonth = allRecords.stream()
-                .collect(Collectors.groupingBy(record -> 
-                        record.getCreatedAt().format(DateTimeFormatter.ofPattern("yyyy-MM"))));
-        
-        // 按提供者分組統計
-        Map<String, List<TranslationRecord>> recordsByProvider = allRecords.stream()
-                .collect(Collectors.groupingBy(TranslationRecord::getAiProvider));
-        
-        // 生成摘要信息
-        StringBuilder summary = new StringBuilder();
-        summary.append("💰 API 使用量和費用摘要\n\n");
-        
-        // 月份摘要
-        summary.append("【按月份統計】\n");
-        recordsByMonth.entrySet().stream()
-                .sorted(Map.Entry.comparingByKey())
-                .forEach(entry -> {
-                    String month = entry.getKey();
-                    List<TranslationRecord> records = entry.getValue();
-                    int totalRequests = records.size();
-                    double totalCost = calculateTotalCost(records);
-                    summary.append(month).append(": ")
-                           .append(totalRequests).append(" 次請求, ")
-                           .append(String.format("$%.2f", totalCost)).append("\n");
-                });
-        
-        summary.append("\n");
-        
-        // 提供者摘要
-        summary.append("【按提供者統計】\n");
-        recordsByProvider.entrySet().stream()
-                .sorted(Map.Entry.comparingByKey())
-                .forEach(entry -> {
-                    String provider = entry.getKey();
-                    List<TranslationRecord> records = entry.getValue();
-                    int totalRequests = records.size();
-                    double totalCost = calculateTotalCost(records);
-                    summary.append(provider).append(": ")
-                           .append(totalRequests).append(" 次請求, ")
-                           .append(String.format("$%.2f", totalCost)).append("\n");
-                });
-        
-        summary.append("\n");
-        
-        // 總計
-        int totalRequests = allRecords.size();
-        double totalCost = calculateTotalCost(allRecords);
-        summary.append("【總計】\n");
-        summary.append("總請求次數: ").append(totalRequests).append("\n");
-        summary.append("總費用: $").append(String.format("%.2f", totalCost)).append("\n");
-        summary.append("平均每次請求費用: $").append(String.format("%.4f", totalCost / totalRequests)).append("\n");
-        
-        return summary.toString();
-        
-    } catch (Exception e) {
-        log.error("獲取 API 使用量和費用摘要失敗: failure={}", SafeLog.failure(e));
-        return "❌ 獲取 API 使用量和費用摘要失敗，請稍後再試";
+        LocalDate parsed = LocalDate.parse(day);
+        return renderUsage(day, UsageQuery.forDay(parsed, REPORTING_ZONE));
+    } catch (java.time.format.DateTimeParseException failure) {
+        return "❌ 日期格式無效，請使用 YYYY-MM-DD";
     }
 }
 
-/**
- * 計算 API 使用量和費用統計
- *
- * @param records 翻譯記錄列表
- * @param title 統計標題
- * @return API 使用量和費用統計信息
- */
-private String calculateApiUsageStats(List<TranslationRecord> records, String title) {
-    // 統計使用量
-    int totalRequests = records.size();
-    long textTranslations = records.stream().filter(r -> !r.isImageTranslation()).count();
-    long imageTranslations = records.stream().filter(TranslationRecord::isImageTranslation).count();
-    
-    // 統計 Vision API 的使用量
-    long visionApiUsage = records.stream()
-            .filter(TranslationRecord::isImageTranslation)
-            .count();
-    
-    // 按提供者和模型分組
-    Map<String, Long> providerStats = records.stream()
-            .collect(Collectors.groupingBy(TranslationRecord::getAiProvider, Collectors.counting()));
-    
-    Map<String, Long> modelStats = records.stream()
-            .collect(Collectors.groupingBy(TranslationRecord::getModelName, Collectors.counting()));
-    
-    // 計算每個提供者的費用
-    Map<String, Double> providerCosts = new HashMap<>();
-    for (String provider : providerStats.keySet()) {
-        double cost = records.stream()
-                .filter(r -> provider.equals(r.getAiProvider()))
-                .mapToDouble(this::calculateRecordCost)
-                .sum();
-        providerCosts.put(provider, cost);
+public String getApiUsageStatsByModel(String model) {
+    if (model == null || model.isBlank() || model.length() > 128) {
+        return "❌ 無效的模型名稱";
     }
-    
-    // 計算總費用
-    double totalCost = records.stream()
-            .mapToDouble(this::calculateRecordCost)
-            .sum();
-    
-    // 生成統計信息
-    StringBuilder statsBuilder = new StringBuilder();
-    statsBuilder.append("💰 ").append(title).append(" 的 API 使用量和費用\n\n");
-    
-    statsBuilder.append("【使用量統計】\n");
-    statsBuilder.append("總請求次數: ").append(totalRequests).append("\n");
-    statsBuilder.append("文字翻譯: ").append(textTranslations).append(" 次\n");
-    statsBuilder.append("圖片翻譯: ").append(imageTranslations).append(" 次\n");
-    statsBuilder.append("Vision API 使用量: ").append(visionApiUsage).append(" 次\n\n");
-    
-    statsBuilder.append("【提供者使用情況】\n");
-    for (Map.Entry<String, Long> entry : providerStats.entrySet()) {
-        String provider = entry.getKey();
-        long count = entry.getValue();
-        double cost = providerCosts.getOrDefault(provider, 0.0);
-        statsBuilder.append(provider).append(": ")
-               .append(count).append(" 次, ")
-               .append(String.format("$%.2f", cost)).append("\n");
-    }
-    statsBuilder.append("\n");
-    
-    statsBuilder.append("【模型使用情況】\n");
-    for (Map.Entry<String, Long> entry : modelStats.entrySet()) {
-        statsBuilder.append(entry.getKey()).append(": ").append(entry.getValue()).append(" 次\n");
-    }
-    statsBuilder.append("\n");
-    
-    // 添加圖片翻譯的詳細統計
-    if (imageTranslations > 0) {
-        statsBuilder.append("【圖片翻譯統計】\n");
-        // 按提供者分組圖片翻譯
-        Map<String, Long> imageProviderStats = records.stream()
-                .filter(TranslationRecord::isImageTranslation)
-                .collect(Collectors.groupingBy(TranslationRecord::getAiProvider, Collectors.counting()));
-        
-        for (Map.Entry<String, Long> entry : imageProviderStats.entrySet()) {
-            statsBuilder.append(entry.getKey()).append(" 圖片翻譯: ").append(entry.getValue()).append(" 次\n");
-        }
-        statsBuilder.append("\n");
-    }
-    
-    statsBuilder.append("【費用統計】\n");
-    statsBuilder.append("總費用: $").append(String.format("%.2f", totalCost)).append("\n");
-    statsBuilder.append("平均每次請求費用: $").append(String.format("%.4f", totalCost / totalRequests)).append("\n");
-    
-    return statsBuilder.toString();
+    return renderUsage(model + " 模型", UsageQuery.all().withModel(model));
 }
 
-/**
- * 計算單條翻譯記錄的費用
- *
- * @param record 翻譯記錄
- * @return 該記錄的費用
- */
-private double calculateRecordCost(TranslationRecord record) {
-    String provider = record.getAiProvider();
-    String model = record.getModelName();
-    boolean isImageTranslation = record.isImageTranslation();
-    
-    // 估算輸入和輸出的令牌數
-    // 我們沒有實際的令牌數，所以根據文本長度估算
-    int inputTokens = 0;
-    int outputTokens = 0;
-    
-    if (record.getSourceText() != null) {
-        // 大約每 4 個字符為 1 個令牌
-        inputTokens = record.getSourceText().length() / 4 + 1;
+public String getApiUsageStatsByContentKind(String kind) {
+    UsageContentKind contentKind;
+    if ("text".equalsIgnoreCase(kind) || "文字".equals(kind)) {
+        contentKind = UsageContentKind.TEXT;
+    } else if ("image".equalsIgnoreCase(kind) || "圖片".equals(kind)) {
+        contentKind = UsageContentKind.IMAGE;
+    } else {
+        return "❌ 無效的類型，請使用 text 或 image";
     }
-    
-    if (record.getTranslatedText() != null) {
-        // 大約每 4 個字符為 1 個令牌
-        outputTokens = record.getTranslatedText().length() / 4 + 1;
-    }
-    
-    double cost = 0.0;
-    
-    // 根據不同的提供者和模型計算費用
-    if ("openai".equals(provider)) {
-        // OpenAI 的費用計算 (價格單位: $/1K tokens)
-        switch (model) {
-            // 最新模型價格
-            case "gpt-4.1":
-            case "gpt-4.1-2025-04-14":
-                cost += (inputTokens / 1000.0) * 2.00 + (outputTokens / 1000.0) * 8.00;
-                break;
-            case "gpt-4.1-mini":
-            case "gpt-4.1-mini-2025-04-14":
-                cost += (inputTokens / 1000.0) * 0.40 + (outputTokens / 1000.0) * 1.60;
-                break;
-            case "gpt-4.1-nano":
-            case "gpt-4.1-nano-2025-04-14":
-                cost += (inputTokens / 1000.0) * 0.10 + (outputTokens / 1000.0) * 0.40;
-                break;
-            case "gpt-4.5-preview":
-            case "gpt-4.5-preview-2025-02-27":
-                cost += (inputTokens / 1000.0) * 75.00 + (outputTokens / 1000.0) * 150.00;
-                break;
-            case "gpt-4o":
-            case "gpt-4o-2024-08-06":
-                cost += (inputTokens / 1000.0) * 2.50 + (outputTokens / 1000.0) * 10.00;
-                break;
-            case "gpt-4o-mini":
-            case "gpt-4o-mini-2024-07-18":
-                cost += (inputTokens / 1000.0) * 0.15 + (outputTokens / 1000.0) * 0.60;
-                break;
-            case "o1":
-            case "o1-2024-12-17":
-                cost += (inputTokens / 1000.0) * 15.00 + (outputTokens / 1000.0) * 60.00;
-                break;
-            case "o1-pro":
-            case "o1-pro-2025-03-19":
-                cost += (inputTokens / 1000.0) * 150.00 + (outputTokens / 1000.0) * 600.00;
-                break;
-            case "o3":
-            case "o3-2025-04-16":
-                cost += (inputTokens / 1000.0) * 10.00 + (outputTokens / 1000.0) * 40.00;
-                break;
-            case "o4-mini":
-            case "o4-mini-2025-04-16":
-                cost += (inputTokens / 1000.0) * 1.10 + (outputTokens / 1000.0) * 4.40;
-                break;
-            case "o3-mini":
-            case "o3-mini-2025-01-31":
-                cost += (inputTokens / 1000.0) * 1.10 + (outputTokens / 1000.0) * 4.40;
-                break;
-            case "o1-mini":
-            case "o1-mini-2024-09-12":
-                cost += (inputTokens / 1000.0) * 1.10 + (outputTokens / 1000.0) * 4.40;
-                break;
-            // 舊模型
-            case "gpt-4":
-                cost += (inputTokens / 1000.0) * 0.03 + (outputTokens / 1000.0) * 0.06;
-                break;
-            case "gpt-3.5-turbo":
-                cost += (inputTokens / 1000.0) * 0.0005 + (outputTokens / 1000.0) * 0.0015;
-                break;
-            default:
-                // 默認使用 gpt-4o 的費用
-                cost += (inputTokens / 1000.0) * 2.50 + (outputTokens / 1000.0) * 10.00;
-                break;
-        }
-        
-        // 如果是圖片翻譯，加上圖片計算費用
-        if (isImageTranslation) {
-            // 使用 gpt-image-1 的價格: $5.00/1K tokens
-            cost += 5.00 / 1000.0 * 500; // 估算每張圖片約 500 tokens
-        }
-    } else if ("gemini".equals(provider)) {
-        // Gemini 的費用計算 (Gemini 目前免費)
-        cost = 0.0;
-        
-        // 雖然 Gemini 免費，但我們仍然記錄使用量
-        // 這裡可以添加 Vision API 的使用量統計
-        // 注意：這裡只是記錄使用量，不計算費用
-    }
-    
-    return cost;
+    return renderUsage(
+            contentKind == UsageContentKind.TEXT ? "文字" : "圖片",
+            UsageQuery.all().withContentKind(contentKind));
 }
 
-/**
- * 計算翻譯記錄的總費用
- *
- * @param records 翻譯記錄列表
- * @return 總費用
- */
-private double calculateTotalCost(List<TranslationRecord> records) {
-    double totalCost = 0.0;
-    
-    for (TranslationRecord record : records) {
-        totalCost += calculateRecordCost(record);
+private String renderUsage(String title, UsageQuery query) {
+    try {
+        return usageReportRenderer.render(title, usageAccountingModule.report(query));
+    } catch (RuntimeException failure) {
+        log.error("獲取 usage accounting 報表失敗: failure={}", SafeLog.failure(failure));
+        return "❌ 獲取 API 使用量和費用統計失敗，請稍後再試";
     }
-    
-    return totalCost;
 }
 
 /**

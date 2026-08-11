@@ -209,16 +209,26 @@ public class AdminController {
         String value = parts.length > 1 ? parts[1].trim() : "";
 
         return switch (subCommand) {
+            case "day" -> value.isEmpty()
+                    ? inputError("請指定日期，格式為 YYYY-MM-DD。例如：/admin usage day 2026-08-11")
+                    : cardRenderer.info("每日 API 用量", adminService.getApiUsageStatsByDay(value));
             case "month" -> value.isEmpty()
                     ? inputError("請指定月份，格式為 YYYY-MM。例如：/admin usage month 2026-08")
                     : cardRenderer.info("指定月份 API 用量", adminService.getApiUsageStatsByMonth(value));
             case "provider" -> value.isEmpty()
                     ? inputError("請指定 openai 或 gemini。例如：/admin usage provider openai")
                     : cardRenderer.info("提供者 API 用量", adminService.getApiUsageStatsByProvider(value));
+            case "model" -> value.isEmpty()
+                    ? inputError("請指定模型。例如：/admin usage model gpt-4o")
+                    : cardRenderer.info("模型 API 用量", adminService.getApiUsageStatsByModel(value));
+            case "type" -> value.isEmpty()
+                    ? inputError("請指定 text 或 image。例如：/admin usage type image")
+                    : cardRenderer.info("內容類型 API 用量", adminService.getApiUsageStatsByContentKind(value));
             case "summary" -> cardRenderer.info("API 用量總覽", adminService.getApiUsageSummary());
             default -> cardRenderer.error(
                     "未知的用量命令",
-                    "無法識別：" + subCommand + "\n請使用 /admin usage、month、provider 或 summary。");
+                    "無法識別：" + subCommand
+                            + "\n請使用 day、month、provider、model、type 或 summary。");
         };
     }
 
