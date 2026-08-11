@@ -19,6 +19,8 @@ class AdminIntentParserTests {
         assertAction("users", AdminIntent.Action.USERS, "", "");
         assertAction("user U-target", AdminIntent.Action.USER, "U-target", "");
         assertAction("nickname U-target Jason", AdminIntent.Action.NICKNAME, "U-target", "Jason");
+        assertAction("models", AdminIntent.Action.MODELS, "", "");
+        assertAction("models anthropic", AdminIntent.Action.MODELS, "anthropic", "");
         assertAction("config", AdminIntent.Action.CONFIG_SHOW, "", "");
         assertAction("config c2lang en", AdminIntent.Action.CONFIG_C2LANG, "en", "");
         assertAction("config lang zh-TW", AdminIntent.Action.CONFIG_LANGUAGE, "zh-TW", "");
@@ -45,6 +47,7 @@ class AdminIntentParserTests {
         assertProblem("user", AdminIntent.Problem.USER_REQUIRED);
         assertProblem("nickname", AdminIntent.Problem.NICKNAME_FORMAT);
         assertProblem("nickname U-target", AdminIntent.Problem.NICKNAME_REQUIRED);
+        assertProblem("models " + "a".repeat(81), AdminIntent.Problem.MODEL_QUERY_TOO_LONG);
         assertProblem("config ocr", AdminIntent.Problem.CONFIG_VALUE_REQUIRED);
         assertProblem("usage day", AdminIntent.Problem.USAGE_DAY_REQUIRED);
         assertProblem("usage provider", AdminIntent.Problem.USAGE_PROVIDER_REQUIRED);

@@ -4,7 +4,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.nio.charset.StandardCharsets;
+import java.net.URLDecoder;
 import java.util.List;
+import java.util.Set;
 
 import org.junit.jupiter.api.Test;
 
@@ -13,8 +15,10 @@ import com.linecorp.bot.messaging.model.FlexBubble;
 import com.linecorp.bot.messaging.model.FlexButton;
 import com.linecorp.bot.messaging.model.FlexMessage;
 import com.linecorp.bot.messaging.model.Message;
-import com.linecorp.bot.messaging.model.MessageAction;
+import com.linecorp.bot.messaging.model.PostbackAction;
 import com.linecorp.bot.messaging.model.TextMessage;
+import com.linetranslate.bot.service.ai.AiModelDescriptor;
+import com.linetranslate.bot.service.ai.AiModelPage;
 
 class AdminCardRendererTests {
 
@@ -31,11 +35,38 @@ class AdminCardRendererTests {
         assertThat(bubble.footer().contents())
                 .allSatisfy(component -> {
                     assertThat(component).isInstanceOf(FlexButton.class);
-                    assertThat(((FlexButton) component).action()).isInstanceOf(MessageAction.class);
-                    assertThat(((MessageAction) ((FlexButton) component).action()).text())
+                    assertThat(((FlexButton) component).action()).isInstanceOf(PostbackAction.class);
+                    PostbackAction action = (PostbackAction) ((FlexButton) component).action();
+                    assertThat(decodeCommand(action.data()))
                             .isIn("/admin stats", "/admin today", "/admin users",
-                                    "/admin config", "/admin usage", "/admin usage summary");
+                                    "/admin models", "/admin config", "/admin usage",
+                                    "/admin usage summary");
                 });
+    }
+
+    @Test
+    void modelSelectionRendersAllowlistedProviderModelsAsPostbacks() {
+        AiModelDescriptor current = model("openai/gpt-4.1-mini", "GPT 4.1 Mini");
+        AiModelDescriptor alternative = model("anthropic/claude-sonnet-4", "Claude Sonnet 4");
+
+        Message rendered = renderer.modelSelection(
+                new AiModelPage(List.of(current, alternative), 2, false),
+                "",
+                current.id());
+
+        assertThat(rendered).isInstanceOf(FlexMessage.class);
+        FlexBubble bubble = (FlexBubble) ((FlexMessage) rendered).contents();
+        assertThat(bubble.footer().contents())
+                .filteredOn(FlexButton.class::isInstance)
+                .map(FlexButton.class::cast)
+                .extracting(FlexButton::action)
+                .filteredOn(PostbackAction.class::isInstance)
+                .map(PostbackAction.class::cast)
+                .extracting(action -> decodeCommand(action.data()))
+                .contains(
+                        "/admin config model openai/gpt-4.1-mini",
+                        "/admin config model anthropic/claude-sonnet-4",
+                        "/admin");
     }
 
     @Test
@@ -68,5 +99,14 @@ class AdminCardRendererTests {
         assertThatThrownBy(() -> renderer.card("危險操作", "不得送出", List.of(unsafe)))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("allowlist");
+    }
+
+    private static AiModelDescriptor model(String id, String name) {
+        return new AiModelDescriptor(id, name, Set.of("text"), Set.of("text"), null, null);
+    }
+
+    private static String decodeCommand(String data) {
+        assertThat(data).startsWith("command=");
+        return URLDecoder.decode(data.substring("command=".length()), StandardCharsets.UTF_8);
     }
 }
