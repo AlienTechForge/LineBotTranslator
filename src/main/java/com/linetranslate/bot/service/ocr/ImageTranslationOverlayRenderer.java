@@ -71,13 +71,9 @@ public class ImageTranslationOverlayRenderer {
                             overlay.region().id(), OverlayRenderStatus.PRESERVED, "empty-mask"));
                     continue;
                 }
-                approvedMask.add(new Area(mask));
                 Shape oldClip = graphics.getClip();
                 AffineTransform oldTransform = graphics.getTransform();
                 try {
-                    graphics.clip(mask);
-                    graphics.setColor(style.background());
-                    graphics.fill(mask);
                     List<OcrPoint> polygon = overlay.region().polygon();
                     OcrPoint origin = polygon.get(0);
                     OcrPoint edge = polygon.get(1);
@@ -85,13 +81,24 @@ public class ImageTranslationOverlayRenderer {
                     double localWidth = Math.hypot(edge.x() - origin.x(), edge.y() - origin.y());
                     OcrPoint side = polygon.get(polygon.size() - 1);
                     double localHeight = Math.hypot(side.x() - origin.x(), side.y() - origin.y());
+                    Bounds localBounds = new Bounds(
+                            0, 0, Math.max(2, (int) Math.round(localWidth)),
+                            Math.max(2, (int) Math.round(localHeight)));
+                    Layout layout = fitHorizontal(graphics, overlay.replacement(), localBounds,
+                            supportedFont, style.maximumFontSize());
+                    if (!layout.fits()) {
+                        decisions.add(new OverlayRenderDecision(
+                                overlay.region().id(), OverlayRenderStatus.PRESERVED, "text-fit"));
+                        continue;
+                    }
+                    approvedMask.add(new Area(mask));
+                    graphics.clip(mask);
+                    graphics.setColor(style.background());
+                    graphics.fill(mask);
                     graphics.setColor(style.foreground());
                     graphics.translate(origin.x(), origin.y());
                     graphics.rotate(angle);
-                    drawHorizontal(graphics, overlay.replacement(), new Bounds(
-                            0, 0, Math.max(2, (int) Math.round(localWidth)),
-                            Math.max(2, (int) Math.round(localHeight))), supportedFont,
-                            style.maximumFontSize());
+                    drawHorizontal(graphics, localBounds, layout);
                     rendered++;
                     decisions.add(new OverlayRenderDecision(
                             overlay.region().id(), OverlayRenderStatus.RENDERED, "rendered"));
@@ -117,11 +124,8 @@ public class ImageTranslationOverlayRenderer {
 
     private static void drawHorizontal(
             Graphics2D graphics,
-            String text,
             Bounds bounds,
-            Font baseFont,
-            int maximumFontSize) {
-        Layout layout = fitHorizontal(graphics, text, bounds, baseFont, maximumFontSize);
+            Layout layout) {
         graphics.setFont(layout.font());
         FontMetrics metrics = graphics.getFontMetrics();
         int baseline = bounds.y() + metrics.getAscent();
@@ -144,7 +148,7 @@ public class ImageTranslationOverlayRenderer {
             graphics.setFont(font);
             FontMetrics metrics = graphics.getFontMetrics();
             List<String> lines = wrap(text, metrics, Math.max(1, bounds.width() - 2));
-            if ((long) lines.size() * metrics.getHeight() <= bounds.height()) return new Layout(font, lines);
+            if ((long) lines.size() * metrics.getHeight() <= bounds.height()) return new Layout(font, lines, true);
         }
         Font font = baseFont.deriveFont((float) MIN_FONT_SIZE);
         graphics.setFont(font);
@@ -152,12 +156,7 @@ public class ImageTranslationOverlayRenderer {
         int availableWidth = Math.max(1, bounds.width() - 2);
         List<String> lines = wrap(text, metrics, availableWidth);
         int allowed = Math.max(1, bounds.height() / Math.max(1, metrics.getHeight()));
-        if (lines.size() > allowed) {
-            lines = new ArrayList<>(lines.subList(0, allowed));
-            int last = lines.size() - 1;
-            lines.set(last, ellipsize(lines.get(last), metrics, availableWidth));
-        }
-        return new Layout(font, lines);
+        return new Layout(font, lines, lines.size() <= allowed);
     }
 
     public RenderedImage render(
@@ -225,7 +224,7 @@ public class ImageTranslationOverlayRenderer {
             FontMetrics metrics = graphics.getFontMetrics();
             List<String> lines = wrap(text, metrics, Math.max(1, bounds.width() - 2));
             if ((long) lines.size() * metrics.getHeight() <= bounds.height()) {
-                return new Layout(font, lines);
+                return new Layout(font, lines, true);
             }
         }
         Font font = new Font(Font.SANS_SERIF, Font.PLAIN, MIN_FONT_SIZE);
@@ -238,7 +237,7 @@ public class ImageTranslationOverlayRenderer {
             int last = lines.size() - 1;
             lines.set(last, ellipsize(lines.get(last), metrics, Math.max(1, bounds.width() - 2)));
         }
-        return new Layout(font, lines);
+        return new Layout(font, lines, lines.size() <= allowed);
     }
 
     private static List<String> wrap(String text, FontMetrics metrics, int width) {
@@ -357,7 +356,7 @@ public class ImageTranslationOverlayRenderer {
         }
     }
 
-    private record Layout(Font font, List<String> lines) {
+    private record Layout(Font font, List<String> lines, boolean fits) {
     }
 
     private record Bounds(int x, int y, int width, int height) {

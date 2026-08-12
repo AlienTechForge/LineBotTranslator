@@ -14,7 +14,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 
 @Component
 public class StructuredImageTranslationCodec {
-    public static final String SCHEMA_VERSION = "image-regions-v1";
+    public static final String SCHEMA_VERSION = "image-regions-v2";
     private static final int MAX_REGION_TEXT = 4_000;
     private final ObjectMapper mapper;
 
@@ -25,8 +25,9 @@ public class StructuredImageTranslationCodec {
     public String encode(List<ImageRegionTranslationInput> regions, String targetLanguage, boolean repair) {
         ObjectNode root = mapper.createObjectNode();
         root.put("schemaVersion", SCHEMA_VERSION);
-        root.put("targetLanguage", targetLanguage);
+        root.put("targetLocale", targetLanguage);
         root.put("repair", repair);
+        root.put("documentContext", "Use every region in reading order as context while preserving exact region identity.");
         ArrayNode values = root.putArray("regions");
         for (ImageRegionTranslationInput region : regions) {
             ObjectNode value = values.addObject();
@@ -34,6 +35,16 @@ public class StructuredImageTranslationCodec {
             value.put("sourceText", region.sourceText());
             value.put("sourceLanguage", region.sourceLanguage());
             value.put("action", region.translatable() ? "TRANSLATE" : "PRESERVE");
+            value.put("readingOrder", region.readingOrder());
+            ObjectNode layout = value.putObject("layout");
+            layout.put("groupId", region.layout().groupId());
+            layout.put("x", region.layout().x());
+            layout.put("y", region.layout().y());
+            layout.put("width", region.layout().width());
+            layout.put("height", region.layout().height());
+            layout.put("maxLines", region.layout().maxLines());
+            layout.put("maxCharacters", region.layout().maxCharacters());
+            layout.put("compactLabel", region.layout().compactLabel());
             ArrayNode tokens = value.putArray("protectedTokens");
             region.protectedTokens().forEach(tokens::add);
         }

@@ -25,6 +25,8 @@ import com.linetranslate.bot.service.translation.TranslationWorkflowOutcome;
 import com.linetranslate.bot.service.translation.TranslationWorkflowRequest;
 import com.linetranslate.bot.service.translation.TranslationWorkflowResult;
 import com.linetranslate.bot.service.translation.ImageRegionTranslationInput;
+import com.linetranslate.bot.service.translation.ImageRegionLayout;
+import com.linetranslate.bot.service.translation.TranslationPromptFactory;
 import com.linetranslate.bot.util.LanguageUtils;
 
 import lombok.extern.slf4j.Slf4j;
@@ -40,8 +42,6 @@ public class ImageTranslationPipeline {
     private static final int MAX_OCR_REGIONS = 200;
     private static final int MAX_OCR_TEXT_CHARS = 50_000;
 
-    private static final String OCR_PROMPT =
-            "請識別這張圖片中的所有文字，只返回文字內容，不要添加任何其他描述或解釋。";
     private static final Pattern TRANSLATION_COMMAND_PATTERN_CN =
             Pattern.compile("翻譯成([\\u4e00-\\u9fa5]+)\\s*(.*)");
     private static final Pattern TRANSLATION_COMMAND_PATTERN_CODE =
@@ -59,6 +59,7 @@ public class ImageTranslationPipeline {
     private final OcrRegionQualificationPolicy qualificationPolicy;
     private final OcrSourceLanguageResolver sourceLanguageResolver;
     private final OverlaySafetyPolicy overlaySafetyPolicy;
+    private final TranslationPromptFactory promptFactory;
 
     @Autowired
     public ImageTranslationPipeline(
@@ -73,7 +74,8 @@ public class ImageTranslationPipeline {
             ImageTranslationProperties properties,
             OcrRegionQualificationPolicy qualificationPolicy,
             OcrSourceLanguageResolver sourceLanguageResolver,
-            OverlaySafetyPolicy overlaySafetyPolicy) {
+            OverlaySafetyPolicy overlaySafetyPolicy,
+            TranslationPromptFactory promptFactory) {
         this.ocrService = ocrServiceProvider.getIfAvailable();
         this.translationWorkflowModule = translationWorkflowModule;
         this.aiProviderExecutionModule = aiProviderExecutionModule;
@@ -86,6 +88,27 @@ public class ImageTranslationPipeline {
         this.qualificationPolicy = qualificationPolicy;
         this.sourceLanguageResolver = sourceLanguageResolver;
         this.overlaySafetyPolicy = overlaySafetyPolicy;
+        this.promptFactory = promptFactory;
+    }
+
+    public ImageTranslationPipeline(
+            ObjectProvider<OcrService> ocrServiceProvider,
+            TranslationWorkflowModule translationWorkflowModule,
+            AiProviderExecutionModule aiProviderExecutionModule,
+            UserPreferencesModule userPreferencesModule,
+            MessagingApiBlobClient messagingApiBlobClient,
+            MinioStorageService minioStorageService,
+            ImageInputValidator imageInputValidator,
+            ImageTranslationOverlayRenderer overlayRenderer,
+            ImageTranslationProperties properties,
+            OcrRegionQualificationPolicy qualificationPolicy,
+            OcrSourceLanguageResolver sourceLanguageResolver,
+            OverlaySafetyPolicy overlaySafetyPolicy) {
+        this(ocrServiceProvider, translationWorkflowModule, aiProviderExecutionModule,
+                userPreferencesModule, messagingApiBlobClient, minioStorageService,
+                imageInputValidator, overlayRenderer, properties, qualificationPolicy,
+                sourceLanguageResolver, overlaySafetyPolicy,
+                new TranslationPromptFactory());
     }
 
     /** Compatibility constructor retained for focused tests. */
@@ -187,7 +210,8 @@ public class ImageTranslationPipeline {
                             decision.qualification() == OcrQualification.PRESERVE
                                     ? List.of(decision.region().text()) : decision.protectedTokens(),
                             decision.qualification() == OcrQualification.TRANSLATE,
-                            decision.region().readingOrder()))
+                            decision.region().readingOrder(),
+                            layout(decision.region())))
                     .toList();
             workflowOutcome = translationWorkflowModule.execute(new TranslationWorkflowRequest(
                     request.userProfile(),
@@ -220,7 +244,8 @@ public class ImageTranslationPipeline {
                         translation,
                         overlay.storage(),
                         overlay.lowConfidenceBlockCount(),
-                        overlay.disposition()));
+                        overlay.disposition(),
+                        overlay.degradation()));
     }
 
     private ValidatedImage download(String messageId) throws Exception {
@@ -285,7 +310,7 @@ public class ImageTranslationPipeline {
         String dataUrl = "data:" + image.contentType() + ";base64,"
                 + Base64.getEncoder().encodeToString(image.bytes());
         AiExecutionResult result = aiProviderExecutionModule.processImage(
-                userPreferencesModule.resolve(request.userProfile()), OCR_PROMPT, dataUrl);
+                userPreferencesModule.resolve(request.userProfile()), promptFactory.ocr(), dataUrl);
         if (result == null) {
             throw new OcrProcessingException("AI image recognition returned no result");
         }
@@ -301,7 +326,8 @@ public class ImageTranslationPipeline {
         }
         if (translation.imageRegionTranslations().isEmpty()) {
             return new OverlayOutcome(ImageStorageResult.notStored(), 0,
-                    ImageOverlayDisposition.SAFETY_DEGRADED);
+                    ImageOverlayDisposition.SAFETY_DEGRADED,
+                    OverlayDegradationSummary.single(OverlayDegradationReason.MAPPING, 1));
         }
         try {
             java.util.Map<String, String> replacements = translation.imageRegionTranslations().stream()
@@ -315,25 +341,31 @@ public class ImageTranslationPipeline {
             OverlaySafetyPlan plan = overlaySafetyPolicy.evaluate(
                     candidates, image.image().getWidth(), image.image().getHeight(), properties);
             if (!plan.safe() || plan.overlays().isEmpty()) {
-                return new OverlayOutcome(ImageStorageResult.notStored(), plan.skipped(),
-                        ImageOverlayDisposition.SAFETY_DEGRADED);
+                OverlayDegradationSummary degradation = OverlayDegradationSummary.fromDecisions(plan.decisions());
+                return new OverlayOutcome(ImageStorageResult.notStored(),
+                        degradation.count(OverlayDegradationReason.LOW_CONFIDENCE),
+                        ImageOverlayDisposition.SAFETY_DEGRADED, degradation);
             }
             RenderedImage rendered = overlayRenderer.render(image, plan);
             if (rendered.renderedBlockCount() == 0) {
                 return new OverlayOutcome(
                         ImageStorageResult.notStored(), rendered.lowConfidenceBlockCount(),
-                        ImageOverlayDisposition.SAFETY_DEGRADED);
+                        ImageOverlayDisposition.SAFETY_DEGRADED, rendered.degradation());
             }
             ImageStorageResult storage = minioStorageService.uploadTranslatedImage(rendered.pngBytes());
             return new OverlayOutcome(
                     storage == null ? ImageStorageResult.notStored() : storage,
                     rendered.lowConfidenceBlockCount(),
                     storage != null && storage.stored()
-                            ? ImageOverlayDisposition.GENERATED : ImageOverlayDisposition.UNAVAILABLE);
+                            ? ImageOverlayDisposition.GENERATED : ImageOverlayDisposition.UNAVAILABLE,
+                    rendered.degradation().merge(storage != null && storage.stored()
+                            ? OverlayDegradationSummary.none()
+                            : OverlayDegradationSummary.single(OverlayDegradationReason.STORAGE, 1)));
         } catch (RuntimeException failure) {
             log.warn("Translated image rendering degraded to text: failure={}", SafeLog.failure(failure));
             return new OverlayOutcome(ImageStorageResult.notStored(), 0,
-                    ImageOverlayDisposition.SAFETY_DEGRADED);
+                    ImageOverlayDisposition.SAFETY_DEGRADED,
+                    OverlayDegradationSummary.single(OverlayDegradationReason.OTHER, 1));
         }
     }
 
@@ -348,12 +380,24 @@ public class ImageTranslationPipeline {
                 : null;
     }
 
+    private static ImageRegionLayout layout(OcrRegion region) {
+        java.awt.Rectangle bounds = OverlaySafetyPolicy.polygon(region.polygon()).getBounds();
+        int maxLines = region.compactLabel() ? 1 : Math.max(1, bounds.height / 14);
+        int maxCharacters = region.compactLabel()
+                ? Math.max(2, region.text().codePointCount(0, region.text().length()) * 3)
+                : Math.max(8, bounds.width / 6 * maxLines);
+        return new ImageRegionLayout(region.groupId(), bounds.x, bounds.y,
+                bounds.width, bounds.height, maxLines, maxCharacters, region.compactLabel());
+    }
+
     private record OverlayOutcome(
             ImageStorageResult storage,
             int lowConfidenceBlockCount,
-            ImageOverlayDisposition disposition) {
+            ImageOverlayDisposition disposition,
+            OverlayDegradationSummary degradation) {
         static OverlayOutcome unavailable() {
-            return new OverlayOutcome(ImageStorageResult.notStored(), 0, ImageOverlayDisposition.UNAVAILABLE);
+            return new OverlayOutcome(ImageStorageResult.notStored(), 0, ImageOverlayDisposition.UNAVAILABLE,
+                    OverlayDegradationSummary.none());
         }
     }
 }

@@ -14,11 +14,11 @@ Accepted
 
 `ImageTranslationPipeline` 使用 immutable/explicit request、downloaded image、storage result、context、failure stage 與 outcome。Pipeline 不在 thread 或 singleton field 保存 request state。MinIO storage 是 non-blocking side effect；configured OCR 不可用時可 fallback 到 AI image recognition；辨識成功後進入 shared Translation Workflow。
 
-Located OCR 必須保留 stable Region ID、provider vertex order、word/symbol polygons、known confidence、block type 與 detected languages。只有 centralized qualification policy 判定為 `TRANSLATE` 的 Region 可進入 versioned structured translation contract；`PRESERVE`／`REJECT` 不得清除原圖。Provider 回應以 exact Region ID set 驗證，禁止以換行或 list index 猜配。
+Located OCR 必須保留 stable Region ID、provider vertex order、word/symbol polygons、known confidence、block type 與 detected languages。OCR 後處理可把具有一致短字、明顯間距與可靠 word geometry 的離散 UI label 拆成 child Region；child 保留 group identity，並以相鄰文字中點取得可用 cell bounds。只有 centralized qualification policy 判定為 `TRANSLATE` 的 Region 可進入 versioned structured translation contract；`PRESERVE`／`REJECT` 不得清除原圖。Provider 回應以 exact Region ID set 驗證，禁止以換行或 list index 猜配。
 
 Google Vision（configured OCR）負責 located geometry/language metadata；使用者選定的 OpenRouter Translation Model 只負責翻譯，不被當成 OCR geometry 或獨立 language detector 的來源。沒有 located Regions 的 AI recognition fallback 僅提供純文字翻譯。
 
-Overlay 採 fail-closed。Centralized safety policy 在 renderer 前檢查 kill switch、confidence 與 geometry；單一 OCR 區域上限以原始 paragraph polygon 計算，整張實際修改上限則以 padded masks 計算。原始 paragraph polygons 也負責判斷語意區域 overlap，避免相鄰文字行只因清邊 padding 接觸而整張誤判。Word polygons 只用來從原圖估算背景、前景色、字重與原字級，不可再拿稀疏 word union 裁切新譯文；renderer 以小幅 padded paragraph polygon 作為清除及輸出 clip，排版尺寸仍使用原始 paragraph polygon，保留 local rotation，並選擇具完整 glyph coverage 的 Noto font。OCR provider 不提供 font family metadata，因此字型名稱只能 best-effort 選擇，不能宣稱精確還原。任何 mapping、policy、font、renderer 或 translated-image storage 問題均降級為成功的純文字翻譯，不把不安全圖片標為成功。
+Overlay 採 fail-closed。Centralized safety policy 在 renderer 前檢查 kill switch、confidence 與 geometry；單一 OCR 區域上限以原始 paragraph polygon 計算，整張實際修改上限則以 padded masks 計算。原始 paragraph polygons 也負責判斷語意區域 overlap，避免相鄰文字行只因清邊 padding 接觸而整張誤判。Word polygons 只用來從原圖估算背景、前景色、字重與原字級，不可再拿稀疏 word union 裁切新譯文；renderer 以小幅 padded paragraph polygon 作為清除及輸出 clip，排版尺寸仍使用原始 paragraph polygon，保留 local rotation，並選擇具完整 glyph coverage 的 Noto font。最低可讀字級仍無法完整容納時必須保留原文，不得用 ellipsis 產生不完整譯文。OCR provider 不提供 font family metadata，因此字型名稱只能 best-effort 選擇，不能宣稱精確還原。任何 mapping、policy、font、text-fit、renderer 或 translated-image storage 問題均以 typed degradation reason 降級為成功的純文字翻譯；coverage、font、geometry 等原因不得顯示成低信心。
 
 Thread interruption 必須保留，LINE/OCR streams 必須關閉。
 

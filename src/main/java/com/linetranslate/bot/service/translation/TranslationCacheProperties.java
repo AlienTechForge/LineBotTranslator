@@ -53,6 +53,7 @@ public class TranslationCacheProperties {
                 ? TranslationStylePreset.defaultPreset()
                 : preset;
         return new TranslationCacheVariant(
-                effective.id(), glossaryVersion, effective.promptVersion());
+                effective.id(), glossaryVersion,
+                effective.promptVersion() + "+" + TranslationPromptFactory.TEXT_PROMPT_VERSION);
     }
 }

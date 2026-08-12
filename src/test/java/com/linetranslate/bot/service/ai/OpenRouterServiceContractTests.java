@@ -15,6 +15,7 @@ import org.junit.jupiter.api.Test;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.linetranslate.bot.service.translation.TranslationStylePreset;
 import com.linetranslate.bot.config.OpenRouterConfig;
 
 import okhttp3.Call;
@@ -59,7 +60,7 @@ class OpenRouterServiceContractTests {
         assertThat(body.path("model").asText()).isEqualTo("anthropic/claude-sonnet-4");
         assertThat(body.path("messages").get(0).path("role").asText()).isEqualTo("system");
         assertThat(body.path("messages").get(0).path("content").asText())
-                .contains("business-v1", "Use concise business terminology.");
+                .contains("business-v1", TranslationStylePreset.BUSINESS.promptRule());
         assertThat(body.path("messages").get(1).path("content").asText()).isEqualTo("hello");
         assertThat(result.text()).isEqualTo("你好");
         assertThat(result.model()).isEqualTo("anthropic/claude-sonnet-4");
@@ -87,6 +88,10 @@ class OpenRouterServiceContractTests {
 
         JsonNode content = objectMapper.readTree(requestBody(captured.get()))
                 .path("messages").get(1).path("content");
+        JsonNode systemMessage = objectMapper.readTree(requestBody(captured.get()))
+                .path("messages").get(0);
+        assertThat(systemMessage.path("content").asText())
+                .contains("OCR Extraction Contract", "image-ocr-v2");
         assertThat(content.get(0).path("type").asText()).isEqualTo("text");
         assertThat(content.get(1).path("type").asText()).isEqualTo("image_url");
         assertThat(content.get(1).path("image_url").path("url").asText())
@@ -104,11 +109,11 @@ class OpenRouterServiceContractTests {
             return call;
         });
         when(call.execute()).thenReturn(response(200, """
-                {"model":"openai/gpt-4o-mini","choices":[{"message":{"content":"{\\\"schemaVersion\\\":\\\"image-regions-v1\\\",\\\"regions\\\":[{\\\"regionId\\\":\\\"r1\\\",\\\"translatedText\\\":\\\"你好\\\"}]}"}}]}
+                {"model":"openai/gpt-4o-mini","choices":[{"message":{"content":"{\\\"schemaVersion\\\":\\\"image-regions-v2\\\",\\\"regions\\\":[{\\\"regionId\\\":\\\"r1\\\",\\\"translatedText\\\":\\\"你好\\\"}]}"}}]}
                 """));
         OpenRouterService adapter = new OpenRouterService(
                 config, httpClient, objectMapper, catalog("openai/gpt-4o-mini", Set.of("text")));
-        String wire = "{\"schemaVersion\":\"image-regions-v1\",\"targetLanguage\":\"zh-TW\",\"regions\":[]}";
+        String wire = "{\"schemaVersion\":\"image-regions-v2\",\"targetLocale\":\"zh-TW\",\"regions\":[]}";
 
         adapter.execute(AiProviderRequest.translate("openai/gpt-4o-mini", wire, "zh-TW"));
 
@@ -120,7 +125,7 @@ class OpenRouterServiceContractTests {
                 .isEqualTo("array");
         assertThat(body.path("temperature").asDouble()).isZero();
         assertThat(body.path("messages").get(0).path("content").asText())
-                .contains("regionId", "protectedTokens");
+                .contains("Image Translation Contract", "zh-TW", "Traditional Chinese", "regionId", "protectedTokens");
     }
 
     @Test

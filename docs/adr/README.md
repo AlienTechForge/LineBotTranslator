@@ -26,4 +26,5 @@ ADR 記錄已確立、會限制後續設計的決策。Domain 名稱與不變量
 | [0011](0011-openrouter-single-provider-adapter.md) | Accepted | 只保留 OpenRouter Adapter，模型由 catalog 動態探索與選擇。 |
 | [0012](0012-idempotent-translation-actions.md) | Accepted | 翻譯結果 actions 使用 opaque record reference、owner check 與 durable claim。 |
 | [0013](0013-versioned-translation-style-presets.md) | Accepted | 翻譯風格採 allowlisted stable ID、版本化 prompt 與 request-scoped override。 |
+| [0015](0015-versioned-translation-prompt-system.md) | Accepted | 文字、圖片、OCR 與語言偵測採獨立版本化模板；locale/script 約束與 cache identity 一致。 |
 | [0014](0014-split-minio-internal-and-public-endpoints.md) | Accepted | MinIO 內部 S3 操作與外部 presigned URL 使用不同 endpoint。 |

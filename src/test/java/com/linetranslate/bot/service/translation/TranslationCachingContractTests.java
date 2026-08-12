@@ -70,6 +70,22 @@ class TranslationCachingContractTests {
     }
 
     @Test
+    void targetLocaleMismatchIsNeverCached() {
+        AiExecutionOutcome simplified = success("保护自己免受热伤害", "openai", "gpt-a", false);
+        AiExecutionOutcome traditional = success("保護自己免受熱傷害", "openai", "gpt-a", false);
+        when(providerModule.translateTextOutcome(
+                profile, "protect yourself", "zh-TW", TranslationStylePreset.FAITHFUL))
+                .thenReturn(simplified, traditional);
+
+        assertThat(adapter.translate(profile, "protect yourself", "zh-TW")).isEqualTo(simplified);
+        assertThat(adapter.translate(profile, "protect yourself", "zh-TW")).isEqualTo(traditional);
+
+        verify(providerModule, times(2)).translateTextOutcome(
+                profile, "protect yourself", "zh-TW", TranslationStylePreset.FAITHFUL);
+        assertThat(cacheStore.stats().missCount()).isEqualTo(2);
+    }
+
+    @Test
     void providerModelStyleGlossaryAndPromptVersionsAreIsolated() {
         when(providerModule.translateTextOutcome(
                 org.mockito.ArgumentMatchers.eq(profile),

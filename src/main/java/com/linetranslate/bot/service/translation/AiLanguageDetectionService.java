@@ -19,6 +19,7 @@ import lombok.extern.slf4j.Slf4j;
 public class AiLanguageDetectionService {
 
     private final AiProviderExecutionModule aiProviderExecutionModule;
+    private final TranslationPromptFactory promptFactory;
     
     @Value("${app.language-detection.model-name:${OPEN_ROUTE_MODEL_NAME:openai/gpt-4o-mini}}")
     private String modelName;
@@ -27,8 +28,15 @@ public class AiLanguageDetectionService {
     private String defaultChineseType;
 
     @Autowired
-    public AiLanguageDetectionService(AiProviderExecutionModule aiProviderExecutionModule) {
+    public AiLanguageDetectionService(AiProviderExecutionModule aiProviderExecutionModule,
+            TranslationPromptFactory promptFactory) {
         this.aiProviderExecutionModule = aiProviderExecutionModule;
+        this.promptFactory = promptFactory;
+    }
+
+    /** Compatibility constructor for focused tests. */
+    public AiLanguageDetectionService(AiProviderExecutionModule aiProviderExecutionModule) {
+        this(aiProviderExecutionModule, new TranslationPromptFactory());
     }
 
     /**
@@ -40,7 +48,7 @@ public class AiLanguageDetectionService {
     public String detectLanguage(String text) {
         try {
             // 構建提示詞
-            String prompt = "請檢測以下文本的語言，只返回 ISO 639-1 語言代碼（如 zh, ja, en, ko 等），不要添加任何解釋或其他內容。\n\n" + text;
+            String prompt = promptFactory.languageDetection(text);
 
             AiExecutionOutcome outcome = aiProviderExecutionModule.generateTextOutcome(modelName, prompt);
             if (outcome instanceof AiExecutionOutcome.Failure failure) {
@@ -107,7 +115,7 @@ public class AiLanguageDetectionService {
         }
         
         // 處理中文變體
-        if (cleaned.startsWith("zh")) {
+        if ("zh".equals(cleaned)) {
             return defaultChineseType;
         }
         

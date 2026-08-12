@@ -12,7 +12,9 @@ public record OcrRegion(
         boolean confidenceKnown,
         OcrBlockType blockType,
         List<OcrDetectedLanguage> languages,
-        int readingOrder) {
+        int readingOrder,
+        String groupId,
+        boolean compactLabel) {
 
     public OcrRegion {
         if (id == null || id.isBlank()) {
@@ -25,6 +27,15 @@ public record OcrRegion(
         blockType = blockType == null ? OcrBlockType.UNKNOWN : blockType;
         languages = languages == null ? List.of() : List.copyOf(languages);
         readingOrder = Math.max(0, readingOrder);
+        groupId = groupId == null || groupId.isBlank() ? id : groupId;
+    }
+
+    public OcrRegion(
+            String id, String text, List<OcrPoint> polygon, List<OcrWord> words,
+            float confidence, boolean confidenceKnown, OcrBlockType blockType,
+            List<OcrDetectedLanguage> languages, int readingOrder) {
+        this(id, text, polygon, words, confidence, confidenceKnown, blockType,
+                languages, readingOrder, id, false);
     }
 
     public boolean validGeometry() {

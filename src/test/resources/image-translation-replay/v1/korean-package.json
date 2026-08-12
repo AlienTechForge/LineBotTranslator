@@ -12,7 +12,7 @@
     {"id":"decoration","text":"~","polygon":[[120,190],[145,185],[150,205],[125,210]],"confidence":0.91,"language":"und","decision":"REJECT"}
   ],
   "structuredTranslationResponse": {
-    "schemaVersion":"image-regions-v1",
+    "schemaVersion":"image-regions-v2",
     "regions":[
       {"regionId":"en-brand","translatedText":"起司"},
       {"regionId":"ko-product","translatedText":"火辣雞肉起司炒麵"}

@@ -23,6 +23,7 @@ import java.util.HexFormat;
 public class GoogleVisionOcrService implements OcrService {
 
     private final ImageAnnotatorClient visionClient;
+    private final OcrRegionSegmenter regionSegmenter = new OcrRegionSegmenter();
 
     public GoogleVisionOcrService(ObjectProvider<ImageAnnotatorClient> visionClientProvider) {
         this.visionClient = visionClientProvider.getIfAvailable();
@@ -170,7 +171,7 @@ public class GoogleVisionOcrService implements OcrService {
                 }
             }
             log.info("識別到 {} 個結構化文本區域", regions.size());
-            return List.copyOf(regions);
+            return regionSegmenter.segment(regions);
         } catch (IOException e) {
             log.error("OCR 識別失敗: failure={}", SafeLog.failure(e));
             throw new OcrProcessingException("Google Vision could not read image bytes", e);

@@ -8,7 +8,8 @@ public record ImageRegionTranslationInput(
         String sourceLanguage,
         List<String> protectedTokens,
         boolean translatable,
-        int readingOrder) {
+        int readingOrder,
+        ImageRegionLayout layout) {
     public ImageRegionTranslationInput {
         if (regionId == null || !regionId.matches("[A-Za-z0-9._:-]{1,128}")
                 || sourceText == null || sourceText.isBlank() || sourceText.length() > 4_000) {
@@ -17,6 +18,7 @@ public record ImageRegionTranslationInput(
         sourceLanguage = sourceLanguage == null ? "und" : sourceLanguage;
         protectedTokens = protectedTokens == null ? List.of() : List.copyOf(protectedTokens);
         readingOrder = Math.max(0, readingOrder);
+        layout = layout == null ? ImageRegionLayout.unspecified(regionId) : layout;
         if (protectedTokens.size() > 64 || protectedTokens.stream().anyMatch(token -> token == null || token.length() > 128)) {
             throw new IllegalArgumentException("Structured translation protected tokens are invalid");
         }
@@ -24,6 +26,14 @@ public record ImageRegionTranslationInput(
 
     public ImageRegionTranslationInput(
             String regionId, String sourceText, String sourceLanguage, List<String> protectedTokens) {
-        this(regionId, sourceText, sourceLanguage, protectedTokens, true, 0);
+        this(regionId, sourceText, sourceLanguage, protectedTokens, true, 0,
+                ImageRegionLayout.unspecified(regionId));
+    }
+
+    public ImageRegionTranslationInput(
+            String regionId, String sourceText, String sourceLanguage, List<String> protectedTokens,
+            boolean translatable, int readingOrder) {
+        this(regionId, sourceText, sourceLanguage, protectedTokens, translatable, readingOrder,
+                ImageRegionLayout.unspecified(regionId));
     }
 }
