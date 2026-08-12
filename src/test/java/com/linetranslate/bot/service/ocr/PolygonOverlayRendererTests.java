@@ -15,6 +15,59 @@ import org.junit.jupiter.api.Test;
 
 class PolygonOverlayRendererTests {
     @Test
+    void replacementClearsOnlySourceGlyphAreaAndPreservesTableGrid() throws Exception {
+        BufferedImage original = new BufferedImage(170, 90, BufferedImage.TYPE_INT_RGB);
+        var graphics = original.createGraphics();
+        try {
+            graphics.setColor(Color.WHITE);
+            graphics.fillRect(0, 0, original.getWidth(), original.getHeight());
+            graphics.setColor(Color.BLACK);
+            graphics.drawRect(10, 10, 145, 55);
+            graphics.setColor(new Color(0, 90, 210));
+            graphics.drawLine(115, 10, 115, 65);
+            graphics.setColor(Color.BLACK);
+            graphics.setFont(graphics.getFont().deriveFont(java.awt.Font.BOLD, 24f));
+            graphics.drawString("ITEM", 20, 48);
+        } finally {
+            graphics.dispose();
+        }
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        ImageIO.write(original, "png", bytes);
+        ValidatedImage source = new ImageInputValidator(ImageTranslationProperties.defaults())
+                .validate(bytes.toByteArray(), "image/png");
+        List<OcrPoint> cell = List.of(
+                new OcrPoint(10, 10), new OcrPoint(120, 10),
+                new OcrPoint(120, 65), new OcrPoint(10, 65));
+        List<OcrPoint> word = List.of(
+                new OcrPoint(18, 20), new OcrPoint(92, 20),
+                new OcrPoint(92, 53), new OcrPoint(18, 53));
+        OcrRegion region = new OcrRegion("grid-cell", "ITEM", cell,
+                List.of(new OcrWord("ITEM", word, .99f, true)),
+                .99f, true, OcrBlockType.TEXT, List.of(), 0);
+        OverlaySafetyPlan plan = new OverlaySafetyPolicy().evaluate(
+                List.of(new ImageRegionOverlay(region, "Meal")), 170, 90,
+                new ImageTranslationProperties(1000, 200, 20000, .6f, true, .8, .9));
+
+        RenderedImage rendered = new ImageTranslationOverlayRenderer(
+                new ImageTranslationFontProvider(Set.of("dejavu sans"))).render(source, plan);
+        assertThat(rendered.renderedBlockCount()).as("decisions=%s", rendered.decisions()).isEqualTo(1);
+        BufferedImage output = ImageIO.read(new ByteArrayInputStream(rendered.pngBytes()));
+
+        for (int x = 10; x <= 155; x++) {
+            assertThat(output.getRGB(x, 10)).as("top grid at x=%s", x)
+                    .isEqualTo(original.getRGB(x, 10));
+            assertThat(output.getRGB(x, 65)).as("bottom grid at x=%s", x)
+                    .isEqualTo(original.getRGB(x, 65));
+        }
+        for (int y = 10; y <= 65; y++) {
+            assertThat(output.getRGB(10, y)).as("left grid at y=%s", y)
+                    .isEqualTo(original.getRGB(10, y));
+            assertThat(output.getRGB(115, y)).as("column grid at y=%s", y)
+                    .isEqualTo(original.getRGB(115, y));
+        }
+    }
+
+    @Test
     void translatedTextUsesWholeParagraphInsteadOfSparseSourceWordMasks() throws Exception {
         BufferedImage original = new BufferedImage(240, 100, BufferedImage.TYPE_INT_RGB);
         var graphics = original.createGraphics();

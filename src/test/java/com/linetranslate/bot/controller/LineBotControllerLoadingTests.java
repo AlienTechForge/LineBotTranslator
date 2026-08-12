@@ -1,9 +1,11 @@
 package com.linetranslate.bot.controller;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.verify;
 
 import org.junit.jupiter.api.Test;
 
@@ -16,6 +18,7 @@ import com.linecorp.bot.webhook.model.TextMessageContent;
 import com.linecorp.bot.webhook.model.UserSource;
 import com.linetranslate.bot.service.line.LineInteractionModule;
 import com.linetranslate.bot.service.line.LineLoadingFeedback;
+import com.linetranslate.bot.service.line.LineLoadingSession;
 import com.linetranslate.bot.service.line.intent.LineIntent;
 import com.linetranslate.bot.service.line.intent.LineIntentParser;
 
@@ -53,16 +56,41 @@ class LineBotControllerLoadingTests {
         ImageMessageContent content = mock(ImageMessageContent.class);
         UserSource source = new UserSource("user-1");
         TextMessage response = new TextMessage("translated");
+        LineLoadingSession session = mock(LineLoadingSession.class);
         when(event.source()).thenReturn(source);
         when(content.id()).thenReturn("message-1");
+        when(loading.startImage(source)).thenReturn(session);
         when(interaction.executeImage("user-1", "message-1")).thenReturn(response);
         var controller = new LineBotController(parser, interaction, loading);
 
         assertThat(controller.handleImageMessageEvent(event, content)).isSameAs(response);
 
         var order = inOrder(loading, interaction);
-        order.verify(loading).beforeImage(source);
+        order.verify(loading).startImage(source);
         order.verify(interaction).executeImage("user-1", "message-1");
+        verify(session).close();
+    }
+
+    @Test
+    void imageLoadingRenewalStopsWhenImageExecutionFails() {
+        LineIntentParser parser = mock(LineIntentParser.class);
+        LineInteractionModule interaction = mock(LineInteractionModule.class);
+        LineLoadingFeedback loading = mock(LineLoadingFeedback.class);
+        MessageEvent event = mock(MessageEvent.class);
+        ImageMessageContent content = mock(ImageMessageContent.class);
+        UserSource source = new UserSource("user-1");
+        LineLoadingSession session = mock(LineLoadingSession.class);
+        when(event.source()).thenReturn(source);
+        when(content.id()).thenReturn("message-1");
+        when(loading.startImage(source)).thenReturn(session);
+        when(interaction.executeImage("user-1", "message-1"))
+                .thenThrow(new IllegalStateException("processing failed"));
+        var controller = new LineBotController(parser, interaction, loading);
+
+        assertThatThrownBy(() -> controller.handleImageMessageEvent(event, content))
+                .isInstanceOf(IllegalStateException.class);
+
+        verify(session).close();
     }
 
     @Test

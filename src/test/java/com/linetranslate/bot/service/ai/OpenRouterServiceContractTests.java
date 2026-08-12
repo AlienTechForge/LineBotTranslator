@@ -112,10 +112,10 @@ class OpenRouterServiceContractTests {
                 {"model":"openai/gpt-4o-mini","choices":[{"message":{"content":"{\\\"schemaVersion\\\":\\\"image-regions-v2\\\",\\\"regions\\\":[{\\\"regionId\\\":\\\"r1\\\",\\\"translatedText\\\":\\\"你好\\\"}]}"}}]}
                 """));
         OpenRouterService adapter = new OpenRouterService(
-                config, httpClient, objectMapper, catalog("openai/gpt-4o-mini", Set.of("text")));
+                config, httpClient, objectMapper, catalog("openai/gpt-5.5", Set.of("text")));
         String wire = "{\"schemaVersion\":\"image-regions-v2\",\"targetLocale\":\"zh-TW\",\"regions\":[]}";
 
-        adapter.execute(AiProviderRequest.translate("openai/gpt-4o-mini", wire, "zh-TW"));
+        adapter.execute(AiProviderRequest.translate("openai/gpt-5.5", wire, "zh-TW"));
 
         JsonNode body = objectMapper.readTree(requestBody(captured.get()));
         assertThat(body.path("response_format").path("type").asText()).isEqualTo("json_schema");
@@ -124,6 +124,9 @@ class OpenRouterServiceContractTests {
         assertThat(schema.path("schema").path("properties").path("regions").path("type").asText())
                 .isEqualTo("array");
         assertThat(body.path("temperature").asDouble()).isZero();
+        assertThat(body.path("max_tokens").asInt()).isEqualTo(4096);
+        assertThat(body.path("reasoning").path("effort").asText()).isEqualTo("minimal");
+        assertThat(body.path("reasoning").path("exclude").asBoolean()).isTrue();
         assertThat(body.path("messages").get(0).path("content").asText())
                 .contains("Image Translation Contract", "zh-TW", "Traditional Chinese", "regionId", "protectedTokens");
     }

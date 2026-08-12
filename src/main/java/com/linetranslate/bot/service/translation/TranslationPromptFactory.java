@@ -45,7 +45,7 @@ public class TranslationPromptFactory {
             - Read all regions in readingOrder and use the whole image context to resolve meaning consistently.
             - Regions sharing layout.groupId belong to the same visual group and must use parallel terminology.
             - Keep each regionId mapped exactly once; never merge, split, invent, or reorder region identities.
-            - Translate only action=TRANSLATE. Omit action=PRESERVE from the response.
+            - Every supplied region has action=TRANSLATE. Return each supplied region exactly once.
             - Preserve every protectedTokens value exactly and in order.
             - Respect layout.maxLines and layout.maxCharacters.
             - When layout.compactLabel is true, use the shortest conventional label that preserves meaning.

@@ -171,10 +171,13 @@ public class AiProviderExecutionModule {
                     latencyMillis,
                     false,
                     attempts);
-            log.info("AI provider execution success: provider={}, model={}, latencyMs={}, tokens={}",
+            log.info("AI provider execution success: provider={}, model={}, latencyMs={}, "
+                            + "inputTokens={}, outputTokens={}, totalTokens={}",
                     SafeLog.metadata(result.providerName()),
                     SafeLog.metadata(result.modelName()),
                     latencyMillis,
+                    result.tokenUsage().inputTokens(),
+                    result.tokenUsage().outputTokens(),
                     result.tokenUsage().totalTokens());
             return new AiExecutionOutcome.Success(result);
         } catch (AiProviderException providerFailure) {

@@ -4,10 +4,16 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.doReturn;
 
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+
+import org.mockito.ArgumentCaptor;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -85,14 +91,24 @@ class LineLoadingAnimationAdapterTests {
 
     @Test
     void privateImageDisplaysLoadingAnimation() {
-        var request = new ShowLoadingAnimationRequest("user-1", 20);
+        var request = new ShowLoadingAnimationRequest("user-1", 60);
         when(messagingApiClient.showLoadingAnimation(request))
                 .thenReturn(CompletableFuture.completedFuture(null));
-        var adapter = new LineLoadingAnimationAdapter(messagingApiClient);
+        ScheduledExecutorService scheduler = org.mockito.Mockito.mock(ScheduledExecutorService.class);
+        ScheduledFuture<?> renewal = org.mockito.Mockito.mock(ScheduledFuture.class);
+        ArgumentCaptor<Runnable> task = ArgumentCaptor.forClass(Runnable.class);
+        doReturn(renewal).when(scheduler).scheduleAtFixedRate(task.capture(),
+                org.mockito.ArgumentMatchers.eq(50L),
+                org.mockito.ArgumentMatchers.eq(50L),
+                org.mockito.ArgumentMatchers.eq(TimeUnit.SECONDS));
+        var adapter = new LineLoadingAnimationAdapter(messagingApiClient, scheduler);
 
-        adapter.beforeImage(new UserSource("user-1"));
+        LineLoadingSession session = adapter.startImage(new UserSource("user-1"));
+        task.getValue().run();
+        session.close();
 
-        verify(messagingApiClient).showLoadingAnimation(request);
+        verify(messagingApiClient, times(2)).showLoadingAnimation(request);
+        verify(renewal).cancel(false);
     }
 
     @Test
@@ -105,7 +121,7 @@ class LineLoadingAnimationAdapterTests {
         adapter.beforeText(
                 new GroupSource("group-1", "user-1"),
                 new LineIntent.TranslateText("hello"));
-        adapter.beforeImage(new GroupSource("group-1", "user-1"));
+        adapter.startImage(new GroupSource("group-1", "user-1"));
 
         verify(messagingApiClient, never()).showLoadingAnimation(
                 org.mockito.ArgumentMatchers.any());
