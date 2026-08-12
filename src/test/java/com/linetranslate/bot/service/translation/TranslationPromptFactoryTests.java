@@ -29,6 +29,7 @@ class TranslationPromptFactoryTests {
                 .contains("Image Translation Contract", "English", "whole image")
                 .contains("regionId", "layout", "compactLabel", "protectedTokens")
                 .contains("shortest conventional label")
+                .contains("Never omit source meaning")
                 .doesNotContain("independently", "{{");
         assertThat(prompt).isNotEqualTo(prompts.text("en", TranslationStylePreset.NATURAL));
     }

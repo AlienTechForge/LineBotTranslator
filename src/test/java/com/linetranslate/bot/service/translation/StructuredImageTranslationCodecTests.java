@@ -66,7 +66,7 @@ class StructuredImageTranslationCodecTests {
     }
 
     @Test
-    void rejectsTranslationThatExceedsItsRegionCharacterBudget() {
+    void acceptsOverBudgetRegionSoOneLongCellDoesNotDiscardTheWholeImageMapping() {
         ImageRegionTranslationInput compact = new ImageRegionTranslationInput(
                 "menu-label", "染髮", "zh", List.of(), true, 0,
                 new ImageRegionLayout("menu", 10, 20, 80, 24, 1, 8, true));
@@ -76,8 +76,8 @@ class StructuredImageTranslationCodecTests {
                 ]}
                 """;
 
-        assertThatThrownBy(() -> codec.decode(response, List.of(compact)))
-                .isInstanceOf(StructuredTranslationException.class);
+        assertThat(codec.decode(response, List.of(compact)))
+                .containsExactly(new ImageRegionTranslation("menu-label", "Hair dye package"));
     }
 
     private void assertInvalid(String response) {

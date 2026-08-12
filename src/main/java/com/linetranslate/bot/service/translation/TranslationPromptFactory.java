@@ -9,7 +9,7 @@ import org.springframework.stereotype.Component;
 @Component
 public class TranslationPromptFactory {
     public static final String TEXT_PROMPT_VERSION = "text-translation-v2";
-    public static final String IMAGE_PROMPT_VERSION = "image-translation-v3";
+    public static final String IMAGE_PROMPT_VERSION = "image-translation-v4";
     public static final String OCR_PROMPT_VERSION = "image-ocr-v2";
     public static final String DETECTION_PROMPT_VERSION = "language-detection-v2";
 
@@ -47,8 +47,9 @@ public class TranslationPromptFactory {
             - Keep each regionId mapped exactly once; never merge, split, invent, or reorder region identities.
             - Every supplied region has action=TRANSLATE. Return each supplied region exactly once.
             - Preserve every protectedTokens value exactly and in order.
-            - Never exceed layout.maxLines or layout.maxCharacters, counting spaces and punctuation.
+            - For compact labels, stay within layout.maxLines and layout.maxCharacters, counting spaces and punctuation.
             - Translate connected prose as coherent discourse, not isolated words or literal fragments.
+            - Never omit source meaning or the final character merely to satisfy a prose layout estimate.
             - For menus, tables, forms, and UI, use concise conventional target-language terminology.
             - When layout.compactLabel is true, use the shortest conventional label that preserves meaning;
               omit redundant category words only when the surrounding visual group makes them unambiguous.

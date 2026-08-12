@@ -440,7 +440,11 @@ public class ImageTranslationPipeline {
                 : Math.max(1, (int) Math.floor((double) localHeight / Math.max(10, sourceHeight * 1.15)));
         int charactersPerLine = Math.max(2,
                 (int) Math.floor(localWidth / Math.max(4d, sourceHeight * .50d)));
-        int maxCharacters = Math.max(2, charactersPerLine * maxLines);
+        int geometricCapacity = Math.max(2, charactersPerLine * maxLines);
+        int sourceCharacters = region.text().codePointCount(0, region.text().length());
+        int maxCharacters = region.compactLabel()
+                ? geometricCapacity
+                : Math.max(geometricCapacity, sourceCharacters * 2);
         return new ImageRegionLayout(region.groupId(), bounds.x, bounds.y,
                 localWidth, localHeight, maxLines, maxCharacters, region.compactLabel());
     }

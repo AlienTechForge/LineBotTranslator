@@ -83,6 +83,30 @@ class StructuredImageTranslationAdapterTests {
                 eq(TranslationStylePreset.FAITHFUL), eq(StructuredImageTranslationCodec.SCHEMA_VERSION), any());
     }
 
+    @Test
+    void overBudgetCellDoesNotTriggerWholeImageRepairOrFallback() {
+        CachedTranslationAdapter provider = mock(CachedTranslationAdapter.class);
+        UserPreferences preferences = new UserPreferences("zh-TW", "en", "en", "model", List.of());
+        when(provider.translateValidated(eq(preferences), anyString(), eq("en"),
+                eq(TranslationStylePreset.FAITHFUL), eq(StructuredImageTranslationCodec.SCHEMA_VERSION), any()))
+                .thenReturn(success("{\"schemaVersion\":\"image-regions-v3\",\"regions\":["
+                        + "{\"regionId\":\"long\",\"translatedText\":\"Long translated menu label\"},"
+                        + "{\"regionId\":\"short\",\"translatedText\":\"Cut\"}]}"));
+        StructuredImageTranslationAdapter adapter = new StructuredImageTranslationAdapter(
+                provider, new StructuredImageTranslationCodec(new ObjectMapper()));
+        List<ImageRegionTranslationInput> regions = List.of(
+                new ImageRegionTranslationInput("long", "染髮套餐", "zh", List.of(), true, 0,
+                        new ImageRegionLayout("menu", 0, 0, 80, 24, 1, 8, true)),
+                new ImageRegionTranslationInput("short", "剪髮", "zh", List.of(), true, 1,
+                        new ImageRegionLayout("menu", 0, 30, 80, 24, 1, 8, true)));
+
+        var result = adapter.translate(preferences, regions, "en", TranslationStylePreset.FAITHFUL);
+
+        assertThat(result.translations()).hasSize(2);
+        verify(provider, times(1)).translateValidated(eq(preferences), anyString(), eq("en"),
+                eq(TranslationStylePreset.FAITHFUL), eq(StructuredImageTranslationCodec.SCHEMA_VERSION), any());
+    }
+
     private static AiExecutionOutcome success(String text) {
         return new AiExecutionOutcome.Success(new AiExecutionResult(text, "openrouter", "model"));
     }
