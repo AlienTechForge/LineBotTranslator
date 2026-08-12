@@ -108,10 +108,61 @@ class GoogleVisionOcrServiceTests {
         assertThat(second.get(0).id()).isEqualTo(first.get(0).id());
     }
 
+    @Test
+    @SuppressWarnings("unchecked")
+    void segmentsProviderParagraphThatContainsMultipleMenuRowsAndColumns() {
+        ImageAnnotatorClient client = mock(ImageAnnotatorClient.class);
+        ObjectProvider<ImageAnnotatorClient> provider = mock(ObjectProvider.class);
+        when(provider.getIfAvailable()).thenReturn(client);
+        Paragraph paragraph = Paragraph.newBuilder()
+                .setBoundingBox(box(10, 10, 260, 70))
+                .setConfidence(.96f)
+                .addWords(word("雞排飯", 10, 10, 100, 24, .97f))
+                .addWords(word("110", 225, 10, 35, 24, .99f))
+                .addWords(word("魚排飯", 10, 50, 100, 24, .96f))
+                .addWords(word("90", 225, 50, 35, 24, .99f))
+                .build();
+        TextAnnotation annotation = TextAnnotation.newBuilder().addPages(Page.newBuilder()
+                .addBlocks(Block.newBuilder().setBlockType(Block.BlockType.TEXT)
+                        .addParagraphs(paragraph))).build();
+        when(client.batchAnnotateImages(anyList())).thenReturn(BatchAnnotateImagesResponse.newBuilder()
+                .addResponses(AnnotateImageResponse.newBuilder().setFullTextAnnotation(annotation)).build());
+
+        List<OcrRegion> regions = new GoogleVisionOcrService(provider)
+                .recognizeRegions(new ByteArrayInputStream(new byte[] {1}));
+
+        assertThat(regions).extracting(OcrRegion::text)
+                .containsExactly("雞排飯", "110", "魚排飯", "90");
+        assertThat(regions).allSatisfy(region -> {
+            assertThat(region.groupId()).startsWith("r-0001-");
+            assertThat(region.compactLabel()).isTrue();
+            assertThat(region.confidenceKnown()).isTrue();
+        });
+    }
+
     private static Word word(String value) {
         Word.Builder word = Word.newBuilder();
         value.codePoints().forEach(codePoint -> word.addSymbols(
                 Symbol.newBuilder().setText(new String(Character.toChars(codePoint)))));
         return word.build();
+    }
+
+    private static Word word(String value, int x, int y, int width, int height, float confidence) {
+        Word.Builder word = Word.newBuilder().setBoundingBox(box(x, y, width, height))
+                .setConfidence(confidence);
+        value.codePoints().forEach(codePoint -> word.addSymbols(Symbol.newBuilder()
+                .setText(new String(Character.toChars(codePoint)))
+                .setBoundingBox(box(x, y, width, height))
+                .setConfidence(confidence)));
+        return word.build();
+    }
+
+    private static BoundingPoly box(int x, int y, int width, int height) {
+        return BoundingPoly.newBuilder()
+                .addVertices(Vertex.newBuilder().setX(x).setY(y))
+                .addVertices(Vertex.newBuilder().setX(x + width).setY(y))
+                .addVertices(Vertex.newBuilder().setX(x + width).setY(y + height))
+                .addVertices(Vertex.newBuilder().setX(x).setY(y + height))
+                .build();
     }
 }

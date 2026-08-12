@@ -14,7 +14,7 @@ Accepted
 
 `ImageTranslationPipeline` 使用 immutable/explicit request、downloaded image、storage result、context、failure stage 與 outcome。Pipeline 不在 thread 或 singleton field 保存 request state。MinIO storage 是 non-blocking side effect；configured OCR 不可用時可 fallback 到 AI image recognition；辨識成功後進入 shared Translation Workflow。
 
-Located OCR 必須保留 stable Region ID、provider vertex order、word/symbol polygons、known confidence、block type 與 detected languages。OCR 後處理可把具有一致短字、明顯間距與可靠 word geometry 的離散 UI label 拆成 child Region；child 保留 group identity，並以相鄰文字中點取得可用 cell bounds。只有 centralized qualification policy 判定為 `TRANSLATE` 的 Region 可進入 versioned structured translation contract；`PRESERVE`／`REJECT` 不得清除原圖。Provider 回應以 exact Region ID set 驗證，禁止以換行或 list index 猜配。
+Located OCR 必須保留 stable Region ID、provider vertex order、word/symbol polygons、known confidence、block type 與 detected languages。OCR 後處理可把具有一致短字、明顯間距與可靠 word geometry 的離散 UI label 拆成 child Region；對同一 provider paragraph 內含多個視覺列、且至少一列有明顯欄間距的表格／菜單，則依 word polygon 的垂直重疊分列、依相對字高的水平間距分欄。一般自動換行 prose 不拆。所有 child 保留 group identity、取得唯一 reading order，並以相鄰文字中點取得 bounded cell polygon。只有 centralized qualification policy 判定為 `TRANSLATE` 的 Region 可進入 versioned structured translation contract；`PRESERVE`／`REJECT` 不得清除原圖。Provider 回應以 exact Region ID set 驗證，禁止以換行或 list index 猜配。
 
 Google Vision（configured OCR）負責 located geometry/language metadata；使用者選定的 OpenRouter Translation Model 只負責翻譯，不被當成 OCR geometry 或獨立 language detector 的來源。沒有 located Regions 的 AI recognition fallback 僅提供純文字翻譯。
 
