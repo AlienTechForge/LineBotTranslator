@@ -1,7 +1,10 @@
 package com.linetranslate.bot.service.ocr;
 
+import java.awt.BasicStroke;
 import java.awt.Polygon;
+import java.awt.Rectangle;
 import java.awt.geom.Area;
+import java.awt.geom.PathIterator;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -33,29 +36,32 @@ public class OverlaySafetyPolicy {
                 decisions.add(preserved(region.id(), "invalid-candidate"));
                 continue;
             }
-            Area mask = mask(region);
-            java.awt.Rectangle bounds = mask.getBounds();
-            if (bounds.x < 0 || bounds.y < 0 || bounds.getMaxX() > imageWidth || bounds.getMaxY() > imageHeight) {
+            java.awt.Rectangle sourceBounds = maskWithoutPadding(region).getBounds();
+            if (sourceBounds.x < 0 || sourceBounds.y < 0
+                    || sourceBounds.getMaxX() > imageWidth || sourceBounds.getMaxY() > imageHeight) {
                 skipped++;
                 decisions.add(preserved(region.id(), "outside-image"));
                 continue;
             }
-            double ratio = region.masks().stream().mapToDouble(OverlaySafetyPolicy::polygonArea).sum() / imageArea;
-            if (ratio <= 0 || ratio > properties.maxRegionAreaRatio()) {
+            Area mask = mask(region, imageWidth, imageHeight);
+            Area paragraph = maskWithoutPadding(region);
+            double paragraphRatio = region.area() / imageArea;
+            double modifiedRatio = area(mask) / imageArea;
+            if (paragraphRatio <= 0 || paragraphRatio > properties.maxRegionAreaRatio()) {
                 skipped++;
                 decisions.add(preserved(region.id(), "region-coverage"));
                 continue;
             }
             for (Area previous : masks) {
                 Area intersection = new Area(previous);
-                intersection.intersect(mask);
+                intersection.intersect(paragraph);
                 if (!intersection.isEmpty()) return blocked(requested, "overlap");
             }
-            total += ratio;
+            total += modifiedRatio;
             if (total > properties.maxTotalMaskRatio()) {
                 return blocked(requested, "total-coverage");
             }
-            masks.add(mask);
+            masks.add(paragraph);
             accepted.add(candidate);
         }
         return new OverlaySafetyPlan(true, "safe", accepted, skipped, decisions);
@@ -72,6 +78,21 @@ public class OverlaySafetyPolicy {
     }
 
     static Area mask(OcrRegion region) {
+        Polygon polygon = polygon(region.polygon());
+        Area result = new Area(polygon);
+        int padding = maskPadding(region);
+        result.add(new Area(new BasicStroke(padding * 2f, BasicStroke.CAP_SQUARE, BasicStroke.JOIN_ROUND)
+                .createStrokedShape(polygon)));
+        return result;
+    }
+
+    static Area mask(OcrRegion region, int imageWidth, int imageHeight) {
+        Area result = mask(region);
+        result.intersect(new Area(new Rectangle(0, 0, imageWidth, imageHeight)));
+        return result;
+    }
+
+    static Area sourceMask(OcrRegion region) {
         Area result = new Area();
         region.masks().forEach(points -> result.add(new Area(polygon(points))));
         return result;
@@ -83,13 +104,46 @@ public class OverlaySafetyPolicy {
         return result;
     }
 
-    private static double polygonArea(List<OcrPoint> points) {
-        if (points.size() < 3) return 0;
-        long sum = 0;
-        for (int i = 0; i < points.size(); i++) {
-            OcrPoint a = points.get(i), b = points.get((i + 1) % points.size());
-            sum += (long) a.x() * b.y() - (long) b.x() * a.y();
+    private static double area(Area area) {
+        PathIterator iterator = area.getPathIterator(null, .25);
+        double[] coordinates = new double[6];
+        double startX = 0, startY = 0, lastX = 0, lastY = 0, signedTwiceArea = 0;
+        while (!iterator.isDone()) {
+            int segment = iterator.currentSegment(coordinates);
+            if (segment == PathIterator.SEG_MOVETO) {
+                startX = lastX = coordinates[0];
+                startY = lastY = coordinates[1];
+            } else if (segment == PathIterator.SEG_LINETO) {
+                signedTwiceArea += lastX * coordinates[1] - coordinates[0] * lastY;
+                lastX = coordinates[0];
+                lastY = coordinates[1];
+            } else if (segment == PathIterator.SEG_CLOSE) {
+                signedTwiceArea += lastX * startY - startX * lastY;
+            }
+            iterator.next();
         }
-        return Math.abs(sum) / 2d;
+        return Math.abs(signedTwiceArea) / 2d;
+    }
+
+    private static int maskPadding(OcrRegion region) {
+        List<Integer> heights = region.words().stream()
+                .map(OcrWord::polygon)
+                .filter(points -> points.size() >= 4)
+                .map(points -> (int) Math.round(Math.hypot(
+                        points.get(points.size() - 1).x() - points.get(0).x(),
+                        points.get(points.size() - 1).y() - points.get(0).y())))
+                .filter(height -> height > 0)
+                .sorted()
+                .toList();
+        int height = heights.isEmpty()
+                ? Math.max(1, maskWithoutPadding(region).getBounds().height)
+                : heights.get(heights.size() / 2);
+        // Provider polygons often end exactly on the last antialiased source pixel.
+        // Area.contains excludes the outer boundary, so retain one explicit pixel of slack.
+        return Math.max(2, Math.min(8, 1 + (int) Math.ceil(height * .06)));
+    }
+
+    private static Area maskWithoutPadding(OcrRegion region) {
+        return new Area(polygon(region.polygon()));
     }
 }

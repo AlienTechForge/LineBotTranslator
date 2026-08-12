@@ -29,9 +29,13 @@ public class ImageTranslationFontProvider {
     }
 
     public Optional<Font> fontFor(String text, float size) {
+        return fontFor(text, size, Font.PLAIN);
+    }
+
+    public Optional<Font> fontFor(String text, float size, int style) {
         return PREFERRED.stream()
                 .filter(name -> available.contains(name.toLowerCase(Locale.ROOT)))
-                .map(name -> new Font(name, Font.PLAIN, Math.max(MIN_SIZE, Math.round(size))))
+                .map(name -> new Font(name, style, Math.max(MIN_SIZE, Math.round(size))))
                 .filter(font -> font.canDisplayUpTo(text) < 0)
                 .findFirst();
     }

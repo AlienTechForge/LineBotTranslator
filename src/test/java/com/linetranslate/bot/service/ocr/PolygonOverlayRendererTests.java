@@ -15,6 +15,125 @@ import org.junit.jupiter.api.Test;
 
 class PolygonOverlayRendererTests {
     @Test
+    void translatedTextUsesWholeParagraphInsteadOfSparseSourceWordMasks() throws Exception {
+        BufferedImage original = new BufferedImage(240, 100, BufferedImage.TYPE_INT_RGB);
+        var graphics = original.createGraphics();
+        try {
+            graphics.setColor(Color.WHITE);
+            graphics.fillRect(0, 0, original.getWidth(), original.getHeight());
+            graphics.setColor(new Color(92, 72, 220));
+            graphics.setFont(graphics.getFont().deriveFont(java.awt.Font.BOLD, 34f));
+            graphics.drawString("SLEEP", 22, 58);
+            graphics.drawString("SCORE", 168, 58);
+        } finally {
+            graphics.dispose();
+        }
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        ImageIO.write(original, "png", bytes);
+        ValidatedImage source = new ImageInputValidator(ImageTranslationProperties.defaults())
+                .validate(bytes.toByteArray(), "image/png");
+        OcrRegion region = new OcrRegion("r-sparse", "SLEEP SCORE", List.of(
+                new OcrPoint(20, 15), new OcrPoint(220, 15),
+                new OcrPoint(220, 75), new OcrPoint(20, 75)), List.of(
+                        new OcrWord("SLEEP", List.of(
+                                new OcrPoint(20, 20), new OcrPoint(72, 20),
+                                new OcrPoint(72, 66), new OcrPoint(20, 66)), .99f, true),
+                        new OcrWord("SCORE", List.of(
+                                new OcrPoint(168, 20), new OcrPoint(220, 20),
+                                new OcrPoint(220, 66), new OcrPoint(168, 66)), .99f, true)),
+                .99f, true, OcrBlockType.TEXT, List.of(new OcrDetectedLanguage("en", .99f)), 0);
+        OverlaySafetyPlan plan = new OverlaySafetyPolicy().evaluate(
+                List.of(new ImageRegionOverlay(region, "TRANSLATED")), 240, 100,
+                new ImageTranslationProperties(1000, 100, 10000, .6f, true, .7, .8));
+
+        BufferedImage output = ImageIO.read(new ByteArrayInputStream(
+                new ImageTranslationOverlayRenderer().render(source, plan).pngBytes()));
+
+        int changedInGap = 0;
+        for (int y = 15; y < 75; y++) for (int x = 80; x < 160; x++) {
+            if (output.getRGB(x, y) != original.getRGB(x, y)) changedInGap++;
+        }
+        assertThat(changedInGap).as("translated glyphs in the gap between source word masks").isPositive();
+    }
+
+    @Test
+    void replacementPreservesDominantSourceTextColour() throws Exception {
+        Color sourceColour = new Color(92, 72, 220);
+        BufferedImage original = new BufferedImage(180, 80, BufferedImage.TYPE_INT_RGB);
+        var graphics = original.createGraphics();
+        try {
+            graphics.setColor(Color.WHITE);
+            graphics.fillRect(0, 0, original.getWidth(), original.getHeight());
+            graphics.setColor(sourceColour);
+            graphics.setFont(graphics.getFont().deriveFont(java.awt.Font.BOLD, 32f));
+            graphics.drawString("SLEEP", 20, 52);
+        } finally {
+            graphics.dispose();
+        }
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        ImageIO.write(original, "png", bytes);
+        ValidatedImage source = new ImageInputValidator(ImageTranslationProperties.defaults())
+                .validate(bytes.toByteArray(), "image/png");
+        OcrRegion region = new OcrRegion("r-colour", "SLEEP", List.of(
+                new OcrPoint(16, 14), new OcrPoint(130, 14),
+                new OcrPoint(130, 62), new OcrPoint(16, 62)), List.of(
+                        new OcrWord("SLEEP", List.of(
+                                new OcrPoint(16, 14), new OcrPoint(130, 14),
+                                new OcrPoint(130, 62), new OcrPoint(16, 62)), .99f, true)),
+                .99f, true, OcrBlockType.TEXT, List.of(), 0);
+        OverlaySafetyPlan plan = new OverlaySafetyPolicy().evaluate(
+                List.of(new ImageRegionOverlay(region, "REST")), 180, 80,
+                new ImageTranslationProperties(1000, 100, 10000, .6f, true, .6, .7));
+
+        BufferedImage output = ImageIO.read(new ByteArrayInputStream(
+                new ImageTranslationOverlayRenderer().render(source, plan).pngBytes()));
+
+        int matchingPixels = 0;
+        for (int y = 14; y < 62; y++) for (int x = 16; x < 130; x++) {
+            Color pixel = new Color(output.getRGB(x, y));
+            if (Math.abs(pixel.getRed() - sourceColour.getRed()) <= 12
+                    && Math.abs(pixel.getGreen() - sourceColour.getGreen()) <= 12
+                    && Math.abs(pixel.getBlue() - sourceColour.getBlue()) <= 12) {
+                matchingPixels++;
+            }
+        }
+        assertThat(matchingPixels).as("replacement pixels close to the source text colour").isPositive();
+    }
+
+    @Test
+    void clearsSourceAntialiasFringeImmediatelyOutsideProviderPolygon() throws Exception {
+        BufferedImage original = new BufferedImage(130, 70, BufferedImage.TYPE_INT_RGB);
+        var graphics = original.createGraphics();
+        try {
+            graphics.setColor(Color.WHITE);
+            graphics.fillRect(0, 0, original.getWidth(), original.getHeight());
+            graphics.setColor(new Color(92, 72, 220));
+            graphics.fillRect(91, 32, 1, 2);
+        } finally {
+            graphics.dispose();
+        }
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        ImageIO.write(original, "png", bytes);
+        ValidatedImage source = new ImageInputValidator(ImageTranslationProperties.defaults())
+                .validate(bytes.toByteArray(), "image/png");
+        List<OcrPoint> polygon = List.of(
+                new OcrPoint(10, 10), new OcrPoint(90, 10),
+                new OcrPoint(90, 50), new OcrPoint(10, 50));
+        OcrRegion region = new OcrRegion("r-fringe", "SOURCE", polygon,
+                List.of(new OcrWord("SOURCE", polygon, .99f, true)),
+                .99f, true, OcrBlockType.TEXT, List.of(), 0);
+        OverlaySafetyPlan plan = new OverlaySafetyPolicy().evaluate(
+                List.of(new ImageRegionOverlay(region, "OK")), 130, 70,
+                new ImageTranslationProperties(1000, 100, 10000, .6f, true, .6, .7));
+
+        BufferedImage output = ImageIO.read(new ByteArrayInputStream(
+                new ImageTranslationOverlayRenderer().render(source, plan).pngBytes()));
+
+        assertThat(output.getRGB(91, 32)).isEqualTo(Color.WHITE.getRGB());
+        assertThat(output.getRGB(91, 33)).isEqualTo(Color.WHITE.getRGB());
+    }
+
+    @Test
     void rotatedOverlayNeverChangesPixelsOutsideValidatedPolygon() throws Exception {
         BufferedImage original = new BufferedImage(180, 140, BufferedImage.TYPE_INT_RGB);
         for (int y = 0; y < original.getHeight(); y++) for (int x = 0; x < original.getWidth(); x++)
@@ -59,7 +178,7 @@ class PolygonOverlayRendererTests {
                 List.of(), .98f, true, OcrBlockType.TEXT, List.of(), 0);
         OverlaySafetyPlan plan = new OverlaySafetyPolicy().evaluate(
                 List.of(new ImageRegionOverlay(region, "中文")), 100, 60,
-                new ImageTranslationProperties(1000, 100, 10000, .6f, true, .4, .5));
+                new ImageTranslationProperties(1000, 100, 10000, .6f, true, .5, .6));
         ImageTranslationOverlayRenderer renderer = new ImageTranslationOverlayRenderer(
                 new ImageTranslationFontProvider(Set.of("dejavu sans")));
 

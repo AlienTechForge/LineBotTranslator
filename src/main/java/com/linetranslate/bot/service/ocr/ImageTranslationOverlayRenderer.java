@@ -51,16 +51,20 @@ public class ImageTranslationOverlayRenderer {
         try {
             // Exact clip invariant: antialiasing may blend pixels just outside a polygon edge.
             graphics.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_OFF);
-            graphics.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_OFF);
+            graphics.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
             for (ImageRegionOverlay overlay : plan.overlays()) {
-                Font supportedFont = fontProvider.fontFor(overlay.replacement(), 12).orElse(null);
+                ImageTranslationTextStyle style = ImageTranslationStyleEstimator.estimate(
+                        pristine, overlay.region());
+                Font supportedFont = fontProvider.fontFor(
+                        overlay.replacement(), 12, style.fontStyle()).orElse(null);
                 if (supportedFont == null) {
                     fontSkipped++;
                     decisions.add(new OverlayRenderDecision(
                             overlay.region().id(), OverlayRenderStatus.PRESERVED, "font-coverage"));
                     continue;
                 }
-                Area mask = OverlaySafetyPolicy.mask(overlay.region());
+                Area mask = OverlaySafetyPolicy.mask(
+                        overlay.region(), output.getWidth(), output.getHeight());
                 java.awt.Rectangle bounds = mask.getBounds();
                 if (mask.isEmpty() || bounds.width <= 1 || bounds.height <= 1) {
                     decisions.add(new OverlayRenderDecision(
@@ -72,12 +76,8 @@ public class ImageTranslationOverlayRenderer {
                 AffineTransform oldTransform = graphics.getTransform();
                 try {
                     graphics.clip(mask);
-                    Color background = sampleBackground(output,
-                            new Bounds(bounds.x, bounds.y, bounds.width, bounds.height));
-                    graphics.setColor(background);
-                    for (List<OcrPoint> polygon : overlay.region().masks()) {
-                        graphics.fill(OverlaySafetyPolicy.polygon(polygon));
-                    }
+                    graphics.setColor(style.background());
+                    graphics.fill(mask);
                     List<OcrPoint> polygon = overlay.region().polygon();
                     OcrPoint origin = polygon.get(0);
                     OcrPoint edge = polygon.get(1);
@@ -85,12 +85,13 @@ public class ImageTranslationOverlayRenderer {
                     double localWidth = Math.hypot(edge.x() - origin.x(), edge.y() - origin.y());
                     OcrPoint side = polygon.get(polygon.size() - 1);
                     double localHeight = Math.hypot(side.x() - origin.x(), side.y() - origin.y());
-                    graphics.setColor(contrastingText(background));
+                    graphics.setColor(style.foreground());
                     graphics.translate(origin.x(), origin.y());
                     graphics.rotate(angle);
                     drawHorizontal(graphics, overlay.replacement(), new Bounds(
                             0, 0, Math.max(2, (int) Math.round(localWidth)),
-                            Math.max(2, (int) Math.round(localHeight))), supportedFont.getFamily());
+                            Math.max(2, (int) Math.round(localHeight))), supportedFont,
+                            style.maximumFontSize());
                     rendered++;
                     decisions.add(new OverlayRenderDecision(
                             overlay.region().id(), OverlayRenderStatus.RENDERED, "rendered"));
@@ -114,8 +115,13 @@ public class ImageTranslationOverlayRenderer {
         return new RenderedImage(encode(output), rendered, plan.skipped() + fontSkipped, decisions);
     }
 
-    private static void drawHorizontal(Graphics2D graphics, String text, Bounds bounds, String fontFamily) {
-        Layout layout = fitHorizontal(graphics, text, bounds, fontFamily);
+    private static void drawHorizontal(
+            Graphics2D graphics,
+            String text,
+            Bounds bounds,
+            Font baseFont,
+            int maximumFontSize) {
+        Layout layout = fitHorizontal(graphics, text, bounds, baseFont, maximumFontSize);
         graphics.setFont(layout.font());
         FontMetrics metrics = graphics.getFontMetrics();
         int baseline = bounds.y() + metrics.getAscent();
@@ -126,16 +132,21 @@ public class ImageTranslationOverlayRenderer {
         }
     }
 
-    private static Layout fitHorizontal(Graphics2D graphics, String text, Bounds bounds, String fontFamily) {
-        int maximum = Math.max(MIN_FONT_SIZE, Math.min(48, bounds.height() - 2));
+    private static Layout fitHorizontal(
+            Graphics2D graphics,
+            String text,
+            Bounds bounds,
+            Font baseFont,
+            int maximumFontSize) {
+        int maximum = Math.max(MIN_FONT_SIZE, Math.min(maximumFontSize, bounds.height() - 2));
         for (int size = maximum; size >= MIN_FONT_SIZE; size--) {
-            Font font = new Font(fontFamily, Font.PLAIN, size);
+            Font font = baseFont.deriveFont((float) size);
             graphics.setFont(font);
             FontMetrics metrics = graphics.getFontMetrics();
             List<String> lines = wrap(text, metrics, Math.max(1, bounds.width() - 2));
             if ((long) lines.size() * metrics.getHeight() <= bounds.height()) return new Layout(font, lines);
         }
-        Font font = new Font(fontFamily, Font.PLAIN, MIN_FONT_SIZE);
+        Font font = baseFont.deriveFont((float) MIN_FONT_SIZE);
         graphics.setFont(font);
         FontMetrics metrics = graphics.getFontMetrics();
         int availableWidth = Math.max(1, bounds.width() - 2);
