@@ -113,6 +113,24 @@ class OverlaySafetyPolicyTests {
                 .containsExactly("first", "second");
     }
 
+    @Test
+    void sourceCleanupUsesSymbolGeometryAndLeavesStructureBetweenGlyphsUntouched() {
+        List<OcrPoint> wordPolygon = rectangle(10, 10, 100, 24);
+        OcrWord word = new OcrWord("AB", wordPolygon, .99f, true, List.of(
+                new OcrSymbol("A", rectangle(10, 10, 18, 24), .99f, true),
+                new OcrSymbol("B", rectangle(36, 10, 18, 24), .99f, true)));
+        OcrRegion region = new OcrRegion("glyph-mask", "AB", rectangle(5, 5, 115, 34),
+                List.of(word), .99f, true, OcrBlockType.TEXT, List.of(), 0);
+
+        java.awt.geom.Area cleanup = OverlaySafetyPolicy.sourceCleanupMask(region, 140, 60);
+
+        assertThat(cleanup.contains(18, 20)).isTrue();
+        assertThat(cleanup.contains(45, 20)).isTrue();
+        assertThat(cleanup.contains(80, 20))
+                .as("grid or icon space inside the coarse word box")
+                .isFalse();
+    }
+
     private static ImageTranslationProperties enabled() {
         return new ImageTranslationProperties(1000, 100, 10000, .6f, true, .25, .4);
     }
@@ -123,5 +141,10 @@ class OverlaySafetyPolicyTests {
                 new OcrPoint(x, y), new OcrPoint(x + width, y),
                 new OcrPoint(x + width, y + height), new OcrPoint(x, y + height)),
                 List.of(), confidence, known, OcrBlockType.TEXT, List.of(), 0);
+    }
+
+    private static List<OcrPoint> rectangle(int x, int y, int width, int height) {
+        return List.of(new OcrPoint(x, y), new OcrPoint(x + width, y),
+                new OcrPoint(x + width, y + height), new OcrPoint(x, y + height));
     }
 }

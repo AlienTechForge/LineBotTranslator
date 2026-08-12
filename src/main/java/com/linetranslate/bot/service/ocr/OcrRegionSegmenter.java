@@ -4,6 +4,7 @@ import java.awt.Rectangle;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.regex.Pattern;
 
 import org.springframework.stereotype.Component;
 
@@ -12,6 +13,9 @@ import org.springframework.stereotype.Component;
 public class OcrRegionSegmenter {
     private static final int MAX_COMPACT_CODEPOINTS = 3;
     private static final int MAX_DENSE_CHILDREN = 100;
+    private static final Pattern PRICE_TOKEN = Pattern.compile(
+            "^[\\p{Sc}\\s]*\\d[\\d,.'’]*(?:元|円|圓|원)?$");
+    private static final Pattern SIZE_TOKEN = Pattern.compile("(?i)^(?:S|M|L|XL|XXL)$");
 
     public List<OcrRegion> segment(List<OcrRegion> input) {
         List<OcrRegion> result = new ArrayList<>();
@@ -37,19 +41,24 @@ public class OcrRegionSegmenter {
     }
 
     private static List<OcrRegion> splitDenseParagraph(OcrRegion region) {
-        if (region == null || region.orientation() != OcrOrientation.HORIZONTAL
-                || region.words().size() < 3
+        LocalFrame frame = LocalFrame.from(region);
+        if (frame == null || region.words().size() < 3
                 || region.words().stream().anyMatch(word -> word.text().isBlank()
                         || word.polygon().size() < 4)) {
             return List.of();
         }
-        List<VisualLine> lines = visualLines(region.words());
-        if (lines.size() < 2) return List.of();
+        List<VisualLine> lines = visualLines(region.words(), frame);
+        if (lines.isEmpty()) return List.of();
 
-        Rectangle paragraph = bounds(region.polygon());
-        List<List<WordSegment>> segmentsByLine = lines.stream()
-                .map(OcrRegionSegmenter::wordSegments)
-                .toList();
+        Rectangle paragraph = frame.bounds();
+        List<List<WordSegment>> segmentsByLine = new ArrayList<>(lines.size());
+        for (VisualLine line : lines) {
+            segmentsByLine.add(isStructuredPriceLine(line)
+                    ? priceRowSegments(line) : wordSegments(line));
+        }
+        boolean structuredSingleLine = lines.size() == 1
+                && isStructuredPriceLine(lines.get(0));
+        if (lines.size() < 2 && !structuredSingleLine) return List.of();
         long columnarLines = segmentsByLine.stream().filter(segments -> segments.size() > 1).count();
         if (columnarLines == 0) return List.of();
         int childCount = segmentsByLine.stream().mapToInt(List::size).sum();
@@ -76,15 +85,40 @@ public class OcrRegionSegmenter {
                 String suffix = ".l" + (lineIndex + 1)
                         + (segments.size() > 1 ? ".c" + (segmentIndex + 1) : "");
                 boolean compact = segments.size() > 1;
-                children.add(child(region, suffix, segment.words(), left, top, right, bottom,
+                children.add(child(region, frame, suffix, segment.words(), left, top, right, bottom,
                         compact));
             }
         }
         return List.copyOf(children);
     }
 
-    private static List<VisualLine> visualLines(List<OcrWord> words) {
-        List<WordBox> boxes = words.stream().map(word -> new WordBox(word, bounds(word.polygon())))
+    private static boolean isStructuredPriceLine(VisualLine line) {
+        List<WordBox> words = line.words().stream().sorted(Comparator.comparingInt(WordBox::left)).toList();
+        return words.size() >= 2 && words.stream().skip(1).map(box -> box.word().text())
+                .anyMatch(value -> PRICE_TOKEN.matcher(value).matches());
+    }
+
+    private static List<WordSegment> priceRowSegments(VisualLine line) {
+        List<WordBox> words = line.words().stream().sorted(Comparator.comparingInt(WordBox::left)).toList();
+        int structuredStart = -1;
+        for (int index = 1; index < words.size(); index++) {
+            String text = words.get(index).word().text();
+            if (PRICE_TOKEN.matcher(text).matches() || SIZE_TOKEN.matcher(text).matches()) {
+                structuredStart = index;
+                break;
+            }
+        }
+        if (structuredStart < 0) return wordSegments(line);
+        List<WordSegment> segments = new ArrayList<>();
+        segments.add(new WordSegment(List.copyOf(words.subList(0, structuredStart))));
+        for (int index = structuredStart; index < words.size(); index++) {
+            segments.add(new WordSegment(List.of(words.get(index))));
+        }
+        return List.copyOf(segments);
+    }
+
+    private static List<VisualLine> visualLines(List<OcrWord> words, LocalFrame frame) {
+        List<WordBox> boxes = words.stream().map(word -> new WordBox(word, frame.bounds(word.polygon())))
                 .sorted(Comparator.comparingInt(WordBox::centerY).thenComparingInt(WordBox::left))
                 .toList();
         int medianHeight = median(boxes.stream().map(WordBox::height).toList());
@@ -133,12 +167,15 @@ public class OcrRegionSegmenter {
     }
 
     private static List<OcrRegion> splitDiscreteLabels(OcrRegion region) {
-        List<OcrWord> orderedWords = region.words().stream()
-                .sorted(Comparator.comparingInt(word -> bounds(word.polygon()).x)).toList();
+        LocalFrame frame = LocalFrame.from(region);
+        if (frame == null) return List.of(region);
+        List<WordBox> orderedWords = region.words().stream()
+                .map(word -> new WordBox(word, frame.bounds(word.polygon())))
+                .sorted(Comparator.comparingInt(WordBox::left)).toList();
         List<OcrRegion> result = new ArrayList<>(orderedWords.size());
         for (int index = 0; index < orderedWords.size(); index++) {
-            OcrWord word = orderedWords.get(index);
-            List<OcrPoint> cell = cellPolygon(region, index, orderedWords);
+            OcrWord word = orderedWords.get(index).word();
+            List<OcrPoint> cell = cellPolygon(frame, index, orderedWords);
             result.add(new OcrRegion(
                     region.id() + ".s" + (index + 1), word.text(), cell, List.of(word),
                     word.confidence(), word.confidenceKnown(), region.blockType(), region.languages(),
@@ -147,7 +184,7 @@ public class OcrRegionSegmenter {
         return List.copyOf(result);
     }
 
-    private static OcrRegion child(OcrRegion source, String suffix, List<WordBox> boxes,
+    private static OcrRegion child(OcrRegion source, LocalFrame frame, String suffix, List<WordBox> boxes,
             int left, int top, int right, int bottom, boolean compact) {
         List<OcrWord> words = boxes.stream().map(WordBox::word).toList();
         boolean allWordConfidenceKnown = words.stream().allMatch(OcrWord::confidenceKnown);
@@ -158,7 +195,7 @@ public class OcrRegionSegmenter {
         return new OcrRegion(
                 source.id() + suffix,
                 joinWords(words),
-                rectangle(left, top, Math.max(left + 1, right), Math.max(top + 1, bottom)),
+                frame.polygon(left, top, Math.max(left + 1, right), Math.max(top + 1, bottom)),
                 words,
                 confidence,
                 confidenceKnown,
@@ -194,7 +231,8 @@ public class OcrRegionSegmenter {
     }
 
     private static boolean isDiscreteLabelRow(OcrRegion region) {
-        if (region == null || region.orientation() != OcrOrientation.HORIZONTAL || region.words().size() < 2) {
+        LocalFrame frame = LocalFrame.from(region);
+        if (frame == null || region.words().size() < 2) {
             return false;
         }
         if (region.words().stream().anyMatch(word -> word.text().isBlank()
@@ -203,7 +241,7 @@ public class OcrRegionSegmenter {
         boolean allSingleGlyph = region.words().stream()
                 .allMatch(word -> word.text().codePointCount(0, word.text().length()) == 1);
         if (region.words().size() < 3 && !allSingleGlyph) return false;
-        List<Rectangle> values = region.words().stream().map(word -> bounds(word.polygon()))
+        List<Rectangle> values = region.words().stream().map(word -> frame.bounds(word.polygon()))
                 .sorted(Comparator.comparingInt(value -> value.x)).toList();
         int separated = 0;
         for (int i = 1; i < values.size(); i++) {
@@ -214,16 +252,14 @@ public class OcrRegionSegmenter {
         return separated == values.size() - 1;
     }
 
-    private static List<OcrPoint> cellPolygon(OcrRegion region, int index, List<OcrWord> words) {
-        List<Rectangle> ordered = words.stream().map(word -> bounds(word.polygon()))
-                .sorted(Comparator.comparingInt(value -> value.x)).toList();
-        Rectangle paragraph = bounds(region.polygon());
-        Rectangle current = ordered.get(index);
+    private static List<OcrPoint> cellPolygon(LocalFrame frame, int index, List<WordBox> words) {
+        Rectangle paragraph = frame.bounds();
+        WordBox current = words.get(index);
         int left = index == 0 ? paragraph.x
-                : midpoint(ordered.get(index - 1).x + ordered.get(index - 1).width, current.x);
-        int right = index == ordered.size() - 1 ? paragraph.x + paragraph.width
-                : midpoint(current.x + current.width, ordered.get(index + 1).x);
-        return rectangle(left, paragraph.y, right, paragraph.y + paragraph.height);
+                : midpoint(words.get(index - 1).right(), current.left());
+        int right = index == words.size() - 1 ? paragraph.x + paragraph.width
+                : midpoint(current.right(), words.get(index + 1).left());
+        return frame.polygon(left, paragraph.y, right, paragraph.y + paragraph.height);
     }
 
     private static double verticalOverlap(Rectangle left, Rectangle right) {
@@ -241,17 +277,65 @@ public class OcrRegionSegmenter {
         return left + (right - left) / 2;
     }
 
-    private static List<OcrPoint> rectangle(int left, int top, int right, int bottom) {
-        return List.of(new OcrPoint(left, top), new OcrPoint(right, top),
-                new OcrPoint(right, bottom), new OcrPoint(left, bottom));
-    }
+    /** Maps OCR polygons to the paragraph's own reading axes before row/column analysis. */
+    private record LocalFrame(
+            double originX, double originY,
+            double xAxisX, double xAxisY,
+            double yAxisX, double yAxisY,
+            double determinant, int width, int height) {
+        private static LocalFrame from(OcrRegion region) {
+            if (region == null || region.polygon().size() < 4) return null;
+            OcrPoint origin = region.polygon().get(0);
+            OcrPoint right = region.polygon().get(1);
+            OcrPoint bottom = region.polygon().get(region.polygon().size() - 1);
+            double xLength = Math.hypot(right.x() - origin.x(), right.y() - origin.y());
+            double yLength = Math.hypot(bottom.x() - origin.x(), bottom.y() - origin.y());
+            if (xLength <= 1 || yLength <= 1) return null;
+            double xAxisX = (right.x() - origin.x()) / xLength;
+            double xAxisY = (right.y() - origin.y()) / xLength;
+            double yAxisX = (bottom.x() - origin.x()) / yLength;
+            double yAxisY = (bottom.y() - origin.y()) / yLength;
+            double determinant = xAxisX * yAxisY - xAxisY * yAxisX;
+            if (Math.abs(determinant) < .20) return null;
+            return new LocalFrame(origin.x(), origin.y(), xAxisX, xAxisY, yAxisX, yAxisY,
+                    determinant, Math.max(1, (int) Math.round(xLength)),
+                    Math.max(1, (int) Math.round(yLength)));
+        }
 
-    private static Rectangle bounds(List<OcrPoint> points) {
-        int minX = points.stream().mapToInt(OcrPoint::x).min().orElse(0);
-        int minY = points.stream().mapToInt(OcrPoint::y).min().orElse(0);
-        int maxX = points.stream().mapToInt(OcrPoint::x).max().orElse(minX + 1);
-        int maxY = points.stream().mapToInt(OcrPoint::y).max().orElse(minY + 1);
-        return new Rectangle(minX, minY, Math.max(1, maxX - minX), Math.max(1, maxY - minY));
+        private Rectangle bounds() {
+            return new Rectangle(0, 0, width, height);
+        }
+
+        private Rectangle bounds(List<OcrPoint> points) {
+            double minX = Double.POSITIVE_INFINITY, minY = Double.POSITIVE_INFINITY;
+            double maxX = Double.NEGATIVE_INFINITY, maxY = Double.NEGATIVE_INFINITY;
+            for (OcrPoint point : points) {
+                double dx = point.x() - originX;
+                double dy = point.y() - originY;
+                double localX = (dx * yAxisY - dy * yAxisX) / determinant;
+                double localY = (xAxisX * dy - xAxisY * dx) / determinant;
+                minX = Math.min(minX, localX);
+                minY = Math.min(minY, localY);
+                maxX = Math.max(maxX, localX);
+                maxY = Math.max(maxY, localY);
+            }
+            if (!Double.isFinite(minX)) return new Rectangle();
+            int left = (int) Math.floor(minX);
+            int top = (int) Math.floor(minY);
+            int right = (int) Math.ceil(maxX);
+            int bottom = (int) Math.ceil(maxY);
+            return new Rectangle(left, top, Math.max(1, right - left), Math.max(1, bottom - top));
+        }
+
+        private List<OcrPoint> polygon(int left, int top, int right, int bottom) {
+            return List.of(point(left, top), point(right, top), point(right, bottom), point(left, bottom));
+        }
+
+        private OcrPoint point(double x, double y) {
+            return new OcrPoint(
+                    (int) Math.round(originX + xAxisX * x + yAxisX * y),
+                    (int) Math.round(originY + xAxisY * x + yAxisY * y));
+        }
     }
 
     private record WordBox(OcrWord word, Rectangle bounds) {

@@ -70,6 +70,70 @@ class OcrRegionSegmenterTests {
     }
 
     @Test
+    void splitsARotatedVisualMenuInItsLocalReadingCoordinates() {
+        OcrRegion menu = new OcrRegion("rotated-menu", "染髮 2000 1900 2300 剪髮 2700 3400 3900",
+                rotatedRectangle(300, 10, 260, 60),
+                List.of(
+                        rotatedWord("染髮", 300, 10, 10, 0, 80, 20),
+                        rotatedWord("2000", 300, 10, 135, 0, 35, 20),
+                        rotatedWord("1900", 300, 10, 225, 0, 35, 20),
+                        rotatedWord("剪髮", 300, 10, 10, 35, 80, 20),
+                        rotatedWord("2700", 300, 10, 135, 35, 35, 20),
+                        rotatedWord("3400", 300, 10, 225, 35, 35, 20)),
+                .98f, true, OcrBlockType.TEXT, List.of(new OcrDetectedLanguage("zh", .98f)), 2);
+
+        List<OcrRegion> result = new OcrRegionSegmenter().segment(List.of(menu));
+
+        assertThat(result).extracting(OcrRegion::text).containsExactly(
+                "染髮", "2000", "1900", "剪髮", "2700", "3400");
+        assertThat(result).allSatisfy(region -> {
+            assertThat(region.id()).startsWith("rotated-menu.l");
+            assertThat(region.groupId()).isEqualTo("rotated-menu");
+            assertThat(region.orientation()).isEqualTo(OcrOrientation.VERTICAL);
+            assertThat(region.compactLabel()).isTrue();
+        });
+    }
+
+    @Test
+    void splitsARotatedSingleMenuRowWhenSeparatedColumnsContainPrices() {
+        OcrRegion row = new OcrRegion("rotated-price-row", "會員染髮 2000 2300 2600 2900",
+                rotatedRectangle(300, 10, 260, 24),
+                List.of(
+                        rotatedWord("會員染髮", 300, 10, 0, 0, 80, 20),
+                        rotatedWord("2000", 300, 10, 105, 0, 30, 20),
+                        rotatedWord("2300", 300, 10, 150, 0, 30, 20),
+                        rotatedWord("2600", 300, 10, 195, 0, 30, 20),
+                        rotatedWord("2900", 300, 10, 230, 0, 30, 20)),
+                .98f, true, OcrBlockType.TEXT, List.of(new OcrDetectedLanguage("zh", .98f)), 2);
+
+        List<OcrRegion> result = new OcrRegionSegmenter().segment(List.of(row));
+
+        assertThat(result).extracting(OcrRegion::text)
+                .containsExactly("會員染髮", "2000", "2300", "2600", "2900");
+        assertThat(result).allMatch(OcrRegion::compactLabel);
+    }
+
+    @Test
+    void isolatesSizeBadgesAndPricesFromTheTranslatableMenuLabel() {
+        OcrRegion row = new OcrRegion("sized-price-row", "會員染髮 S 2000 M 2300 L 2600 XL 2900",
+                rotatedRectangle(300, 10, 300, 24),
+                List.of(
+                        rotatedWord("會員染髮", 300, 10, 0, 0, 80, 20),
+                        rotatedWord("S", 300, 10, 92, 0, 14, 20),
+                        rotatedWord("2000", 300, 10, 110, 0, 30, 20),
+                        rotatedWord("M", 300, 10, 150, 0, 16, 20),
+                        rotatedWord("2300", 300, 10, 170, 0, 30, 20),
+                        rotatedWord("L", 300, 10, 210, 0, 14, 20),
+                        rotatedWord("2600", 300, 10, 228, 0, 30, 20),
+                        rotatedWord("XL", 300, 10, 264, 0, 16, 20),
+                        rotatedWord("2900", 300, 10, 282, 0, 18, 20)),
+                .98f, true, OcrBlockType.TEXT, List.of(new OcrDetectedLanguage("zh", .98f)), 2);
+
+        assertThat(new OcrRegionSegmenter().segment(List.of(row))).extracting(OcrRegion::text)
+                .containsExactly("會員染髮", "S", "2000", "M", "2300", "L", "2600", "XL", "2900");
+    }
+
+    @Test
     void splitsDenseMultiColumnCardWithoutMergingColumnsIntoTinyParagraphText() {
         OcrRegion card = new OcrRegion("card", "滷肉飯 鐵板豬排飯 南洋綠咖哩雞飯 鯛魚飯 香酥雞腿飯",
                 rectangle(10, 10, 500, 50),
@@ -143,6 +207,28 @@ class OcrRegionSegmenterTests {
 
     private static OcrWord word(String text, int x, int y, int width, int height) {
         return new OcrWord(text, rectangle(x, y, width, height), .98f, true);
+    }
+
+    private static OcrWord rotatedWord(String text, int originX, int originY,
+            int x, int y, int width, int height) {
+        return new OcrWord(text, rotatedRectangle(originX, originY, x, y, width, height), .98f, true);
+    }
+
+    private static List<OcrPoint> rotatedRectangle(int originX, int originY, int width, int height) {
+        return rotatedRectangle(originX, originY, 0, 0, width, height);
+    }
+
+    private static List<OcrPoint> rotatedRectangle(int originX, int originY,
+            int x, int y, int width, int height) {
+        return List.of(
+                rotatedPoint(originX, originY, x, y),
+                rotatedPoint(originX, originY, x + width, y),
+                rotatedPoint(originX, originY, x + width, y + height),
+                rotatedPoint(originX, originY, x, y + height));
+    }
+
+    private static OcrPoint rotatedPoint(int originX, int originY, int x, int y) {
+        return new OcrPoint(originX - y, originY + x);
     }
 
     private static List<OcrPoint> rectangle(int x, int y, int width, int height) {

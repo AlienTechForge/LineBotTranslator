@@ -1,5 +1,6 @@
 package com.linetranslate.bot.service.ocr;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /** Immutable OCR unit. Polygon vertex order is preserved from the provider. */
@@ -54,11 +55,17 @@ public record OcrRegion(
     }
 
     public List<List<OcrPoint>> masks() {
-        List<List<OcrPoint>> wordMasks = words.stream()
-                .map(OcrWord::polygon)
-                .filter(value -> value.size() >= 4)
-                .toList();
-        return wordMasks.isEmpty() ? List.of(polygon) : wordMasks;
+        List<List<OcrPoint>> masks = new ArrayList<>();
+        for (OcrWord word : words) {
+            boolean completeSymbolGeometry = !word.symbols().isEmpty()
+                    && word.symbols().stream().allMatch(symbol -> symbol.polygon().size() >= 4);
+            if (completeSymbolGeometry) {
+                word.symbols().stream().map(OcrSymbol::polygon).forEach(masks::add);
+            } else if (word.polygon().size() >= 4) {
+                masks.add(word.polygon());
+            }
+        }
+        return masks.isEmpty() ? List.of(polygon) : List.copyOf(masks);
     }
 
     public double rotationDegrees() {

@@ -42,11 +42,10 @@ public class ImageTranslationOverlayRenderer {
                 encode(copy(source.image())), 0, plan == null ? 0 : plan.skipped(),
                 plan == null ? List.of() : plan.decisions());
         BufferedImage output = copy(source.image());
-        BufferedImage pristine = copy(source.image());
+        BufferedImage pristine = source.image();
         Graphics2D graphics = output.createGraphics();
         int rendered = 0;
         int fontSkipped = 0;
-        Area approvedMask = new Area();
         List<OverlayRenderDecision> decisions = new ArrayList<>(plan.decisions());
         try {
             // Exact clip invariant: antialiasing may blend pixels just outside a polygon edge.
@@ -76,6 +75,9 @@ public class ImageTranslationOverlayRenderer {
                 }
                 Shape oldClip = graphics.getClip();
                 AffineTransform oldTransform = graphics.getTransform();
+                Area modifiedMask = new Area(layoutMask);
+                modifiedMask.add(new Area(cleanupMask));
+                boolean painted = false;
                 try {
                     List<OcrPoint> polygon = overlay.region().polygon();
                     OcrPoint origin = polygon.get(0);
@@ -99,8 +101,6 @@ public class ImageTranslationOverlayRenderer {
                                 overlay.region().id(), OverlayRenderStatus.PRESERVED, "text-fit"));
                         continue;
                     }
-                    approvedMask.add(new Area(layoutMask));
-                    approvedMask.add(new Area(cleanupMask));
                     graphics.setColor(style.background());
                     graphics.fill(cleanupMask);
                     graphics.clip(layoutMask);
@@ -108,27 +108,39 @@ public class ImageTranslationOverlayRenderer {
                     graphics.translate(origin.x(), origin.y());
                     graphics.rotate(angle);
                     drawHorizontal(graphics, localBounds, layout);
-                    rendered++;
-                    decisions.add(new OverlayRenderDecision(
-                            overlay.region().id(), OverlayRenderStatus.RENDERED, "rendered"));
+                    painted = true;
                 } finally {
                     graphics.setTransform(oldTransform);
                     graphics.setClip(oldClip);
+                }
+                if (painted) {
+                    restoreOutsideMask(output, pristine, modifiedMask);
+                    rendered++;
+                    decisions.add(new OverlayRenderDecision(
+                            overlay.region().id(), OverlayRenderStatus.RENDERED, "rendered"));
                 }
             }
         } finally {
             graphics.dispose();
         }
-        // Java2D clip rasterization may touch a boundary pixel whose centre is outside
-        // the vector mask. Restore it deterministically to enforce the pixel invariant.
-        for (int y = 0; y < output.getHeight(); y++) {
-            for (int x = 0; x < output.getWidth(); x++) {
-                if (!approvedMask.contains(x + .5, y + .5)) {
+        return new RenderedImage(encode(output), rendered, plan.skipped() + fontSkipped, decisions);
+    }
+
+    /** Restores only the rasterization fringe near one overlay, never the whole image. */
+    private static void restoreOutsideMask(BufferedImage output, BufferedImage pristine, Area mask) {
+        java.awt.Rectangle bounds = mask.getBounds();
+        bounds.grow(1, 1);
+        int left = Math.max(0, bounds.x);
+        int top = Math.max(0, bounds.y);
+        int right = Math.min(output.getWidth(), bounds.x + bounds.width);
+        int bottom = Math.min(output.getHeight(), bounds.y + bounds.height);
+        for (int y = top; y < bottom; y++) {
+            for (int x = left; x < right; x++) {
+                if (!mask.contains(x + .5, y + .5)) {
                     output.setRGB(x, y, pristine.getRGB(x, y));
                 }
             }
         }
-        return new RenderedImage(encode(output), rendered, plan.skipped() + fontSkipped, decisions);
     }
 
     private static void drawHorizontal(
