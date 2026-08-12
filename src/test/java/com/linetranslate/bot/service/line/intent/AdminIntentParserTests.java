@@ -29,6 +29,8 @@ class AdminIntentParserTests {
         assertAction("config openrouter anthropic/claude-sonnet-4", AdminIntent.Action.CONFIG_MODEL,
                 "anthropic/claude-sonnet-4", "");
         assertAction("config ocr on", AdminIntent.Action.CONFIG_OCR, "on", "");
+        assertAction("config image-proxy on", AdminIntent.Action.CONFIG_SHORT_URL, "on", "");
+        assertAction("config short-url off", AdminIntent.Action.CONFIG_SHORT_URL, "off", "");
         assertAction("usage", AdminIntent.Action.USAGE_CURRENT_MONTH, "", "");
         assertAction("usage day 2026-08-11", AdminIntent.Action.USAGE_DAY, "2026-08-11", "");
         assertAction("usage month 2026-08", AdminIntent.Action.USAGE_MONTH, "2026-08", "");

@@ -20,4 +20,7 @@ public class AppConfig {
     @Value("${app.ocr.enabled}")
     private boolean ocrEnabled;
 
+    @Value("${app.short-url.enabled:${SHORT_URL_ENABLED:false}}")
+    private boolean shortUrlEnabled;
+
 }

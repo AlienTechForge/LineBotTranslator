@@ -5,18 +5,26 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import com.linecorp.bot.messaging.model.ClipboardAction;
+import com.linecorp.bot.messaging.model.ImageMessage;
 import com.linecorp.bot.messaging.model.PostbackAction;
 import com.linecorp.bot.messaging.model.TextMessage;
 import com.linetranslate.bot.service.ai.AiModelCatalog;
 import com.linetranslate.bot.service.ai.AiModelDescriptor;
 import com.linetranslate.bot.service.ai.AiModelPage;
+import com.linetranslate.bot.service.imageproxy.ImageProxyLinkService;
+import com.linetranslate.bot.service.imageproxy.ImageProxyLinks;
+import com.linetranslate.bot.service.imageproxy.DwzShortLinkService;
 import com.linetranslate.bot.service.line.intent.LineIntent;
+import com.linetranslate.bot.service.ocr.ImageTranslationReply;
+import com.linetranslate.bot.service.settings.RuntimeSettings;
+import com.linetranslate.bot.service.settings.RuntimeSettingsSource;
 import com.linetranslate.bot.service.translation.TranslationResponse;
 
 class LineMessageRendererTests {
@@ -126,6 +134,88 @@ class LineMessageRendererTests {
         assertThat(rendered.quickReply().items())
                 .noneSatisfy(item -> assertThat(item.action())
                         .isInstanceOf(ClipboardAction.class));
+    }
+
+    @Test
+    void directImageOutputSurvivesShortUrlToggleAndDwzFailure() {
+        AiModelCatalog catalog = mock(AiModelCatalog.class);
+        RuntimeSettingsSource settings = mock(RuntimeSettingsSource.class);
+        ImageProxyLinkService proxy = mock(ImageProxyLinkService.class);
+        DwzShortLinkService shortLinks = mock(DwzShortLinkService.class);
+        TranslationResponse translation = TranslationResponse.plain(
+                "【翻譯圖片（連結 1 小時內有效）】\nhttps://s3.azndev.com/signed\n\n翻譯文字");
+        ImageTranslationReply reply = new ImageTranslationReply(
+                translation, Optional.of("https://s3.azndev.com/signed"));
+        RuntimeSettings enabled = new RuntimeSettings(
+                "en", "zh-TW", "openai/gpt-4o-mini", true, true,
+                3, 1, null, null, RuntimeSettings.Source.PERSISTED);
+        when(settings.current()).thenReturn(enabled);
+        when(proxy.register("https://s3.azndev.com/signed")).thenReturn(Optional.of(
+                new ImageProxyLinks(
+                        java.net.URI.create("https://translate.azndev.com/i/0123456789abcdefghij-_"),
+                        java.net.URI.create("https://translate.azndev.com/i/0123456789abcdefghij-_/preview"))));
+        when(shortLinks.shorten(org.mockito.ArgumentMatchers.any())).thenAnswer(invocation -> {
+            ImageProxyLinks clean = invocation.getArgument(0);
+            return Optional.of(new ImageProxyLinks(
+                    java.net.URI.create("https://s.azndev.com/original"),
+                    java.net.URI.create("https://s.azndev.com/preview")));
+        });
+        LineMessageRenderer proxyRenderer = new LineMessageRenderer(catalog, settings, proxy, shortLinks);
+
+        ImageMessage image = (ImageMessage) proxyRenderer.imageResult(reply);
+
+        assertThat(image.originalContentUrl().toString())
+                .isEqualTo("https://s.azndev.com/original");
+        assertThat(image.previewImageUrl().toString()).isEqualTo("https://s.azndev.com/preview");
+
+        when(settings.current()).thenReturn(new RuntimeSettings(
+                "en", "zh-TW", "openai/gpt-4o-mini", true, false,
+                3, 2, null, null, RuntimeSettings.Source.PERSISTED));
+        ImageMessage unshortened = (ImageMessage) proxyRenderer.imageResult(reply);
+        assertThat(unshortened.originalContentUrl().toString())
+                .isEqualTo("https://translate.azndev.com/i/0123456789abcdefghij-_");
+
+        when(settings.current()).thenReturn(enabled);
+        when(shortLinks.shorten(org.mockito.ArgumentMatchers.any())).thenReturn(Optional.empty());
+        ImageMessage fallback = (ImageMessage) proxyRenderer.imageResult(reply);
+        assertThat(fallback.originalContentUrl().toString())
+                .isEqualTo("https://translate.azndev.com/i/0123456789abcdefghij-_");
+    }
+
+    @Test
+    void directImageDoesNotRequireConfiguredTranslateProxy() {
+        AiModelCatalog catalog = mock(AiModelCatalog.class);
+        RuntimeSettingsSource settings = mock(RuntimeSettingsSource.class);
+        ImageProxyLinkService proxy = mock(ImageProxyLinkService.class);
+        DwzShortLinkService shortLinks = mock(DwzShortLinkService.class);
+        String signed = "https://s3.azndev.com/line-bot/translated-images/1/image.png"
+                + "?X-Amz-Algorithm=AWS4-HMAC-SHA256"
+                + "&X-Amz-Credential=test%2F20260812%2Fus-east-1%2Fs3%2Faws4_request"
+                + "&X-Amz-Date=20260812T071753Z&X-Amz-Expires=3600"
+                + "&X-Amz-SignedHeaders=host&X-Amz-Signature=" + "a".repeat(64);
+        ImageTranslationReply reply = new ImageTranslationReply(
+                TranslationResponse.plain("fallback"), Optional.of(signed));
+        RuntimeSettings enabled = new RuntimeSettings(
+                "en", "zh-TW", "openai/gpt-4o-mini", true, true,
+                3, 1, null, null, RuntimeSettings.Source.PERSISTED);
+        when(settings.current()).thenReturn(enabled);
+        when(proxy.register(signed)).thenReturn(Optional.empty());
+        when(shortLinks.shortenSignedImage(java.net.URI.create(signed)))
+                .thenReturn(Optional.of(java.net.URI.create("https://s.azndev.com/abc")));
+        LineMessageRenderer directRenderer = new LineMessageRenderer(
+                catalog, settings, proxy, shortLinks);
+
+        ImageMessage shortened = (ImageMessage) directRenderer.imageResult(reply);
+
+        assertThat(shortened.originalContentUrl().toString())
+                .isEqualTo("https://s.azndev.com/abc");
+        assertThat(shortened.previewImageUrl()).isEqualTo(shortened.originalContentUrl());
+
+        when(settings.current()).thenReturn(new RuntimeSettings(
+                "en", "zh-TW", "openai/gpt-4o-mini", true, false,
+                3, 2, null, null, RuntimeSettings.Source.PERSISTED));
+        ImageMessage unshortened = (ImageMessage) directRenderer.imageResult(reply);
+        assertThat(unshortened.originalContentUrl().toString()).isEqualTo(signed);
     }
 
     private static String text(com.linecorp.bot.messaging.model.Message message) {

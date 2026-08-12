@@ -52,6 +52,7 @@ Self-hosted runner 必須：
 - `OCR_ENABLED`
 - `ADMIN_USERS`
 - `MINIO_ENDPOINT`、`MINIO_ACCESS_KEY`、`MINIO_SECRET_KEY`、`MINIO_BUCKET_NAME`
+- `DWZ_API_TOKEN`，當管理員啟用木雷短網址時必要
 - `LANGUAGE_DETECTION_USE_AI`、`LANGUAGE_DETECTION_DEFAULT_CHINESE`
 - `APP_BROADCAST_TEST_MODE`
 
@@ -77,6 +78,11 @@ Secrets 只作為容器環境變數傳入，不會寫入 image、Repository 或 
 | --- | --- | --- |
 | `CONTAINER_NAME` | `linebot-translator` | 正式容器名稱 |
 | `DOCKER_NETWORK` | `host` | 與既有 MongoDB/MinIO 相容的 Docker network |
+| `IMAGE_PROXY_PUBLIC_BASE_URL` | 選填 | 需要獨立 preview proxy 時才設；留空時直接使用 MinIO/木雷 URL 傳送 LINE 圖片。 |
+| `DWZ_API_BASE_URL` | 短網址啟用時必填 | 木雷 API base。host network 可用固定 loopback port；也可用公開 HTTPS domain。 |
+| `DWZ_SHORT_DOMAIN` | 選填 | 指定木雷短域名；留空使用木雷預設 domain。 |
+| `DWZ_WORKSPACE_ID` | 選填 | 木雷 workspace ID。 |
+| `SHORT_URL_ENABLED` | `false` | Mongo 尚無 persisted 值時的木雷短網址預設開關。 |
 | `SERVER_PORT` | `4040` | 容器內服務 port |
 | `HOST_PORT` | `4040` | 非 host network 時的宿主機 port |
 | `HEALTH_TIMEOUT_SECONDS` | `120` | 等待 readiness 的最長秒數 |
@@ -92,6 +98,26 @@ Secrets 只作為容器環境變數傳入，不會寫入 image、Repository 或 
 | `MINIO_CONNECT_TIMEOUT_MS` | `3000` | MinIO 連線 timeout |
 | `MINIO_WRITE_TIMEOUT_MS` | `5000` | MinIO 上傳 timeout |
 | `MINIO_READ_TIMEOUT_MS` | `5000` | MinIO API 讀取 timeout |
+
+### 同機木雷連線
+
+Translate production 預設使用 `DOCKER_NETWORK=host`，因此不能用 `dwz-server:8080` 解析
+`1panel-network` 內的容器。二選一：
+
+1. 使用木雷公開 HTTPS domain 作為 `DWZ_API_BASE_URL`。
+2. 把木雷 Compose 的隨機 host port `- "8080"` 改為未使用的固定
+   loopback port。例如 host `18080` 對應 container `8080`：
+
+   ```yaml
+   ports:
+     - "127.0.0.1:18080:8080"
+   ```
+
+   Translate 設定 `DWZ_API_BASE_URL=http://127.0.0.1:18080`。改前可用
+   `ss -ltnp | grep :18080` 確認 port 未被佔用。
+
+木雷需先在後台建立 Bearer API Token。`DWZ_SHORT_DOMAIN` 可留空使用預設
+domain。啟用指令：`/admin config short-url on`；停用使用 `off`。
 
 ## 手動部署
 

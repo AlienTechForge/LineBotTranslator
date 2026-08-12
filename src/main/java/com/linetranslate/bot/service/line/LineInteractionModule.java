@@ -76,7 +76,7 @@ public class LineInteractionModule {
     public Message executeImage(String userId, String messageId) {
         try {
             return renderer.imageResult(
-                    imageTranslationService.processImageTranslationResponse(userId, messageId));
+                    imageTranslationService.processImageTranslationReply(userId, messageId));
         } catch (Exception exception) {
             log.error("圖片翻譯處理失敗: user={}, failure={}",
                     SafeLog.user(userId), SafeLog.failure(exception));
