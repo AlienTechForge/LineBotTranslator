@@ -34,7 +34,27 @@ final class ImageTranslationStyleEstimator {
     }
 
     static Color localBackground(BufferedImage image, Area cleanupArea, Color fallback) {
-        return dominant(borderPixels(image, cleanupArea, cleanupArea.getBounds()), fallback);
+        Rectangle bounds = cleanupArea.getBounds();
+        int adaptiveMargin = Math.max(SAMPLE_MARGIN,
+                Math.min(16, Math.max(bounds.width, bounds.height) / 3));
+        return dominant(perimeterPixels(image, bounds, adaptiveMargin), fallback);
+    }
+
+    private static List<Color> perimeterPixels(BufferedImage image, Rectangle bounds, int margin) {
+        List<Color> pixels = new ArrayList<>();
+        int left = Math.max(0, bounds.x - margin);
+        int top = Math.max(0, bounds.y - margin);
+        int right = Math.min(image.getWidth() - 1, bounds.x + bounds.width - 1 + margin);
+        int bottom = Math.min(image.getHeight() - 1, bounds.y + bounds.height - 1 + margin);
+        for (int x = left; x <= right; x++) {
+            pixels.add(new Color(image.getRGB(x, top), true));
+            if (bottom != top) pixels.add(new Color(image.getRGB(x, bottom), true));
+        }
+        for (int y = top + 1; y < bottom; y++) {
+            pixels.add(new Color(image.getRGB(left, y), true));
+            if (right != left) pixels.add(new Color(image.getRGB(right, y), true));
+        }
+        return pixels;
     }
 
     private static List<Color> borderPixels(BufferedImage image, Area regionArea, Rectangle bounds) {
