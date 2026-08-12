@@ -180,9 +180,9 @@ class PolygonOverlayRendererTests {
             graphics.setColor(dark);
             graphics.fillRect(0, 0, original.getWidth(), original.getHeight());
             graphics.setColor(Color.WHITE);
-            graphics.setFont(graphics.getFont().deriveFont(java.awt.Font.BOLD, 28f));
-            graphics.drawString("甲", 20, 40);
-            graphics.drawString("乙", 86, 40);
+            graphics.setFont(new java.awt.Font("DejaVu Sans", java.awt.Font.BOLD, 28));
+            graphics.drawString("A", 20, 40);
+            graphics.drawString("B", 86, 40);
         } finally {
             graphics.dispose();
         }
@@ -190,11 +190,11 @@ class PolygonOverlayRendererTests {
         ImageIO.write(original, "png", bytes);
         ValidatedImage source = new ImageInputValidator(ImageTranslationProperties.defaults())
                 .validate(bytes.toByteArray(), "image/png");
-        OcrRegion first = new OcrRegion("first", "甲", rectangle(10, 8, 80, 42),
-                List.of(new OcrWord("甲", rectangle(18, 14, 26, 30), .99f, true)),
+        OcrRegion first = new OcrRegion("first", "A", rectangle(10, 8, 80, 42),
+                List.of(new OcrWord("A", rectangle(18, 14, 26, 30), .99f, true)),
                 .99f, true, OcrBlockType.TEXT, List.of(), 0, "row", true);
-        OcrRegion second = new OcrRegion("second", "乙", rectangle(90, 8, 80, 42),
-                List.of(new OcrWord("乙", rectangle(84, 14, 26, 30), .99f, true)),
+        OcrRegion second = new OcrRegion("second", "B", rectangle(90, 8, 80, 42),
+                List.of(new OcrWord("B", rectangle(84, 14, 26, 30), .99f, true)),
                 .99f, true, OcrBlockType.TEXT, List.of(), 1, "row", true);
         OverlaySafetyPolicy safety = new OverlaySafetyPolicy();
         ImageTranslationProperties properties = new ImageTranslationProperties(
@@ -203,11 +203,11 @@ class PolygonOverlayRendererTests {
                 new ImageTranslationFontProvider(Set.of("dejavu sans")));
 
         BufferedImage firstOnly = ImageIO.read(new ByteArrayInputStream(renderer.render(source,
-                safety.evaluate(List.of(new ImageRegionOverlay(first, "MMMM")), 190, 60, properties))
+                safety.evaluate(List.of(new ImageRegionOverlay(first, "II")), 190, 60, properties))
                 .pngBytes()));
         BufferedImage both = ImageIO.read(new ByteArrayInputStream(renderer.render(source,
                 safety.evaluate(List.of(
-                        new ImageRegionOverlay(first, "MMMM"),
+                        new ImageRegionOverlay(first, "II"),
                         new ImageRegionOverlay(second, "B")), 190, 60, properties))
                 .pngBytes()));
 
