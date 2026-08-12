@@ -20,7 +20,7 @@ class StructuredImageTranslationCodecTests {
     @Test
     void mapsOutOfOrderResponseByExactRegionId() {
         String response = """
-                {"schemaVersion":"image-regions-v2","regions":[
+                {"schemaVersion":"image-regions-v3","regions":[
                   {"regionId":"r-b","translatedText":"辣雞炒麵"},
                   {"regionId":"r-a","translatedText":"溫度 38°C"}
                 ]}
@@ -31,13 +31,13 @@ class StructuredImageTranslationCodecTests {
 
     @Test
     void rejectsMissingDuplicateUnknownMalformedAndChangedTokens() {
-        assertInvalid("{\"schemaVersion\":\"image-regions-v2\",\"regions\":[]}");
-        assertInvalid("{\"schemaVersion\":\"image-regions-v2\",\"regions\":[{\"regionId\":\"r-a\",\"translatedText\":\"38°C\"},{\"regionId\":\"r-a\",\"translatedText\":\"38°C\"}]}");
-        assertInvalid("{\"schemaVersion\":\"image-regions-v2\",\"regions\":[{\"regionId\":\"evil\",\"translatedText\":\"x\"}]}");
+        assertInvalid("{\"schemaVersion\":\"image-regions-v3\",\"regions\":[]}");
+        assertInvalid("{\"schemaVersion\":\"image-regions-v3\",\"regions\":[{\"regionId\":\"r-a\",\"translatedText\":\"38°C\"},{\"regionId\":\"r-a\",\"translatedText\":\"38°C\"}]}");
+        assertInvalid("{\"schemaVersion\":\"image-regions-v3\",\"regions\":[{\"regionId\":\"evil\",\"translatedText\":\"x\"}]}");
         assertInvalid("not-json");
-        assertInvalid("{\"schemaVersion\":\"image-regions-v2\",\"unexpected\":true,\"regions\":[]}");
-        assertInvalid("{\"schemaVersion\":\"image-regions-v2\",\"regions\":[{\"regionId\":1,\"translatedText\":\"x\"}]}");
-        assertInvalid("{\"schemaVersion\":\"image-regions-v2\",\"regions\":[{\"regionId\":\"r-a\",\"translatedText\":\"溫度 39°C\"},{\"regionId\":\"r-b\",\"translatedText\":\"辣雞炒麵\"}]}");
+        assertInvalid("{\"schemaVersion\":\"image-regions-v3\",\"unexpected\":true,\"regions\":[]}");
+        assertInvalid("{\"schemaVersion\":\"image-regions-v3\",\"regions\":[{\"regionId\":1,\"translatedText\":\"x\"}]}");
+        assertInvalid("{\"schemaVersion\":\"image-regions-v3\",\"regions\":[{\"regionId\":\"r-a\",\"translatedText\":\"溫度 39°C\"},{\"regionId\":\"r-b\",\"translatedText\":\"辣雞炒麵\"}]}");
     }
 
     @Test
@@ -63,6 +63,21 @@ class StructuredImageTranslationCodecTests {
         assertThat(root.path("regions")).hasSize(2);
         assertThat(root.path("regions").findValuesAsText("regionId"))
                 .containsExactly("r-a", "r-b");
+    }
+
+    @Test
+    void rejectsTranslationThatExceedsItsRegionCharacterBudget() {
+        ImageRegionTranslationInput compact = new ImageRegionTranslationInput(
+                "menu-label", "染髮", "zh", List.of(), true, 0,
+                new ImageRegionLayout("menu", 10, 20, 80, 24, 1, 8, true));
+        String response = """
+                {"schemaVersion":"image-regions-v3","regions":[
+                  {"regionId":"menu-label","translatedText":"Hair dye package"}
+                ]}
+                """;
+
+        assertThatThrownBy(() -> codec.decode(response, List.of(compact)))
+                .isInstanceOf(StructuredTranslationException.class);
     }
 
     private void assertInvalid(String response) {

@@ -27,7 +27,7 @@ class StructuredImageTranslationAdapterTests {
         when(provider.translateValidated(eq(preferences), anyString(), eq("zh-TW"),
                 eq(TranslationStylePreset.FAITHFUL), eq(StructuredImageTranslationCodec.SCHEMA_VERSION), any()))
                 .thenReturn(success("malformed"))
-                .thenReturn(success("{\"schemaVersion\":\"image-regions-v2\",\"regions\":[{\"regionId\":\"r1\",\"translatedText\":\"你好\"}]}"));
+                .thenReturn(success("{\"schemaVersion\":\"image-regions-v3\",\"regions\":[{\"regionId\":\"r1\",\"translatedText\":\"你好\"}]}"));
         StructuredImageTranslationAdapter adapter = new StructuredImageTranslationAdapter(
                 provider, new StructuredImageTranslationCodec(new ObjectMapper()));
 
@@ -68,8 +68,8 @@ class StructuredImageTranslationAdapterTests {
         UserPreferences preferences = new UserPreferences("zh-TW", "en", "zh-TW", "model", List.of());
         when(provider.translateValidated(eq(preferences), anyString(), eq("zh-TW"),
                 eq(TranslationStylePreset.FAITHFUL), eq(StructuredImageTranslationCodec.SCHEMA_VERSION), any()))
-                .thenReturn(success("{\"schemaVersion\":\"image-regions-v2\",\"regions\":[{\"regionId\":\"r1\",\"translatedText\":\"保护自己免受热伤害\"}]}"))
-                .thenReturn(success("{\"schemaVersion\":\"image-regions-v2\",\"regions\":[{\"regionId\":\"r1\",\"translatedText\":\"保護自己免受熱傷害\"}]}"));
+                .thenReturn(success("{\"schemaVersion\":\"image-regions-v3\",\"regions\":[{\"regionId\":\"r1\",\"translatedText\":\"保护自己免受热伤害\"}]}"))
+                .thenReturn(success("{\"schemaVersion\":\"image-regions-v3\",\"regions\":[{\"regionId\":\"r1\",\"translatedText\":\"保護自己免受熱傷害\"}]}"));
         StructuredImageTranslationAdapter adapter = new StructuredImageTranslationAdapter(
                 provider, new StructuredImageTranslationCodec(new ObjectMapper()), new TargetLocalePolicy());
 

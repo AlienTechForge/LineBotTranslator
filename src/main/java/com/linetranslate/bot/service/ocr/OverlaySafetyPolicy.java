@@ -165,16 +165,25 @@ public class OverlaySafetyPolicy {
     /** Pixels that may be painted with the sampled background to erase source glyphs. */
     static Area sourceCleanupMask(OcrRegion region, int imageWidth, int imageHeight) {
         Area result = new Area();
+        sourceCleanupAreas(region, imageWidth, imageHeight).forEach(result::add);
+        return result;
+    }
+
+    /** Keeps glyph cleanup areas separate so each can recover its own local background. */
+    static List<Area> sourceCleanupAreas(OcrRegion region, int imageWidth, int imageHeight) {
+        List<Area> result = new ArrayList<>();
         int padding = maskPadding(region);
+        Area image = new Area(new Rectangle(0, 0, imageWidth, imageHeight));
         region.masks().forEach(points -> {
             Polygon word = polygon(points);
-            result.add(new Area(word));
-            result.add(new Area(new BasicStroke(
+            Area glyph = new Area(word);
+            glyph.add(new Area(new BasicStroke(
                     padding * 2f, BasicStroke.CAP_SQUARE, BasicStroke.JOIN_ROUND)
                     .createStrokedShape(word)));
+            glyph.intersect(new Area(image));
+            if (!glyph.isEmpty()) result.add(glyph);
         });
-        result.intersect(new Area(new Rectangle(0, 0, imageWidth, imageHeight)));
-        return result;
+        return List.copyOf(result);
     }
 
     /** Unpadded region used only as the translated-text drawing boundary. */
