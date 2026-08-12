@@ -46,8 +46,11 @@ class ImageTranslationResultRenderingTests {
                         1)));
         ImageTranslationService service = new ImageTranslationService(pipeline, repository);
 
-        TranslationResponse response = service.processImageTranslationResponse("U-result", "message");
+        ImageTranslationReply reply = service.processImageTranslationReply("U-result", "message");
+        TranslationResponse response = reply.response();
 
+        assertThat(reply.renderedImageUrl())
+                .contains("https://s3.example/result.png?signature=safe");
         assertThat(response.displayText())
                 .contains("https://s3.example/result.png?signature=safe")
                 .contains("1 小時內有效")
@@ -79,8 +82,10 @@ class ImageTranslationResultRenderingTests {
                         0)));
         ImageTranslationService service = new ImageTranslationService(pipeline, repository);
 
-        TranslationResponse response = service.processImageTranslationResponse("U-result", "message");
+        ImageTranslationReply reply = service.processImageTranslationReply("U-result", "message");
+        TranslationResponse response = reply.response();
 
+        assertThat(reply.renderedImageUrl()).isEmpty();
         assertThat(response.displayText()).doesNotContain("user:secret", "internal/result.png");
         assertThat(response.displayText()).contains("翻譯結果：\n你好");
     }

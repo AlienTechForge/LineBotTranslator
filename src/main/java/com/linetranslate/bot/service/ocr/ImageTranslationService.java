@@ -56,8 +56,13 @@ public class ImageTranslationService {
     }
 
     public TranslationResponse processImageTranslationResponse(String userId, String messageId) {
+        return processImageTranslationReply(userId, messageId).response();
+    }
+
+    public ImageTranslationReply processImageTranslationReply(String userId, String messageId) {
         if (!isOcrEnabled()) {
-            return TranslationResponse.plain("OCR 功能目前已停用。請稍後再試。");
+            return ImageTranslationReply.text(
+                    TranslationResponse.plain("OCR 功能目前已停用。請稍後再試。"));
         }
 
         Instant start = Instant.now();
@@ -71,16 +76,17 @@ public class ImageTranslationService {
             if (outcome instanceof ImageTranslationOutcome.Success success) {
                 return render(success.result());
             }
-            return TranslationResponse.plain(
-                    renderFailure(userId, (ImageTranslationOutcome.Failure) outcome));
+            return ImageTranslationReply.text(TranslationResponse.plain(
+                    renderFailure(userId, (ImageTranslationOutcome.Failure) outcome)));
         } catch (RuntimeException failure) {
             log.error("圖片翻譯失敗: user={}, failure={}",
                     SafeLog.user(userId), SafeLog.failure(failure));
-            return TranslationResponse.plain("圖片翻譯處理失敗，請稍後再試。");
+            return ImageTranslationReply.text(
+                    TranslationResponse.plain("圖片翻譯處理失敗，請稍後再試。"));
         }
     }
 
-    private TranslationResponse render(ImageTranslationPipelineResult result) {
+    private ImageTranslationReply render(ImageTranslationPipelineResult result) {
         String recognizedText = result.context().recognizedText();
         TranslationWorkflowResult translation = result.translation();
         StringBuilder display = new StringBuilder();
@@ -114,7 +120,9 @@ public class ImageTranslationService {
         display.append("[偵測到: ").append(LanguageUtils.toChineseName(translation.sourceLanguage()))
                 .append(" | 翻譯成: ").append(LanguageUtils.toChineseName(translation.targetLanguage()))
                 .append("]");
-        return TranslationResponse.success(translation, display.toString());
+        return new ImageTranslationReply(
+                TranslationResponse.success(translation, display.toString()),
+                renderedImageUrl);
     }
 
     private static void appendDegradation(StringBuilder display, OverlayDegradationSummary summary,

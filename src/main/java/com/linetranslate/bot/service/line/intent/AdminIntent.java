@@ -26,6 +26,7 @@ public record AdminIntent(Action action, String value, String secondary, Problem
         CONFIG_LANGUAGE,
         CONFIG_MODEL,
         CONFIG_OCR,
+        CONFIG_SHORT_URL,
         USAGE_CURRENT_MONTH,
         USAGE_DAY,
         USAGE_MONTH,

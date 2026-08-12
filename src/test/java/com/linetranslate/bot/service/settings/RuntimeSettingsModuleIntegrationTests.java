@@ -49,6 +49,7 @@ class RuntimeSettingsModuleIntegrationTests {
         module.update(RuntimeSettingKey.DEFAULT_OTHER_TARGET_LANGUAGE, "zh-TW", OPERATOR);
         module.update(RuntimeSettingKey.OPENROUTER_DEFAULT_MODEL, "openai/gpt-4o-mini", OPERATOR);
         module.update(RuntimeSettingKey.OCR_ENABLED, "off", OPERATOR);
+        module.update(RuntimeSettingKey.SHORT_URL_ENABLED, "on", OPERATOR);
 
         RuntimeSettingsModule restarted = new RuntimeSettingsModule(
                 mongoTemplate,
@@ -62,14 +63,15 @@ class RuntimeSettingsModuleIntegrationTests {
         assertThat(settings.defaultTargetLanguageForOthers()).isEqualTo("zh-TW");
         assertThat(settings.openRouterDefaultModel()).isEqualTo("openai/gpt-4o-mini");
         assertThat(settings.ocrEnabled()).isFalse();
+        assertThat(settings.shortUrlEnabled()).isTrue();
         assertThat(settings.source()).isEqualTo(RuntimeSettings.Source.PERSISTED);
 
         Document stored = mongoTemplate.getCollection(COLLECTION).find().first();
         assertThat(stored).isNotNull();
-        assertThat(stored.getInteger("schemaVersion")).isEqualTo(2);
-        assertThat(((Number) stored.get("revision")).longValue()).isEqualTo(4);
+        assertThat(stored.getInteger("schemaVersion")).isEqualTo(3);
+        assertThat(((Number) stored.get("revision")).longValue()).isEqualTo(5);
         List<Document> changes = stored.getList("changes", Document.class);
-        assertThat(changes).hasSize(4).allSatisfy(change -> {
+        assertThat(changes).hasSize(5).allSatisfy(change -> {
             assertThat(change.getString("updatedBy")).isEqualTo(OPERATOR);
             assertThat(change.get("updatedAt")).isNotNull();
             assertThat(change.keySet()).doesNotContain("secret", "token", "apiKey");
@@ -104,6 +106,7 @@ class RuntimeSettingsModuleIntegrationTests {
                 .isEqualTo(appConfig.getDefaultTargetLanguageForOthers());
         assertThat(settings.openRouterDefaultModel()).isEqualTo(openRouterConfig.getModelName());
         assertThat(settings.ocrEnabled()).isEqualTo(appConfig.isOcrEnabled());
+        assertThat(settings.shortUrlEnabled()).isEqualTo(appConfig.isShortUrlEnabled());
         assertThat(settings.source()).isEqualTo(RuntimeSettings.Source.DEPLOYMENT_DEFAULTS);
         assertThat(mongoTemplate.collectionExists(COLLECTION)).isFalse();
     }

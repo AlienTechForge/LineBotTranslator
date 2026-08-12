@@ -1,13 +1,17 @@
 package com.linetranslate.bot.service.line;
 
+import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import com.linecorp.bot.messaging.model.ClipboardAction;
+import com.linecorp.bot.messaging.model.ImageMessage;
 import com.linecorp.bot.messaging.model.Message;
 import com.linecorp.bot.messaging.model.PostbackAction;
 import com.linecorp.bot.messaging.model.QuickReply;
@@ -17,6 +21,12 @@ import com.linetranslate.bot.service.ai.AiModelCatalog;
 import com.linetranslate.bot.service.ai.AiModelDescriptor;
 import com.linetranslate.bot.service.ai.AiModelPage;
 import com.linetranslate.bot.service.line.intent.LineIntent;
+import com.linetranslate.bot.service.imageproxy.DwzShortLinkService;
+import com.linetranslate.bot.service.imageproxy.ImageProxyLinkService;
+import com.linetranslate.bot.service.imageproxy.ImageProxyLinks;
+import com.linetranslate.bot.service.ocr.ImageTranslationReply;
+import com.linetranslate.bot.service.settings.RuntimeSettings;
+import com.linetranslate.bot.service.settings.RuntimeSettingsSource;
 import com.linetranslate.bot.service.translation.TranslationResponse;
 import com.linetranslate.bot.service.translation.TranslationStylePreset;
 
@@ -32,9 +42,25 @@ public class LineMessageRenderer {
             new TargetAction("韓文", "ko"),
             new TargetAction("繁中", "zh-TW"));
     private final AiModelCatalog modelCatalog;
+    private final RuntimeSettingsSource runtimeSettingsSource;
+    private final ImageProxyLinkService imageProxyLinkService;
+    private final DwzShortLinkService dwzShortLinkService;
 
-    public LineMessageRenderer(AiModelCatalog modelCatalog) {
+    @Autowired
+    public LineMessageRenderer(
+            AiModelCatalog modelCatalog,
+            RuntimeSettingsSource runtimeSettingsSource,
+            ImageProxyLinkService imageProxyLinkService,
+            DwzShortLinkService dwzShortLinkService) {
         this.modelCatalog = modelCatalog;
+        this.runtimeSettingsSource = runtimeSettingsSource;
+        this.imageProxyLinkService = imageProxyLinkService;
+        this.dwzShortLinkService = dwzShortLinkService;
+    }
+
+    /** Compatibility constructor for focused renderer tests. */
+    public LineMessageRenderer(AiModelCatalog modelCatalog) {
+        this(modelCatalog, () -> null, null, null);
     }
 
     public Message help() {
@@ -131,6 +157,50 @@ public class LineMessageRenderer {
     public Message settingResult(String result) { return text(result); }
     public Message imageResult(String result) { return text(result); }
     public Message imageResult(TranslationResponse result) { return interactiveTranslation(result); }
+    public Message imageResult(ImageTranslationReply reply) {
+        if (reply == null) {
+            return text("");
+        }
+        Optional<URI> signedImage = reply.renderedImageUrl()
+                .flatMap(LineMessageRenderer::safeHttpsUri);
+        if (signedImage.isEmpty()) {
+            return interactiveTranslation(reply.response());
+        }
+        RuntimeSettings settings = runtimeSettingsSource.current();
+        boolean shorten = settings != null && settings.shortUrlEnabled();
+        if (imageProxyLinkService != null) {
+            Optional<ImageProxyLinks> links = reply.renderedImageUrl()
+                    .flatMap(imageProxyLinkService::register);
+            if (links.isPresent()) {
+                ImageProxyLinks selected = links.get();
+                if (shorten && dwzShortLinkService != null) {
+                    selected = dwzShortLinkService.shorten(selected).orElse(selected);
+                }
+                return new ImageMessage(selected.original(), selected.preview());
+            }
+        }
+        if (signedImage.isPresent()) {
+            URI selected = signedImage.get();
+            if (shorten && dwzShortLinkService != null) {
+                selected = dwzShortLinkService.shortenSignedImage(selected).orElse(selected);
+            }
+            return new ImageMessage(selected, selected);
+        }
+        return interactiveTranslation(reply.response());
+    }
+
+    private static Optional<URI> safeHttpsUri(String raw) {
+        try {
+            URI uri = URI.create(raw);
+            return "https".equalsIgnoreCase(uri.getScheme())
+                    && uri.getHost() != null
+                    && uri.getUserInfo() == null
+                    && uri.getFragment() == null
+                    ? Optional.of(uri) : Optional.empty();
+        } catch (IllegalArgumentException ignored) {
+            return Optional.empty();
+        }
+    }
 
     public Message imageFailure() {
         return text("圖片處理失敗。\n請確保圖片清晰且包含可識別的文字，或稍後再試。");

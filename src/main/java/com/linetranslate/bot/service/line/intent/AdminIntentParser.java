@@ -77,6 +77,7 @@ public class AdminIntentParser {
             case "lang" -> AdminIntent.Action.CONFIG_LANGUAGE;
             case "model", "openrouter" -> AdminIntent.Action.CONFIG_MODEL;
             case "ocr" -> AdminIntent.Action.CONFIG_OCR;
+            case "image-proxy", "short-url" -> AdminIntent.Action.CONFIG_SHORT_URL;
             default -> AdminIntent.Action.UNKNOWN_CONFIG;
         };
         return AdminIntent.action(action, action == AdminIntent.Action.UNKNOWN_CONFIG ? command : value, "");

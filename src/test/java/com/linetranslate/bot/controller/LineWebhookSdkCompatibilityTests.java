@@ -164,9 +164,10 @@ class LineWebhookSdkCompatibilityTests {
                   ]
                 }
                 """;
-        when(imageTranslationService.processImageTranslationResponse(
+        when(imageTranslationService.processImageTranslationReply(
                 "U0123456789abcdef", "image-message-id"))
-                .thenReturn(TranslationResponse.plain("圖片翻譯完成"));
+                .thenReturn(com.linetranslate.bot.service.ocr.ImageTranslationReply.text(
+                        TranslationResponse.plain("圖片翻譯完成")));
         when(messagingApiClient.replyMessage(any()))
                 .thenReturn(CompletableFuture.completedFuture(null));
 
@@ -176,7 +177,7 @@ class LineWebhookSdkCompatibilityTests {
                         .content(payload))
                 .andExpect(status().isOk());
 
-        verify(imageTranslationService).processImageTranslationResponse(
+        verify(imageTranslationService, timeout(1_000)).processImageTranslationReply(
                 "U0123456789abcdef", "image-message-id");
         ArgumentCaptor<ReplyMessageRequest> captor = ArgumentCaptor.forClass(ReplyMessageRequest.class);
         verify(messagingApiClient, timeout(1_000)).replyMessage(captor.capture());

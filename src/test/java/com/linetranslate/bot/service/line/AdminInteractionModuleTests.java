@@ -63,4 +63,20 @@ class AdminInteractionModuleTests {
         verify(adminService).getAvailableModels("anthropic", 8);
         verify(renderer).modelSelection(page, "anthropic", "openai/gpt-4.1-mini");
     }
+
+    @Test
+    void authorizedAdminCanToggleImageProxyOutput() {
+        Message card = new TextMessage("updated");
+        when(adminService.isAdmin("admin")).thenReturn(true);
+        when(adminService.setShortUrlEnabled("on", "admin"))
+                .thenReturn("✅ 已啟用圖片短網址直接輸出");
+        when(renderer.info("設定結果", "✅ 已啟用圖片短網址直接輸出"))
+                .thenReturn(card);
+
+        assertThat(module.execute("admin", AdminIntent.action(
+                AdminIntent.Action.CONFIG_SHORT_URL, "on", "")))
+                .isSameAs(card);
+
+        verify(adminService).setShortUrlEnabled("on", "admin");
+    }
 }

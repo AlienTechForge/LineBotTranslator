@@ -469,6 +469,9 @@ public class AdminService {
         configBuilder.append("• 中文翻譯默認目標語言: ").append(runtime.defaultTargetLanguageForChinese()).append("\n");
         configBuilder.append("• 其他語言翻譯默認目標語言: ").append(runtime.defaultTargetLanguageForOthers()).append("\n");
         configBuilder.append("• OCR 功能: ").append(runtime.ocrEnabled() ? "已啟用" : "已禁用").append("\n\n");
+        configBuilder.append("• 圖片短網址直接輸出: ")
+                .append(runtime.shortUrlEnabled() ? "已啟用" : "已禁用")
+                .append("\n\n");
         
         configBuilder.append("【OpenRouter 設定】\n");
         configBuilder.append("• 默認模型: ").append(runtime.openRouterDefaultModel()).append("\n");
@@ -549,6 +552,20 @@ public class AdminService {
             return "❌ 無效的設定值，請確認格式與可用選項";
         } catch (RuntimeSettingsPersistenceException failure) {
             log.error("持久化 OCR 設定失敗: failure={}", SafeLog.failure(failure));
+            return "❌ 設置未能保存，請稍後再試";
+        }
+    }
+
+    public String setShortUrlEnabled(String enabled, String operatorId) {
+        try {
+            RuntimeSettings updated = runtimeSettingsModule.update(
+                    RuntimeSettingKey.SHORT_URL_ENABLED, enabled, operatorId);
+            return "✅ 已" + (updated.shortUrlEnabled() ? "啟用" : "禁用")
+                    + "圖片短網址直接輸出";
+        } catch (InvalidRuntimeSettingException failure) {
+            return "❌ 無效的設定值，請使用 on 或 off";
+        } catch (RuntimeSettingsPersistenceException failure) {
+            log.error("持久化短網址設定失敗: failure={}", SafeLog.failure(failure));
             return "❌ 設置未能保存，請稍後再試";
         }
     }

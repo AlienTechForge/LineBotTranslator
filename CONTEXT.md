@@ -40,7 +40,7 @@
 | **Target Language** | 本次 Translation Request 實際要輸出的語言；可由命令指定或由 User Preferences 推導。 | 不一定等於全域 fallback。 |
 | **User Profile** | MongoDB 中的使用者 identity、LINE profile metadata、活動時間與翻譯計數。 | 不應被當成所有設定規則的 Interface。 |
 | **User Preferences** | `UserPreferencesModule` 對外提供的 immutable effective preferences：target language、中文目標語言、OpenRouter model、預設 Translation Style Preset 與最近語言。 | 不包含 API keys，也不等同原始 `UserProfile` document。 |
-| **Runtime Settings** | 管理員可動態變更、MongoDB versioned persistence 的非敏感全域設定；讀取失敗時使用 deployment defaults。 | 不可保存 credential、token、API key 或 connection secret。 |
+| **Runtime Settings** | 管理員可動態變更、MongoDB versioned persistence 的非敏感全域設定；包含翻譯 defaults、OCR 與木雷短網址輸出開關；讀取失敗時使用 deployment defaults。 | 不可保存 credential、token、API key 或 connection secret。 |
 | **AI Provider** | 應用程式直接串接的外部 AI gateway；目前且唯一為 OpenRouter。 | OpenRouter catalog 內的模型廠商不是應用程式的直接 provider。 |
 | **Provider Adapter** | `AiProviderAdapter` Interface 的唯一 Implementation `OpenRouterService`，封裝 Chat Completions request/response/error。 | 不包含 Google Cloud Vision OCR，也不在 caller 暴露 wire payload。 |
 | **AI Model Catalog** | `AiModelCatalog` 提供的 OpenRouter model/capability/pricing snapshot，具有 TTL cache 與 stale fallback。 | 不是寫死的模型 allowlist，也不包含非文字輸出模型。 |
@@ -51,6 +51,7 @@
 | **Translation Record** | 成功 Translation Workflow 的 durable product record；包含原文、譯文、語言、實際 provider/model、實際 style/version、時間與圖片 storage metadata。 | 不可用來推算精確 token/cost。 |
 | **Image Translation** | LINE image download → optional storage → OCR 或 AI recognition → 共用 Translation Workflow。 | 圖片存檔失敗不等於圖片翻譯必須失敗。 |
 | **Image Storage Result** | MinIO storage 的 stored/not-stored 結果與可選 URL。 | 不可假設每張圖片都有 URL。 |
+| **Translated Image Delivery** | 以 MinIO presigned URL 直接產生 LINE Image Message；可選用木雷縮短，或配置 `/i/{token}` original/preview proxy。 | 不改變 Image Storage retention；短網址有效期不可長於 presigned URL。 |
 | **Usage Event** | 每個 Provider Attempt 的 privacy-minimized accounting event，保存 operation、provider/model、status、latency、token、pricing snapshot 與 cost。 | 不保存 user ID、原文、譯文、correlation ID、provider payload 或 secret。 |
 | **Pricing Snapshot** | Usage Event 發生時套用的 pricing version、effective date、currency 與 cost。 | 歷史報表不應用最新價格重算。 |
 | **Usage Report** | MongoDB aggregation 產生的期間／provider／model／content kind 統計。 | 不應把全部 Translation Record 載入記憶體。 |
@@ -75,6 +76,7 @@
 14. AI Prompt 由 server-owned versioned catalog 產生；文字與圖片翻譯使用獨立模板。Target locale 以 BCP 47 canonical form 注入，圖片回應另驗證 locale/script，prompt/schema version 納入 cache identity。
 15. Translation Action 必須以 `recordId + userId` 驗證 ownership；同一來源紀錄與 target 的 durable claim 只允許一次 Provider Attempt。
 16. Translation Style 只接受 catalog 內的 stable ID；單次 style 不可修改使用者預設，無效或已移除的 stored style 回退 faithful。
+17. Translated Image Delivery 只接受內部 pipeline 產生的 HTTPS `translated-images/` presigned URL；木雷 Adapter 必須驗證 AWS V4 query，不得縮短 caller 提供的任意 URL。
 
 ## 端到端流程
 
@@ -104,6 +106,7 @@
 3. 優先使用 configured OCR；不可用時使用 AI Provider image operation。
 4. 無可辨識文字時回明確 failure stage；有文字時進入同一 Translation Workflow。
 5. Translation Record 只在成功時保存 image URL/storage state；沒有 storage URL 仍可成功翻譯。
+6. 有安全 generated artifact 時直接回 LINE Image Message；木雷開關啟用時縮短 presigned URL。若額外配置 proxy public base，優先用 original/preview proxy URL。
 
 ### 管理員互動
 
@@ -125,6 +128,7 @@
 | Runtime settings | `RuntimeSettingsSource` → `RuntimeSettings` | allowlist、versioned persistence、fallback、audit metadata | admin 與 consumers 共用一個 non-secret Seam。 |
 | Usage accounting | `AiUsageEventSink`、`UsageQuery` | attempt event、pricing snapshot、Mongo aggregation | accounting fail-open；report 不依賴 Translation Record 掃描。 |
 | Image translation | `ImageTranslationRequest` → `ImageTranslationOutcome` | download、storage、recognition、workflow bridge | request state 為 explicit value，optional storage failure 局部化。 |
+| Translated image delivery | `ImageTranslationReply` → LINE `ImageMessage` | direct signed URL、optional proxy/preview、optional 木雷 Adapter | 木雷 failure 回退 presigned URL，不影響翻譯。 |
 
 ## Durable data ownership
 
