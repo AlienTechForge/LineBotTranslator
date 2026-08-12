@@ -191,6 +191,75 @@ class OcrRegionSegmenterTests {
     }
 
     @Test
+    void splitsACompactSingleColumnMenuIntoIndependentRows() {
+        OcrRegion menu = new OcrRegion("receipt-items",
+                "南洋綠咖哩雞飯 蔥燒台灣鯛 蔥爆牛肉飯 酥炸大雞排飯",
+                rectangle(10, 10, 180, 112),
+                List.of(
+                        word("南洋綠咖哩雞飯", 16, 12, 130, 20),
+                        word("蔥燒台灣鯛", 16, 40, 105, 20),
+                        word("蔥爆牛肉飯", 16, 68, 105, 20),
+                        word("酥炸大雞排飯", 16, 96, 120, 20)),
+                .98f, true, OcrBlockType.TEXT,
+                List.of(new OcrDetectedLanguage("zh", .98f)), 0);
+
+        List<OcrRegion> result = new OcrRegionSegmenter().segment(List.of(menu));
+
+        assertThat(result).extracting(OcrRegion::text).containsExactly(
+                "南洋綠咖哩雞飯", "蔥燒台灣鯛", "蔥爆牛肉飯", "酥炸大雞排飯");
+        assertThat(result).allMatch(OcrRegion::compactLabel);
+        assertThat(result).allSatisfy(region -> {
+            java.awt.Rectangle bounds = OverlaySafetyPolicy.polygon(region.polygon()).getBounds();
+            assertThat(bounds.x).isGreaterThanOrEqualTo(12);
+            assertThat(bounds.getMaxX()).isLessThanOrEqualTo(190);
+        });
+    }
+
+    @Test
+    void mergesASeparatedCjkSentenceEndingBackIntoThePreviousParagraph() {
+        OcrRegion paragraph = new OcrRegion("article-main",
+                "同じ陣營に屬するはずの人からもこのような提言が出されるほどレッテル張りは深刻なのであ",
+                rectangle(20, 20, 540, 150),
+                List.of(
+                        word("同じ陣營に屬するはずの人からも", 20, 20, 330, 26),
+                        word("このような提言が出されるほど", 20, 70, 300, 26),
+                        word("レッテル張りは深刻なのであ", 20, 120, 280, 26)),
+                .98f, true, OcrBlockType.TEXT,
+                List.of(new OcrDetectedLanguage("ja", .98f)), 0);
+        OcrRegion ending = new OcrRegion("article-ending", "る。",
+                rectangle(20, 175, 48, 26),
+                List.of(word("る。", 20, 175, 48, 26)),
+                .97f, true, OcrBlockType.TEXT,
+                List.of(new OcrDetectedLanguage("ja", .97f)), 1);
+
+        List<OcrRegion> result = new OcrRegionSegmenter().segment(List.of(paragraph, ending));
+
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).text()).endsWith("なのである。");
+        assertThat(result.get(0).words()).hasSize(4);
+        assertThat(OverlaySafetyPolicy.polygon(result.get(0).polygon()).getBounds().getMaxY())
+                .isGreaterThanOrEqualTo(201);
+    }
+
+    @Test
+    void doesNotMergeANearbyShortLabelWithoutSentenceEndingPunctuation() {
+        OcrRegion description = new OcrRegion("description",
+                "洗髮剪髮頭皮隔離染髮護理完整服務內容說明",
+                rectangle(20, 20, 360, 70),
+                List.of(word("洗髮剪髮頭皮隔離染髮護理完整服務內容說明", 20, 20, 340, 26)),
+                .98f, true, OcrBlockType.TEXT,
+                List.of(new OcrDetectedLanguage("zh", .98f)), 0);
+        OcrRegion label = new OcrRegion("label", "原價",
+                rectangle(20, 96, 60, 26), List.of(word("原價", 20, 96, 60, 26)),
+                .98f, true, OcrBlockType.TEXT,
+                List.of(new OcrDetectedLanguage("zh", .98f)), 1);
+
+        assertThat(new OcrRegionSegmenter().segment(List.of(description, label)))
+                .extracting(OcrRegion::text)
+                .containsExactly(description.text(), label.text());
+    }
+
+    @Test
     void oneDateInsideProseDoesNotTurnTheParagraphIntoATable() {
         OcrRegion prose = new OcrRegion("dated-prose", "Report published 2026 followed by ordinary prose",
                 rectangle(10, 10, 400, 90),

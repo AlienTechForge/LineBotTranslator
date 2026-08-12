@@ -149,6 +149,80 @@ class PolygonOverlayRendererTests {
     }
 
     @Test
+    void denseWhiteNeighbouringGlyphsDoNotTurnADarkCleanupAreaWhite() {
+        Color dark = new Color(35, 35, 38);
+        BufferedImage original = new BufferedImage(120, 80, BufferedImage.TYPE_INT_RGB);
+        var graphics = original.createGraphics();
+        try {
+            graphics.setColor(dark);
+            graphics.fillRect(0, 0, 120, 80);
+            graphics.setColor(Color.WHITE);
+            graphics.fillRect(36, 26, 48, 28);
+        } finally {
+            graphics.dispose();
+        }
+        java.awt.geom.Area cleanup = new java.awt.geom.Area(
+                OverlaySafetyPolicy.polygon(rectangle(40, 30, 40, 20)));
+
+        Color sampled = ImageTranslationStyleEstimator.localBackground(original, cleanup, dark);
+
+        assertThat(sampled.getRed()).isLessThan(90);
+        assertThat(sampled.getGreen()).isLessThan(90);
+        assertThat(sampled.getBlue()).isLessThan(90);
+    }
+
+    @Test
+    void laterNeighbourCleanupDoesNotEraseAnEarlierTranslation() throws Exception {
+        Color dark = new Color(35, 35, 38);
+        BufferedImage original = new BufferedImage(190, 60, BufferedImage.TYPE_INT_RGB);
+        var graphics = original.createGraphics();
+        try {
+            graphics.setColor(dark);
+            graphics.fillRect(0, 0, original.getWidth(), original.getHeight());
+            graphics.setColor(Color.WHITE);
+            graphics.setFont(graphics.getFont().deriveFont(java.awt.Font.BOLD, 28f));
+            graphics.drawString("甲", 20, 40);
+            graphics.drawString("乙", 86, 40);
+        } finally {
+            graphics.dispose();
+        }
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        ImageIO.write(original, "png", bytes);
+        ValidatedImage source = new ImageInputValidator(ImageTranslationProperties.defaults())
+                .validate(bytes.toByteArray(), "image/png");
+        OcrRegion first = new OcrRegion("first", "甲", rectangle(10, 8, 80, 42),
+                List.of(new OcrWord("甲", rectangle(18, 14, 26, 30), .99f, true)),
+                .99f, true, OcrBlockType.TEXT, List.of(), 0, "row", true);
+        OcrRegion second = new OcrRegion("second", "乙", rectangle(90, 8, 80, 42),
+                List.of(new OcrWord("乙", rectangle(84, 14, 26, 30), .99f, true)),
+                .99f, true, OcrBlockType.TEXT, List.of(), 1, "row", true);
+        OverlaySafetyPolicy safety = new OverlaySafetyPolicy();
+        ImageTranslationProperties properties = new ImageTranslationProperties(
+                1000, 200, 20000, .6f, true, .8, .9);
+        ImageTranslationOverlayRenderer renderer = new ImageTranslationOverlayRenderer(
+                new ImageTranslationFontProvider(Set.of("dejavu sans")));
+
+        BufferedImage firstOnly = ImageIO.read(new ByteArrayInputStream(renderer.render(source,
+                safety.evaluate(List.of(new ImageRegionOverlay(first, "MMMM")), 190, 60, properties))
+                .pngBytes()));
+        BufferedImage both = ImageIO.read(new ByteArrayInputStream(renderer.render(source,
+                safety.evaluate(List.of(
+                        new ImageRegionOverlay(first, "MMMM"),
+                        new ImageRegionOverlay(second, "B")), 190, 60, properties))
+                .pngBytes()));
+
+        int comparedTranslationPixels = 0;
+        for (int y = 10; y < 50; y++) for (int x = 10; x < 90; x++) {
+            if (firstOnly.getRGB(x, y) != original.getRGB(x, y)) {
+                comparedTranslationPixels++;
+                assertThat(both.getRGB(x, y)).as("first translation pixel (%s,%s)", x, y)
+                        .isEqualTo(firstOnly.getRGB(x, y));
+            }
+        }
+        assertThat(comparedTranslationPixels).isPositive();
+    }
+
+    @Test
     void translatedTextUsesWholeParagraphInsteadOfSparseSourceWordMasks() throws Exception {
         BufferedImage original = new BufferedImage(240, 100, BufferedImage.TYPE_INT_RGB);
         var graphics = original.createGraphics();

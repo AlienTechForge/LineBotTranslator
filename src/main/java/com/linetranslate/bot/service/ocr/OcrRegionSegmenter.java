@@ -19,7 +19,8 @@ public class OcrRegionSegmenter {
 
     public List<OcrRegion> segment(List<OcrRegion> input) {
         List<OcrRegion> result = new ArrayList<>();
-        for (OcrRegion region : input == null ? List.<OcrRegion>of() : input) {
+        for (OcrRegion region : mergeTrailingSentenceFragments(
+                input == null ? List.<OcrRegion>of() : input)) {
             List<OcrRegion> denseChildren = splitDenseParagraph(region);
             if (!denseChildren.isEmpty()) {
                 result.addAll(denseChildren);
@@ -40,6 +41,77 @@ public class OcrRegionSegmenter {
         return List.copyOf(ordered);
     }
 
+    private static List<OcrRegion> mergeTrailingSentenceFragments(List<OcrRegion> input) {
+        List<OcrRegion> merged = new ArrayList<>();
+        for (OcrRegion current : input) {
+            if (!merged.isEmpty() && isTrailingSentenceFragment(merged.get(merged.size() - 1), current)) {
+                OcrRegion previous = merged.remove(merged.size() - 1);
+                merged.add(merge(previous, current));
+            } else {
+                merged.add(current);
+            }
+        }
+        return List.copyOf(merged);
+    }
+
+    private static boolean isTrailingSentenceFragment(OcrRegion previous, OcrRegion current) {
+        if (previous == null || current == null || previous.compactLabel() || current.compactLabel()
+                || previous.orientation() != OcrOrientation.HORIZONTAL
+                || current.orientation() != OcrOrientation.HORIZONTAL
+                || previous.text().codePointCount(0, previous.text().length()) < 20
+                || current.text().codePointCount(0, current.text().length()) > 4
+                || current.text().codePoints().noneMatch(OcrRegionSegmenter::isCjk)
+                || !endsSentence(current.text())) {
+            return false;
+        }
+        String previousLanguage = primaryLanguage(previous);
+        String currentLanguage = primaryLanguage(current);
+        if (previousLanguage != null && currentLanguage != null
+                && !previousLanguage.equals(currentLanguage)) return false;
+        Rectangle previousBounds = OverlaySafetyPolicy.polygon(previous.polygon()).getBounds();
+        Rectangle currentBounds = OverlaySafetyPolicy.polygon(current.polygon()).getBounds();
+        int typicalHeight = Math.max(1, median(previous.words().stream()
+                .map(word -> OverlaySafetyPolicy.polygon(word.polygon()).getBounds().height).toList()));
+        int verticalGap = currentBounds.y - (previousBounds.y + previousBounds.height);
+        return verticalGap >= -2 && verticalGap <= Math.max(8, typicalHeight * 2)
+                && Math.abs(currentBounds.x - previousBounds.x) <= Math.max(12, typicalHeight * 2);
+    }
+
+    private static boolean endsSentence(String text) {
+        if (text == null || text.isBlank()) return false;
+        int last = text.codePointBefore(text.length());
+        return last == '。' || last == '！' || last == '？'
+                || last == '.' || last == '!' || last == '?';
+    }
+
+    private static String primaryLanguage(OcrRegion region) {
+        return region.languages().isEmpty() ? null : region.languages().get(0).code();
+    }
+
+    private static OcrRegion merge(OcrRegion previous, OcrRegion current) {
+        Rectangle bounds = OverlaySafetyPolicy.polygon(previous.polygon()).getBounds()
+                .union(OverlaySafetyPolicy.polygon(current.polygon()).getBounds());
+        List<OcrWord> words = new ArrayList<>(previous.words());
+        words.addAll(current.words());
+        boolean confidenceKnown = previous.confidenceKnown() && current.confidenceKnown();
+        return new OcrRegion(previous.id(), joinText(previous.text(), current.text()),
+                List.of(new OcrPoint(bounds.x, bounds.y),
+                        new OcrPoint(bounds.x + bounds.width, bounds.y),
+                        new OcrPoint(bounds.x + bounds.width, bounds.y + bounds.height),
+                        new OcrPoint(bounds.x, bounds.y + bounds.height)),
+                words, Math.min(previous.confidence(), current.confidence()), confidenceKnown,
+                previous.blockType(), previous.languages(), previous.readingOrder(),
+                previous.groupId(), false);
+    }
+
+    private static String joinText(String left, String right) {
+        if (left.isEmpty() || right.isEmpty()) return left + right;
+        int previous = left.codePointBefore(left.length());
+        int next = right.codePointAt(0);
+        return isCjk(previous) && (isCjk(next) || Character.getType(next) == Character.OTHER_PUNCTUATION)
+                ? left + right : left + " " + right;
+    }
+
     private static List<OcrRegion> splitDenseParagraph(OcrRegion region) {
         LocalFrame frame = LocalFrame.from(region);
         if (frame == null || region.words().size() < 3
@@ -51,6 +123,9 @@ public class OcrRegionSegmenter {
         if (lines.isEmpty()) return List.of();
 
         Rectangle paragraph = frame.bounds();
+        if (isCompactSingleColumn(lines)) {
+            return splitCompactSingleColumn(region, frame, lines, paragraph);
+        }
         List<List<WordSegment>> segmentsByLine = new ArrayList<>(lines.size());
         for (VisualLine line : lines) {
             segmentsByLine.add(isStructuredPriceLine(line)
@@ -96,6 +171,39 @@ public class OcrRegionSegmenter {
             }
         }
         return List.copyOf(children);
+    }
+
+    private static boolean isCompactSingleColumn(List<VisualLine> lines) {
+        if (lines.size() < 3 || lines.size() > 40
+                || lines.stream().anyMatch(line -> line.words().size() != 1)) return false;
+        List<Integer> lengths = lines.stream()
+                .map(line -> line.words().get(0).word().text().codePointCount(
+                        0, line.words().get(0).word().text().length()))
+                .toList();
+        int medianLength = median(lengths);
+        int medianHeight = median(lines.stream().map(line -> line.bounds().height).toList());
+        int medianGap = median(java.util.stream.IntStream.range(1, lines.size())
+                .map(index -> lines.get(index).top() - lines.get(index - 1).bottom())
+                .boxed().toList());
+        return medianLength >= 2 && medianLength <= 10
+                && medianGap <= Math.max(10, medianHeight);
+    }
+
+    private static List<OcrRegion> splitCompactSingleColumn(
+            OcrRegion region, LocalFrame frame, List<VisualLine> lines, Rectangle paragraph) {
+        List<OcrRegion> result = new ArrayList<>(lines.size());
+        int contentLeft = lines.stream().flatMap(line -> line.words().stream())
+                .mapToInt(WordBox::left).min().orElse(paragraph.x);
+        for (int index = 0; index < lines.size(); index++) {
+            VisualLine line = lines.get(index);
+            int top = index == 0 ? paragraph.y
+                    : midpoint(lines.get(index - 1).bottom(), line.top());
+            int bottom = index == lines.size() - 1 ? paragraph.y + paragraph.height
+                    : midpoint(line.bottom(), lines.get(index + 1).top());
+            result.add(child(region, frame, ".l" + (index + 1), line.words(),
+                    contentLeft, top, paragraph.x + paragraph.width, bottom, true));
+        }
+        return List.copyOf(result);
     }
 
     private static boolean hasRepeatedColumnStructure(

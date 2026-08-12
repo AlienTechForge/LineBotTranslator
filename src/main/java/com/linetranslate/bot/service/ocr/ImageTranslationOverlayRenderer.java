@@ -47,6 +47,7 @@ public class ImageTranslationOverlayRenderer {
         int rendered = 0;
         int fontSkipped = 0;
         List<OverlayRenderDecision> decisions = new ArrayList<>(plan.decisions());
+        List<PreparedOverlay> prepared = new ArrayList<>();
         try {
             // Exact clip invariant: antialiasing may blend pixels just outside a polygon edge.
             graphics.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_OFF);
@@ -73,56 +74,63 @@ public class ImageTranslationOverlayRenderer {
                             overlay.region().id(), OverlayRenderStatus.PRESERVED, "empty-mask"));
                     continue;
                 }
-                Shape oldClip = graphics.getClip();
-                AffineTransform oldTransform = graphics.getTransform();
                 Area modifiedMask = OverlaySafetyPolicy.mask(
                         overlay.region(), output.getWidth(), output.getHeight());
-                boolean painted = false;
+                List<OcrPoint> polygon = overlay.region().polygon();
+                OcrPoint origin = polygon.get(0);
+                OcrPoint edge = polygon.get(1);
+                double angle = Math.atan2(edge.y() - origin.y(), edge.x() - origin.x());
+                double localWidth = Math.hypot(edge.x() - origin.x(), edge.y() - origin.y());
+                OcrPoint side = polygon.get(polygon.size() - 1);
+                double localHeight = Math.hypot(side.x() - origin.x(), side.y() - origin.y());
+                int localWidthPixels = Math.max(2, (int) Math.round(localWidth));
+                int localHeightPixels = Math.max(2, (int) Math.round(localHeight));
+                int inset = Math.min(2, Math.max(0,
+                        (Math.min(localWidthPixels, localHeightPixels) - 2) / 2));
+                Bounds localBounds = new Bounds(
+                        inset, inset,
+                        Math.max(2, localWidthPixels - inset * 2),
+                        Math.max(2, localHeightPixels - inset * 2));
+                Layout layout = fitHorizontal(graphics, overlay.replacement(), localBounds,
+                        supportedFont, style.maximumFontSize(), overlay.region().compactLabel());
+                if (!layout.fits()) {
+                    decisions.add(new OverlayRenderDecision(
+                            overlay.region().id(), OverlayRenderStatus.PRESERVED, "text-fit"));
+                    continue;
+                }
+                prepared.add(new PreparedOverlay(overlay, style, layoutMask, modifiedMask,
+                        OverlaySafetyPolicy.sourceCleanupAreas(
+                                overlay.region(), output.getWidth(), output.getHeight()),
+                        origin, angle, localBounds, layout));
+            }
+
+            Area combinedMask = new Area();
+            for (PreparedOverlay item : prepared) combinedMask.add(new Area(item.modifiedMask()));
+            for (PreparedOverlay item : prepared) {
+                for (Area cleanupArea : item.cleanupAreas()) {
+                    graphics.setColor(ImageTranslationStyleEstimator.localBackground(
+                            pristine, cleanupArea, item.style().background()));
+                    graphics.fill(cleanupArea);
+                }
+                restoreOutsideMask(output, pristine, combinedMask, item.modifiedMask().getBounds());
+            }
+
+            for (PreparedOverlay item : prepared) {
+                Shape oldClip = graphics.getClip();
+                AffineTransform oldTransform = graphics.getTransform();
                 try {
-                    List<OcrPoint> polygon = overlay.region().polygon();
-                    OcrPoint origin = polygon.get(0);
-                    OcrPoint edge = polygon.get(1);
-                    double angle = Math.atan2(edge.y() - origin.y(), edge.x() - origin.x());
-                    double localWidth = Math.hypot(edge.x() - origin.x(), edge.y() - origin.y());
-                    OcrPoint side = polygon.get(polygon.size() - 1);
-                    double localHeight = Math.hypot(side.x() - origin.x(), side.y() - origin.y());
-                    int localWidthPixels = Math.max(2, (int) Math.round(localWidth));
-                    int localHeightPixels = Math.max(2, (int) Math.round(localHeight));
-                    int inset = Math.min(2, Math.max(0,
-                            (Math.min(localWidthPixels, localHeightPixels) - 2) / 2));
-                    Bounds localBounds = new Bounds(
-                            inset, inset,
-                            Math.max(2, localWidthPixels - inset * 2),
-                            Math.max(2, localHeightPixels - inset * 2));
-                    Layout layout = fitHorizontal(graphics, overlay.replacement(), localBounds,
-                            supportedFont, style.maximumFontSize(), overlay.region().compactLabel());
-                    if (!layout.fits()) {
-                        decisions.add(new OverlayRenderDecision(
-                                overlay.region().id(), OverlayRenderStatus.PRESERVED, "text-fit"));
-                        continue;
-                    }
-                    for (Area cleanupArea : OverlaySafetyPolicy.sourceCleanupAreas(
-                            overlay.region(), output.getWidth(), output.getHeight())) {
-                        graphics.setColor(ImageTranslationStyleEstimator.localBackground(
-                                pristine, cleanupArea, style.background()));
-                        graphics.fill(cleanupArea);
-                    }
-                    graphics.clip(layoutMask);
-                    graphics.setColor(style.foreground());
-                    graphics.translate(origin.x(), origin.y());
-                    graphics.rotate(angle);
-                    drawHorizontal(graphics, localBounds, layout);
-                    painted = true;
+                    graphics.clip(item.layoutMask());
+                    graphics.setColor(item.style().foreground());
+                    graphics.translate(item.origin().x(), item.origin().y());
+                    graphics.rotate(item.angle());
+                    drawHorizontal(graphics, item.localBounds(), item.layout());
                 } finally {
                     graphics.setTransform(oldTransform);
                     graphics.setClip(oldClip);
                 }
-                if (painted) {
-                    restoreOutsideMask(output, pristine, modifiedMask);
-                    rendered++;
-                    decisions.add(new OverlayRenderDecision(
-                            overlay.region().id(), OverlayRenderStatus.RENDERED, "rendered"));
-                }
+                rendered++;
+                decisions.add(new OverlayRenderDecision(
+                        item.overlay().region().id(), OverlayRenderStatus.RENDERED, "rendered"));
             }
         } finally {
             graphics.dispose();
@@ -132,7 +140,15 @@ public class ImageTranslationOverlayRenderer {
 
     /** Restores the one-pixel rasterization fringe outside the approved overlay geometry. */
     private static void restoreOutsideMask(BufferedImage output, BufferedImage pristine, Area mask) {
-        java.awt.Rectangle bounds = mask.getBounds();
+        restoreOutsideMask(output, pristine, mask, mask.getBounds());
+    }
+
+    private static void restoreOutsideMask(
+            BufferedImage output,
+            BufferedImage pristine,
+            Area mask,
+            java.awt.Rectangle localBounds) {
+        java.awt.Rectangle bounds = new java.awt.Rectangle(localBounds);
         bounds.grow(1, 1);
         int left = Math.max(0, bounds.x);
         int top = Math.max(0, bounds.y);
@@ -384,6 +400,21 @@ public class ImageTranslationOverlayRenderer {
     }
 
     private record Layout(Font font, List<String> lines, boolean fits) {
+    }
+
+    private record PreparedOverlay(
+            ImageRegionOverlay overlay,
+            ImageTranslationTextStyle style,
+            Area layoutMask,
+            Area modifiedMask,
+            List<Area> cleanupAreas,
+            OcrPoint origin,
+            double angle,
+            Bounds localBounds,
+            Layout layout) {
+        PreparedOverlay {
+            cleanupAreas = List.copyOf(cleanupAreas);
+        }
     }
 
     private record Bounds(int x, int y, int width, int height) {
