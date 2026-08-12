@@ -143,6 +143,12 @@ public class OpenRouterService implements AiProviderAdapter {
             if (isStructuredImageTranslation(request)) {
                 body.set("response_format", structuredResponseFormat());
                 body.put("temperature", 0);
+                body.put("max_tokens", 4096);
+                if (supportsReasoningEffort(request.model())) {
+                    body.putObject("reasoning")
+                            .put("effort", "minimal")
+                            .put("exclude", true);
+                }
             }
         }
 
@@ -174,6 +180,15 @@ public class OpenRouterService implements AiProviderAdapter {
     private static boolean isStructuredImageTranslation(AiProviderRequest request) {
         return request.operation() == AiProviderOperation.TRANSLATE_TEXT
                 && request.input().contains("\"schemaVersion\":\"" + StructuredImageTranslationCodec.SCHEMA_VERSION + "\"");
+    }
+
+    private static boolean supportsReasoningEffort(String model) {
+        String normalized = model == null ? "" : model.toLowerCase(Locale.ROOT);
+        return normalized.startsWith("openai/gpt-5")
+                || normalized.startsWith("openai/o1")
+                || normalized.startsWith("openai/o3")
+                || normalized.startsWith("openai/o4")
+                || normalized.startsWith("x-ai/grok");
     }
 
     private ObjectNode structuredResponseFormat() {

@@ -27,14 +27,16 @@ public class StructuredImageTranslationCodec {
         root.put("schemaVersion", SCHEMA_VERSION);
         root.put("targetLocale", targetLanguage);
         root.put("repair", repair);
-        root.put("documentContext", "Use every region in reading order as context while preserving exact region identity.");
+        root.put("documentContext",
+                "Use every supplied translatable region in reading order while preserving exact region identity.");
         ArrayNode values = root.putArray("regions");
         for (ImageRegionTranslationInput region : regions) {
+            if (!region.translatable()) continue;
             ObjectNode value = values.addObject();
             value.put("regionId", region.regionId());
             value.put("sourceText", region.sourceText());
             value.put("sourceLanguage", region.sourceLanguage());
-            value.put("action", region.translatable() ? "TRANSLATE" : "PRESERVE");
+            value.put("action", "TRANSLATE");
             value.put("readingOrder", region.readingOrder());
             ObjectNode layout = value.putObject("layout");
             layout.put("groupId", region.layout().groupId());

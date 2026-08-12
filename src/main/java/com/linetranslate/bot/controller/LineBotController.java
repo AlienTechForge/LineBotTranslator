@@ -11,6 +11,7 @@ import com.linecorp.bot.webhook.model.TextMessageContent;
 import com.linetranslate.bot.logging.SafeLog;
 import com.linetranslate.bot.service.line.LineInteractionModule;
 import com.linetranslate.bot.service.line.LineLoadingFeedback;
+import com.linetranslate.bot.service.line.LineLoadingSession;
 import com.linetranslate.bot.service.line.intent.LineIntent;
 import com.linetranslate.bot.service.line.intent.LineIntentParser;
 
@@ -49,8 +50,9 @@ public class LineBotController {
         String messageId = content.id();
         log.info("收到圖片訊息: user={}, message={}",
                 SafeLog.user(userId), SafeLog.content(messageId));
-        loadingFeedback.beforeImage(event.source());
-        return interactionModule.executeImage(userId, messageId);
+        try (LineLoadingSession ignored = loadingFeedback.startImage(event.source())) {
+            return interactionModule.executeImage(userId, messageId);
+        }
     }
 
     public Message handlePostbackEvent(PostbackEvent event) {

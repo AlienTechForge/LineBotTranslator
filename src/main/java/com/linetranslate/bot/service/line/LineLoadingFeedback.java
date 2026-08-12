@@ -8,5 +8,5 @@ public interface LineLoadingFeedback {
 
     void beforeText(Source source, LineIntent intent);
 
-    void beforeImage(Source source);
+    LineLoadingSession startImage(Source source);
 }

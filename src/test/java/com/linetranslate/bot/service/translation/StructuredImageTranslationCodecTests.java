@@ -56,6 +56,15 @@ class StructuredImageTranslationCodecTests {
         assertThat(root.path("regions").get(0).path("layout").path("maxLines").asInt()).isEqualTo(1);
     }
 
+    @Test
+    void requestOmitsPreservedRegionsThatNeedNoProviderWork() throws Exception {
+        var root = new ObjectMapper().readTree(codec.encode(input, "zh-TW", false));
+
+        assertThat(root.path("regions")).hasSize(2);
+        assertThat(root.path("regions").findValuesAsText("regionId"))
+                .containsExactly("r-a", "r-b");
+    }
+
     private void assertInvalid(String response) {
         assertThatThrownBy(() -> codec.decode(response, input))
                 .isInstanceOf(StructuredTranslationException.class);

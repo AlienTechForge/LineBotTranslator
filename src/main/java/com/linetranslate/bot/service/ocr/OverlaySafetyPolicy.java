@@ -162,6 +162,28 @@ public class OverlaySafetyPolicy {
         return result;
     }
 
+    /** Pixels that may be painted with the sampled background to erase source glyphs. */
+    static Area sourceCleanupMask(OcrRegion region, int imageWidth, int imageHeight) {
+        Area result = new Area();
+        int padding = maskPadding(region);
+        region.masks().forEach(points -> {
+            Polygon word = polygon(points);
+            result.add(new Area(word));
+            result.add(new Area(new BasicStroke(
+                    padding * 2f, BasicStroke.CAP_SQUARE, BasicStroke.JOIN_ROUND)
+                    .createStrokedShape(word)));
+        });
+        result.intersect(new Area(new Rectangle(0, 0, imageWidth, imageHeight)));
+        return result;
+    }
+
+    /** Unpadded region used only as the translated-text drawing boundary. */
+    static Area layoutMask(OcrRegion region, int imageWidth, int imageHeight) {
+        Area result = maskWithoutPadding(region);
+        result.intersect(new Area(new Rectangle(0, 0, imageWidth, imageHeight)));
+        return result;
+    }
+
     static Polygon polygon(List<OcrPoint> points) {
         Polygon result = new Polygon();
         points.forEach(point -> result.addPoint(point.x(), point.y()));

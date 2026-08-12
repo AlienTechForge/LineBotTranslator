@@ -156,6 +156,8 @@ public class ImageTranslationPipeline {
         if (request == null) {
             throw new IllegalArgumentException("Image translation request is required");
         }
+        long pipelineStarted = System.nanoTime();
+        long stageStarted = pipelineStarted;
         ValidatedImage image;
         try {
             image = download(request.messageId());
@@ -167,8 +169,12 @@ public class ImageTranslationPipeline {
                     SafeLog.content(request.messageId()), SafeLog.failure(failure));
             return new ImageTranslationOutcome.Failure(ImageTranslationFailureStage.DOWNLOAD);
         }
+        long downloadMillis = elapsedMillis(stageStarted);
 
+        stageStarted = System.nanoTime();
         ImageStorageResult storage = store(image);
+        long storageMillis = elapsedMillis(stageStarted);
+        stageStarted = System.nanoTime();
         OcrRecognition recognition;
         try {
             recognition = recognize(request, image);
@@ -177,6 +183,7 @@ public class ImageTranslationPipeline {
                     SafeLog.user(request.userProfile().getUserId()), SafeLog.failure(failure));
             return new ImageTranslationOutcome.Failure(ImageTranslationFailureStage.RECOGNITION);
         }
+        long recognitionMillis = elapsedMillis(stageStarted);
         List<OcrRegionDecision> decisions = recognition.regions().stream()
                 .map(region -> qualificationPolicy.decide(region, properties.lowConfidenceThreshold()))
                 .toList();
@@ -198,6 +205,7 @@ public class ImageTranslationPipeline {
                 recognition.text(),
                 requestedTargetLanguage(translatableText));
         TranslationWorkflowOutcome workflowOutcome;
+        long translationStarted = System.nanoTime();
         try {
             String resolvedSourceLanguage = sourceLanguageResolver.resolve(
                     workflowDecisions.stream().map(OcrRegionDecision::region).toList());
@@ -238,7 +246,20 @@ public class ImageTranslationPipeline {
 
         TranslationWorkflowResult translation =
                 ((TranslationWorkflowOutcome.Success) workflowOutcome).result();
+        long translationMillis = elapsedMillis(translationStarted);
+        long renderingStarted = System.nanoTime();
         OverlayOutcome overlay = renderAndStore(image, recognition, translation);
+        long renderingMillis = elapsedMillis(renderingStarted);
+        log.info("Image translation timing: downloadMs={}, storageMs={}, recognitionMs={}, "
+                        + "translationMs={}, renderingMs={}, totalMs={}, ocrRegions={}, translatedRegions={}",
+                downloadMillis,
+                storageMillis,
+                recognitionMillis,
+                translationMillis,
+                renderingMillis,
+                elapsedMillis(pipelineStarted),
+                recognition.regions().size(),
+                translatedDecisions.size());
         return new ImageTranslationOutcome.Success(
                 new ImageTranslationPipelineResult(
                         context,
@@ -247,6 +268,10 @@ public class ImageTranslationPipeline {
                         overlay.lowConfidenceBlockCount(),
                         overlay.disposition(),
                         overlay.degradation()));
+    }
+
+    private static long elapsedMillis(long startedAt) {
+        return java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt);
     }
 
     private ValidatedImage download(String messageId) throws Exception {

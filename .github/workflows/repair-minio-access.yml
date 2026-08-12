@@ -11,9 +11,32 @@ jobs:
     name: Repair and verify MinIO IAM
     runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 10
+    env:
+      MINIO_CONTAINER: ${{ vars.MINIO_CONTAINER || 'minio' }}
+      MINIO_ACCESS_KEY: ${{ secrets.MINIO_ACCESS_KEY }}
+      MINIO_SECRET_KEY: ${{ secrets.MINIO_SECRET_KEY }}
+      MINIO_BUCKET_NAME: ${{ secrets.MINIO_BUCKET_NAME }}
     steps:
-      - name: Read safe image-translation timings
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Repair least-privilege application access
         run: |
-          docker logs --since=6h linebot-translator 2>&1 |
-            grep -E 'AI provider execution|Overlay safety evaluated|Translation workflow persisted|收到圖片訊息' |
-            tail -n 400 || true
+          chmod +x scripts/repair-minio-access.sh
+          scripts/repair-minio-access.sh
+
+      - name: Confirm application recovers
+        run: |
+          for _ in $(seq 1 6); do
+            readiness="$(docker exec linebot-translator \
+              curl --silent --show-error http://127.0.0.1:4040/actuator/health/readiness || true)"
+            if grep -q '"minio":{"status":"UP"}' <<<"$readiness"; then
+              printf 'LineBot MinIO readiness: UP\n'
+              exit 0
+            fi
+            sleep 10
+          done
+          docker logs --tail=80 linebot-translator 2>&1 |
+            grep -Ei 'MinIO|storage state|AccessDenied' || true
+          printf 'LineBot did not recover MinIO readiness after IAM repair\n' >&2
+          exit 1

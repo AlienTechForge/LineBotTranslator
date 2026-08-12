@@ -63,10 +63,13 @@ public class ImageTranslationOverlayRenderer {
                             overlay.region().id(), OverlayRenderStatus.PRESERVED, "font-coverage"));
                     continue;
                 }
-                Area mask = OverlaySafetyPolicy.mask(
+                Area layoutMask = OverlaySafetyPolicy.layoutMask(
                         overlay.region(), output.getWidth(), output.getHeight());
-                java.awt.Rectangle bounds = mask.getBounds();
-                if (mask.isEmpty() || bounds.width <= 1 || bounds.height <= 1) {
+                Area cleanupMask = OverlaySafetyPolicy.sourceCleanupMask(
+                        overlay.region(), output.getWidth(), output.getHeight());
+                java.awt.Rectangle bounds = layoutMask.getBounds();
+                if (layoutMask.isEmpty() || cleanupMask.isEmpty()
+                        || bounds.width <= 1 || bounds.height <= 1) {
                     decisions.add(new OverlayRenderDecision(
                             overlay.region().id(), OverlayRenderStatus.PRESERVED, "empty-mask"));
                     continue;
@@ -81,9 +84,14 @@ public class ImageTranslationOverlayRenderer {
                     double localWidth = Math.hypot(edge.x() - origin.x(), edge.y() - origin.y());
                     OcrPoint side = polygon.get(polygon.size() - 1);
                     double localHeight = Math.hypot(side.x() - origin.x(), side.y() - origin.y());
+                    int localWidthPixels = Math.max(2, (int) Math.round(localWidth));
+                    int localHeightPixels = Math.max(2, (int) Math.round(localHeight));
+                    int inset = Math.min(2, Math.max(0,
+                            (Math.min(localWidthPixels, localHeightPixels) - 2) / 2));
                     Bounds localBounds = new Bounds(
-                            0, 0, Math.max(2, (int) Math.round(localWidth)),
-                            Math.max(2, (int) Math.round(localHeight)));
+                            inset, inset,
+                            Math.max(2, localWidthPixels - inset * 2),
+                            Math.max(2, localHeightPixels - inset * 2));
                     Layout layout = fitHorizontal(graphics, overlay.replacement(), localBounds,
                             supportedFont, style.maximumFontSize());
                     if (!layout.fits()) {
@@ -91,10 +99,11 @@ public class ImageTranslationOverlayRenderer {
                                 overlay.region().id(), OverlayRenderStatus.PRESERVED, "text-fit"));
                         continue;
                     }
-                    approvedMask.add(new Area(mask));
-                    graphics.clip(mask);
+                    approvedMask.add(new Area(layoutMask));
+                    approvedMask.add(new Area(cleanupMask));
                     graphics.setColor(style.background());
-                    graphics.fill(mask);
+                    graphics.fill(cleanupMask);
+                    graphics.clip(layoutMask);
                     graphics.setColor(style.foreground());
                     graphics.translate(origin.x(), origin.y());
                     graphics.rotate(angle);
