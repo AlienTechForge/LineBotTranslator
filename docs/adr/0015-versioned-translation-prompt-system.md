@@ -16,6 +16,8 @@ Accepted
 
 圖片 request 使用 `image-regions-v2`，提供 reading order、group identity、geometry、max lines、max characters 與 compact-label hint。模型可用整張圖片內的 regions 作語意上下文，但必須維持 exact Region ID mapping。回應除 schema/protected-token 驗證外，還需通過 target-locale script validator；不合規只允許一次 repair，失敗後安全降級且不得 cache。
 
+泛用 `zh` 依產品預設 canonicalize 為 `zh-TW`；structured translation 失敗後的純文字 fallback 也必須執行同一 locale/script validator 與一次重試，不可繞過繁體中文契約。
+
 Prompt 或 schema 行為改變必須 bump version；cache identity 必須包含文字／圖片 prompt version 與 structured schema version。
 
 ## Consequences

@@ -60,6 +60,7 @@ public class ImageTranslationPipeline {
     private final OcrSourceLanguageResolver sourceLanguageResolver;
     private final OverlaySafetyPolicy overlaySafetyPolicy;
     private final TranslationPromptFactory promptFactory;
+    private final OverlayContentClassifier contentClassifier = new OverlayContentClassifier();
 
     @Autowired
     public ImageTranslationPipeline(
@@ -338,8 +339,12 @@ public class ImageTranslationPipeline {
                     .filter(region -> replacements.containsKey(region.id()))
                     .map(region -> new ImageRegionOverlay(region, replacements.get(region.id())))
                     .toList();
+            OverlayContentMode contentMode = contentClassifier.classify(
+                    image.image(), candidates.stream().map(ImageRegionOverlay::region).toList());
             OverlaySafetyPlan plan = overlaySafetyPolicy.evaluate(
-                    candidates, image.image().getWidth(), image.image().getHeight(), properties);
+                    candidates, image.image().getWidth(), image.image().getHeight(), properties, contentMode);
+            log.info("Image overlay decision: mode={}, candidates={}, accepted={}, preserved={}, reason={}",
+                    contentMode, candidates.size(), plan.overlays().size(), plan.skipped(), plan.reason());
             if (!plan.safe() || plan.overlays().isEmpty()) {
                 OverlayDegradationSummary degradation = OverlayDegradationSummary.fromDecisions(plan.decisions());
                 return new OverlayOutcome(ImageStorageResult.notStored(),

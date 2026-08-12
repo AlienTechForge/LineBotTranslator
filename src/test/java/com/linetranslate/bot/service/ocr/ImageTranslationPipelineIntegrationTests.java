@@ -353,6 +353,39 @@ class ImageTranslationPipelineIntegrationTests {
     }
 
     @Test
+    void denseUniformTextDocumentUsesDocumentCoverageAndUploadsOverlay() throws Exception {
+        byte[] png = whitePng(400, 400);
+        image("message-document-overlay", png, "image/png");
+        ImageTranslationProperties limits = ImageTranslationProperties.defaults();
+        pipeline = new ImageTranslationPipeline(
+                ocrServiceProvider, workflowModule, aiProviderExecutionModule, userPreferencesModule,
+                messagingApiBlobClient, minioStorageService, new ImageInputValidator(limits),
+                new ImageTranslationOverlayRenderer(), limits);
+        when(minioStorageService.uploadImage(any(byte[].class), anyString()))
+                .thenReturn(ImageStorageResult.notStored());
+        when(ocrService.recognizeRegions(any(InputStream.class))).thenReturn(List.of(
+                region("p1", "first paragraph", 10, 10, 380, 100, .98f),
+                region("p2", "second paragraph", 10, 145, 380, 100, .98f),
+                region("p3", "third paragraph", 10, 280, 380, 100, .98f)));
+        when(workflowModule.execute(any())).thenReturn(successStructured(
+                "first paragraph\nsecond paragraph\nthird paragraph",
+                "first\nsecond\nthird",
+                List.of(new ImageRegionTranslation("p1", "first"),
+                        new ImageRegionTranslation("p2", "second"),
+                        new ImageRegionTranslation("p3", "third"))));
+        when(minioStorageService.uploadTranslatedImage(any(byte[].class)))
+                .thenReturn(ImageStorageResult.stored("https://storage.example/document-translated.png"));
+
+        ImageTranslationPipelineResult result = successResult(
+                pipeline.execute(request("message-document-overlay")));
+
+        assertThat(result.overlayDisposition()).isEqualTo(ImageOverlayDisposition.GENERATED);
+        assertThat(result.renderedImage().url())
+                .contains("https://storage.example/document-translated.png");
+        verify(minioStorageService).uploadTranslatedImage(any(byte[].class));
+    }
+
+    @Test
     void overlayKillSwitchStillCompletesTextWorkflowWithoutUploadingRenderedImage() throws Exception {
         byte[] png = png(240, 120);
         image("message-disabled-overlay", png, "image/png");
@@ -449,6 +482,17 @@ class ImageTranslationPipelineIntegrationTests {
 
     private static byte[] png(int width, int height) throws Exception {
         BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        ImageIO.write(image, "png", output);
+        return output.toByteArray();
+    }
+
+    private static byte[] whitePng(int width, int height) throws Exception {
+        BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+        java.awt.Graphics2D graphics = image.createGraphics();
+        graphics.setColor(java.awt.Color.WHITE);
+        graphics.fillRect(0, 0, width, height);
+        graphics.dispose();
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         ImageIO.write(image, "png", output);
         return output.toByteArray();
