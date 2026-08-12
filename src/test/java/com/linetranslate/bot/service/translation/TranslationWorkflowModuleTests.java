@@ -227,6 +227,30 @@ class TranslationWorkflowModuleTests {
         verify(languageDetection, never()).detectLanguage(any());
     }
 
+    @Test
+    void structuredFallbackStillEnforcesTraditionalChineseTarget() {
+        UserProfile profile = profile();
+        StructuredImageTranslationAdapter structured = Mockito.mock(StructuredImageTranslationAdapter.class);
+        module = new TranslationWorkflowModule(languageDetection, translationAdapter, recordRepository,
+                userPreferencesModule, structured, new TargetLocalePolicy());
+        List<ImageRegionTranslationInput> inputs = List.of(
+                new ImageRegionTranslationInput("r1", "保護自己", "ja", List.of()));
+        when(structured.translate(preferences, inputs, "zh-TW", TranslationStylePreset.FAITHFUL))
+                .thenThrow(new StructuredTranslationException("invalid structured locale"));
+        when(translationAdapter.translate(preferences, "保護自己", "zh-TW", TranslationStylePreset.FAITHFUL))
+                .thenReturn(success("保护自己"), success("保護自己"));
+
+        TranslationWorkflowOutcome outcome = module.execute(new TranslationWorkflowRequest(
+                profile, "保護自己", null, TranslationRequestKind.IMAGE_OCR,
+                null, false, Instant.now(), null, "ja", inputs));
+
+        assertThat(outcome).isInstanceOf(TranslationWorkflowOutcome.Success.class);
+        assertThat(((TranslationWorkflowOutcome.Success) outcome).result().translatedText())
+                .isEqualTo("保護自己");
+        verify(translationAdapter, times(2)).translate(
+                preferences, "保護自己", "zh-TW", TranslationStylePreset.FAITHFUL);
+    }
+
     private static Stream<Arguments> translationKinds() {
         return Stream.of(
                 Arguments.of(TranslationRequestKind.STANDARD_TEXT, 1, 0),

@@ -30,6 +30,7 @@ public class TargetLocalePolicy {
     public TargetLocale resolve(String value) {
         String raw = value == null || value.isBlank() ? "und" : value.trim();
         String key = raw.toLowerCase(Locale.ROOT).replace('_', '-');
+        if ("zh".equals(key)) key = "zh-tw";
         if ("tw".equals(key)) key = "zh-tw";
         if ("cn".equals(key)) key = "zh-cn";
         TargetLocale known = LOCALES.get(key);

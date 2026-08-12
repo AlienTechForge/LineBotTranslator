@@ -76,6 +76,7 @@ public class TranslationWorkflowModule {
         String targetLanguage = request.requestedTargetLanguage() == null
                 ? defaultTargetLanguage(sourceLanguage, preferences)
                 : request.requestedTargetLanguage();
+        targetLanguage = localePolicy.resolve(targetLanguage).locale();
         TranslationStylePreset style = request.requestedStylePresetId() == null
                 ? preferences.translationStyle()
                 : TranslationStylePreset.find(request.requestedStylePresetId())
@@ -94,8 +95,8 @@ public class TranslationWorkflowModule {
                 regionTranslations = structured.translations();
             } catch (StructuredTranslationException unsafeMapping) {
                 // Keep the core translation useful, but never guess image-region identity.
-                AiExecutionOutcome degraded = translationAdapter.translate(
-                        preferences, request.sourceText(), targetLanguage, style);
+                AiExecutionOutcome degraded = translateWithLocaleValidation(
+                        preferences, request.sourceText(), targetLanguage, style, true);
                 if (degraded instanceof AiExecutionOutcome.Failure failure) {
                     return new TranslationWorkflowOutcome.Failure(failure.failure());
                 }
@@ -103,24 +104,9 @@ public class TranslationWorkflowModule {
                 log.warn("Structured image mapping degraded");
             }
         } else {
-            AiExecutionOutcome providerOutcome = request.requestedStylePresetId() == null
-                    ? translationAdapter.translate(preferences, request.sourceText(), targetLanguage)
-                    : translationAdapter.translate(preferences, request.sourceText(), targetLanguage, style);
-            if (providerOutcome instanceof AiExecutionOutcome.Success success
-                    && localePolicy != null && localePolicy.needsValidation(targetLanguage)
-                    && !localePolicy.accepts(success.result().text(), targetLanguage)) {
-                providerOutcome = request.requestedStylePresetId() == null
-                        ? translationAdapter.translate(preferences, request.sourceText(), targetLanguage)
-                        : translationAdapter.translate(preferences, request.sourceText(), targetLanguage, style);
-            }
-            if (providerOutcome instanceof AiExecutionOutcome.Success success
-                    && localePolicy != null && localePolicy.needsValidation(targetLanguage)
-                    && !localePolicy.accepts(success.result().text(), targetLanguage)) {
-                return new TranslationWorkflowOutcome.Failure(new com.linetranslate.bot.service.ai.AiExecutionFailure(
-                        com.linetranslate.bot.service.ai.AiProviderException.Outcome.MALFORMED_RESPONSE,
-                        success.result().providerName(), success.result().modelName(),
-                        "TARGET_LOCALE_MISMATCH", "locale-validation", -1, success.result().attempts()));
-            }
+            AiExecutionOutcome providerOutcome = translateWithLocaleValidation(
+                    preferences, request.sourceText(), targetLanguage, style,
+                    request.requestedStylePresetId() != null);
             if (providerOutcome instanceof AiExecutionOutcome.Failure failure) {
                 return new TranslationWorkflowOutcome.Failure(failure.failure());
             }
@@ -143,6 +129,44 @@ public class TranslationWorkflowModule {
                 style.id(),
                 style.promptVersion(),
                 regionTranslations));
+    }
+
+    private AiExecutionOutcome translateWithLocaleValidation(
+            UserPreferences preferences,
+            String sourceText,
+            String targetLanguage,
+            TranslationStylePreset style,
+            boolean explicitStyle) {
+        AiExecutionOutcome outcome = explicitStyle
+                ? translationAdapter.translate(preferences, sourceText, targetLanguage, style)
+                : translationAdapter.translate(preferences, sourceText, targetLanguage);
+        if (localeMismatch(outcome, targetLanguage)) {
+            logLocaleMismatch((AiExecutionOutcome.Success) outcome, targetLanguage, 1);
+            outcome = explicitStyle
+                    ? translationAdapter.translate(preferences, sourceText, targetLanguage, style)
+                    : translationAdapter.translate(preferences, sourceText, targetLanguage);
+        }
+        if (!localeMismatch(outcome, targetLanguage)) return outcome;
+        logLocaleMismatch((AiExecutionOutcome.Success) outcome, targetLanguage, 2);
+        AiExecutionResult result = ((AiExecutionOutcome.Success) outcome).result();
+        return new AiExecutionOutcome.Failure(new com.linetranslate.bot.service.ai.AiExecutionFailure(
+                com.linetranslate.bot.service.ai.AiProviderException.Outcome.MALFORMED_RESPONSE,
+                result.providerName(), result.modelName(), "TARGET_LOCALE_MISMATCH",
+                "locale-validation", -1, result.attempts()));
+    }
+
+    private boolean localeMismatch(AiExecutionOutcome outcome, String targetLanguage) {
+        return outcome instanceof AiExecutionOutcome.Success success
+                && localePolicy.needsValidation(targetLanguage)
+                && !localePolicy.accepts(success.result().text(), targetLanguage);
+    }
+
+    private static void logLocaleMismatch(
+            AiExecutionOutcome.Success success, String targetLanguage, int attempt) {
+        AiExecutionResult result = success.result();
+        log.warn("Translation output rejected by target locale: target={}, provider={}, model={}, attempt={}",
+                SafeLog.metadata(targetLanguage), SafeLog.metadata(result.providerName()),
+                SafeLog.metadata(result.modelName()), attempt);
     }
 
     private String defaultTargetLanguage(String sourceLanguage, UserPreferences preferences) {

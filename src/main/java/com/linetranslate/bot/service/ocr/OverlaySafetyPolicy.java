@@ -10,20 +10,39 @@ import java.util.List;
 
 import org.springframework.stereotype.Component;
 
+import lombok.extern.slf4j.Slf4j;
+
 /** Final authority before any source pixel can be modified. */
 @Component
+@Slf4j
 public class OverlaySafetyPolicy {
     public OverlaySafetyPlan evaluate(
             List<ImageRegionOverlay> candidates,
             int imageWidth,
             int imageHeight,
             ImageTranslationProperties properties) {
+        return evaluate(candidates, imageWidth, imageHeight, properties, OverlayContentMode.GENERAL);
+    }
+
+    public OverlaySafetyPlan evaluate(
+            List<ImageRegionOverlay> candidates,
+            int imageWidth,
+            int imageHeight,
+            ImageTranslationProperties properties,
+            OverlayContentMode contentMode) {
         List<ImageRegionOverlay> requested = candidates == null ? List.of() : candidates;
         if (!properties.overlayEnabled()) return blocked(requested, "disabled");
         if (imageWidth <= 0 || imageHeight <= 0) return blocked(requested, "invalid-image");
+        OverlayContentMode mode = contentMode == null ? OverlayContentMode.GENERAL : contentMode;
+        double maxRegionRatio = mode == OverlayContentMode.DOCUMENT
+                ? Math.max(properties.maxRegionAreaRatio(), .45)
+                : properties.maxRegionAreaRatio();
+        double maxTotalRatio = mode == OverlayContentMode.DOCUMENT
+                ? Math.max(properties.maxTotalMaskRatio(), .90)
+                : properties.maxTotalMaskRatio();
         double imageArea = (double) imageWidth * imageHeight;
         List<ImageRegionOverlay> accepted = new ArrayList<>();
-        List<Area> masks = new ArrayList<>();
+        List<AcceptedMask> masks = new ArrayList<>();
         double total = 0;
         int skipped = 0;
         List<OverlayRenderDecision> decisions = new ArrayList<>();
@@ -32,16 +51,21 @@ public class OverlaySafetyPolicy {
             if (candidate.replacement().isBlank()) {
                 skipped++;
                 decisions.add(preserved(region.id(), "mapping-empty"));
+                logPreserved(region.id(), "mapping-empty", mode, imageWidth, imageHeight, 0, total, maxTotalRatio);
                 continue;
             }
             if (!region.validGeometry()) {
                 skipped++;
                 decisions.add(preserved(region.id(), "invalid-geometry"));
+                logPreserved(region.id(), "invalid-geometry", mode, imageWidth, imageHeight,
+                        0, total, maxTotalRatio);
                 continue;
             }
             if (!region.confidenceKnown() || region.confidence() < properties.lowConfidenceThreshold()) {
                 skipped++;
                 decisions.add(preserved(region.id(), "untrusted-confidence"));
+                logPreserved(region.id(), "untrusted-confidence", mode, imageWidth, imageHeight,
+                        0, total, maxTotalRatio);
                 continue;
             }
             java.awt.Rectangle sourceBounds = maskWithoutPadding(region).getBounds();
@@ -49,30 +73,62 @@ public class OverlaySafetyPolicy {
                     || sourceBounds.getMaxX() > imageWidth || sourceBounds.getMaxY() > imageHeight) {
                 skipped++;
                 decisions.add(preserved(region.id(), "outside-image"));
+                logPreserved(region.id(), "outside-image", mode, imageWidth, imageHeight,
+                        0, total, maxTotalRatio);
                 continue;
             }
             Area mask = mask(region, imageWidth, imageHeight);
             Area paragraph = maskWithoutPadding(region);
             double paragraphRatio = region.area() / imageArea;
             double modifiedRatio = area(mask) / imageArea;
-            if (paragraphRatio <= 0 || paragraphRatio > properties.maxRegionAreaRatio()) {
+            if (paragraphRatio <= 0 || paragraphRatio > maxRegionRatio) {
                 skipped++;
                 decisions.add(preserved(region.id(), "region-coverage"));
+                logPreserved(region.id(), "region-coverage", mode, imageWidth, imageHeight,
+                        paragraphRatio, total, maxTotalRatio);
                 continue;
             }
-            for (Area previous : masks) {
-                Area intersection = new Area(previous);
+            boolean overlaps = false;
+            for (AcceptedMask previous : masks) {
+                Area intersection = new Area(previous.area());
                 intersection.intersect(paragraph);
-                if (!intersection.isEmpty()) return blocked(requested, "overlap");
+                double intersectionArea = area(intersection);
+                double smallerArea = Math.min(area(previous.area()), area(paragraph));
+                double intersectionRatio = smallerArea <= 0 ? 0 : intersectionArea / smallerArea;
+                if (intersectionArea > 4 && intersectionRatio > .08) {
+                    skipped++;
+                    decisions.add(preserved(region.id(), "overlap"));
+                    log.info("Overlay region preserved: region={}, reason=overlap, conflictsWith={}, "
+                                    + "intersectionPixels={}, intersectionRatio={}, mode={}, image={}x{}",
+                            region.id(), previous.regionId(), Math.round(intersectionArea),
+                            intersectionRatio, mode, imageWidth, imageHeight);
+                    overlaps = true;
+                    break;
+                }
+            }
+            if (overlaps) continue;
+            if (total + modifiedRatio > maxTotalRatio) {
+                skipped++;
+                decisions.add(preserved(region.id(), "total-coverage"));
+                logPreserved(region.id(), "total-coverage", mode, imageWidth, imageHeight,
+                        modifiedRatio, total, maxTotalRatio);
+                continue;
             }
             total += modifiedRatio;
-            if (total > properties.maxTotalMaskRatio()) {
-                return blocked(requested, "total-coverage");
-            }
-            masks.add(paragraph);
+            masks.add(new AcceptedMask(region.id(), paragraph));
             accepted.add(candidate);
         }
+        log.info("Overlay safety evaluated: mode={}, requested={}, accepted={}, preserved={}, "
+                        + "totalMaskRatio={}, limit={}, image={}x{}",
+                mode, requested.size(), accepted.size(), skipped, total, maxTotalRatio, imageWidth, imageHeight);
         return new OverlaySafetyPlan(true, "safe", accepted, skipped, decisions);
+    }
+
+    private static void logPreserved(String regionId, String reason, OverlayContentMode mode,
+            int imageWidth, int imageHeight, double regionRatio, double acceptedRatio, double limit) {
+        log.info("Overlay region preserved: region={}, reason={}, mode={}, regionRatio={}, "
+                        + "acceptedRatio={}, limit={}, image={}x{}",
+                regionId, reason, mode, regionRatio, acceptedRatio, limit, imageWidth, imageHeight);
     }
 
     private static OverlayRenderDecision preserved(String id, String reason) {
@@ -153,5 +209,8 @@ public class OverlaySafetyPolicy {
 
     private static Area maskWithoutPadding(OcrRegion region) {
         return new Area(polygon(region.polygon()));
+    }
+
+    private record AcceptedMask(String regionId, Area area) {
     }
 }
