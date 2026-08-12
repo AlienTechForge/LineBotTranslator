@@ -15,6 +15,44 @@ import org.junit.jupiter.api.Test;
 
 class PolygonOverlayRendererTests {
     @Test
+    void manySparseOverlaysRenderWithinAReasonableLocalCpuBudget() {
+        BufferedImage original = new BufferedImage(1536, 2730, BufferedImage.TYPE_INT_RGB);
+        var graphics = original.createGraphics();
+        try {
+            graphics.setColor(new Color(38, 38, 38));
+            graphics.fillRect(0, 0, original.getWidth(), original.getHeight());
+        } finally {
+            graphics.dispose();
+        }
+        List<ImageRegionOverlay> overlays = new java.util.ArrayList<>();
+        for (int index = 0; index < 48; index++) {
+            int column = index % 6;
+            int row = index / 6;
+            int x = 80 + column * 240;
+            int y = 80 + row * 320;
+            List<OcrPoint> polygon = List.of(
+                    new OcrPoint(x + 40, y), new OcrPoint(x + 40, y + 180),
+                    new OcrPoint(x, y + 180), new OcrPoint(x, y));
+            OcrRegion region = new OcrRegion("perf-" + index, "菜單", polygon,
+                    List.of(new OcrWord("菜單", polygon, .99f, true)),
+                    .99f, true, OcrBlockType.TEXT, List.of(), index);
+            overlays.add(new ImageRegionOverlay(region, "Menu"));
+        }
+        OverlaySafetyPlan plan = new OverlaySafetyPlan(true, "safe", overlays, 0);
+        ImageTranslationOverlayRenderer renderer = new ImageTranslationOverlayRenderer(
+                new ImageTranslationFontProvider(Set.of("dejavu sans")));
+
+        long started = System.nanoTime();
+        RenderedImage rendered = renderer.render(
+                new ValidatedImage(new byte[] {1}, "image/png", original), plan);
+        long elapsedMillis = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(
+                System.nanoTime() - started);
+
+        assertThat(rendered.renderedBlockCount()).isEqualTo(48);
+        assertThat(elapsedMillis).as("48 overlays on 1536x2730 image").isLessThan(5_000);
+    }
+
+    @Test
     void replacementClearsOnlySourceGlyphAreaAndPreservesTableGrid() throws Exception {
         BufferedImage original = new BufferedImage(170, 90, BufferedImage.TYPE_INT_RGB);
         var graphics = original.createGraphics();
