@@ -186,10 +186,43 @@ class PolygonOverlayRendererTests {
         BufferedImage output = ImageIO.read(new ByteArrayInputStream(result.pngBytes()));
 
         assertThat(result.renderedBlockCount()).isZero();
-        assertThat(result.lowConfidenceBlockCount()).isEqualTo(1);
+        assertThat(result.degradation().count(OverlayDegradationReason.FONT)).isEqualTo(1);
+        assertThat(result.degradation().count(OverlayDegradationReason.LOW_CONFIDENCE)).isZero();
         assertThat(result.decisions()).containsExactly(
                 new OverlayRenderDecision("r-font", OverlayRenderStatus.PRESERVED, "font-coverage"));
         for (int y = 0; y < 60; y++) for (int x = 0; x < 100; x++)
+            assertThat(output.getRGB(x, y)).isEqualTo(original.getRGB(x, y));
+    }
+
+    @Test
+    void replacementThatCannotFitAtReadableSizePreservesOriginalInsteadOfEllipsizing() throws Exception {
+        BufferedImage original = new BufferedImage(90, 36, BufferedImage.TYPE_INT_RGB);
+        var graphics = original.createGraphics();
+        try {
+            graphics.setColor(Color.WHITE);
+            graphics.fillRect(0, 0, 90, 36);
+            graphics.setColor(Color.BLACK);
+            graphics.drawString("日", 10, 22);
+        } finally {
+            graphics.dispose();
+        }
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        ImageIO.write(original, "png", bytes);
+        ValidatedImage source = new ImageInputValidator(ImageTranslationProperties.defaults())
+                .validate(bytes.toByteArray(), "image/png");
+        OcrRegion region = new OcrRegion("tiny", "日", List.of(
+                new OcrPoint(8, 5), new OcrPoint(30, 5), new OcrPoint(30, 28), new OcrPoint(8, 28)),
+                List.of(), .99f, true, OcrBlockType.TEXT, List.of(), 0);
+        OverlaySafetyPlan plan = new OverlaySafetyPolicy().evaluate(
+                List.of(new ImageRegionOverlay(region, "Sunday with very long overflow")), 90, 36,
+                new ImageTranslationProperties(1000, 100, 10000, .6f, true, .5, .6));
+
+        RenderedImage result = new ImageTranslationOverlayRenderer().render(source, plan);
+        BufferedImage output = ImageIO.read(new ByteArrayInputStream(result.pngBytes()));
+
+        assertThat(result.renderedBlockCount()).isZero();
+        assertThat(result.degradation().count(OverlayDegradationReason.TEXT_FIT)).isEqualTo(1);
+        for (int y = 0; y < 36; y++) for (int x = 0; x < 90; x++)
             assertThat(output.getRGB(x, y)).isEqualTo(original.getRGB(x, y));
     }
 

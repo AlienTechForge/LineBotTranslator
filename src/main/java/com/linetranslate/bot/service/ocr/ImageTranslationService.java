@@ -101,10 +101,26 @@ public class ImageTranslationService {
                             ? " 個低信心區塊已保留原文並以橘框標示。\n\n"
                             : " 個低信心區塊未覆寫，已保留原文。\n\n");
         }
+        appendDegradation(display, result.degradation(), OverlayDegradationReason.COVERAGE,
+                " 個文字區域因覆蓋範圍過大而保留原文。");
+        appendDegradation(display, result.degradation(), OverlayDegradationReason.GEOMETRY,
+                " 個文字區域因位置資訊不安全而保留原文。");
+        appendDegradation(display, result.degradation(), OverlayDegradationReason.OVERLAP,
+                " 個文字區域因位置重疊而保留原文。");
+        appendDegradation(display, result.degradation(), OverlayDegradationReason.FONT,
+                " 個文字區域因找不到完整字形而保留原文。");
+        appendDegradation(display, result.degradation(), OverlayDegradationReason.TEXT_FIT,
+                " 個文字區域因譯文無法以可讀大小完整放入而保留原文。");
         display.append("[偵測到: ").append(LanguageUtils.toChineseName(translation.sourceLanguage()))
                 .append(" | 翻譯成: ").append(LanguageUtils.toChineseName(translation.targetLanguage()))
                 .append("]");
         return TranslationResponse.success(translation, display.toString());
+    }
+
+    private static void appendDegradation(StringBuilder display, OverlayDegradationSummary summary,
+            OverlayDegradationReason reason, String message) {
+        int count = summary.count(reason);
+        if (count > 0) display.append("⚠️ ").append(count).append(message).append("\n\n");
     }
 
     private static boolean isSafeRenderedImageUrl(String value) {

@@ -1,6 +1,7 @@
 package com.linetranslate.bot.service.translation;
 
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Autowired;
 
 import com.linetranslate.bot.service.ai.AiExecutionFailure;
 import com.linetranslate.bot.service.ai.AiExecutionOutcome;
@@ -20,14 +21,25 @@ public class CachedTranslationAdapter {
     private final AiProviderExecutionModule providerExecutionModule;
     private final TranslationCacheStore cacheStore;
     private final TranslationCacheProperties properties;
+    private final TargetLocalePolicy localePolicy;
+
+    @Autowired
+    public CachedTranslationAdapter(
+            AiProviderExecutionModule providerExecutionModule,
+            TranslationCacheStore cacheStore,
+            TranslationCacheProperties properties,
+            TargetLocalePolicy localePolicy) {
+        this.providerExecutionModule = providerExecutionModule;
+        this.cacheStore = cacheStore;
+        this.properties = properties;
+        this.localePolicy = localePolicy;
+    }
 
     public CachedTranslationAdapter(
             AiProviderExecutionModule providerExecutionModule,
             TranslationCacheStore cacheStore,
             TranslationCacheProperties properties) {
-        this.providerExecutionModule = providerExecutionModule;
-        this.cacheStore = cacheStore;
-        this.properties = properties;
+        this(providerExecutionModule, cacheStore, properties, new TargetLocalePolicy());
     }
 
     public AiExecutionOutcome translate(
@@ -49,7 +61,8 @@ public class CachedTranslationAdapter {
                 ? TranslationStylePreset.defaultPreset()
                 : preset;
         return translate(preferences, text, targetLanguage,
-                properties.currentVariant(effective), effective, result -> true);
+                properties.currentVariant(effective), effective,
+                result -> localePolicy.accepts(result.text(), targetLanguage));
     }
 
     AiExecutionOutcome translateValidated(
@@ -62,7 +75,9 @@ public class CachedTranslationAdapter {
         TranslationStylePreset effective = preset == null ? TranslationStylePreset.defaultPreset() : preset;
         TranslationCacheVariant base = properties.currentVariant(effective);
         TranslationCacheVariant structured = new TranslationCacheVariant(
-                base.style(), base.glossaryVersion(), base.promptVersion() + "+" + contractVersion);
+                base.style(), base.glossaryVersion(), base.promptVersion() + "+"
+                        + com.linetranslate.bot.service.translation.TranslationPromptFactory.IMAGE_PROMPT_VERSION
+                        + "+" + contractVersion);
         return translate(preferences, text, targetLanguage, structured, effective, validator);
     }
 

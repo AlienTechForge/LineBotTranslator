@@ -31,6 +31,7 @@ public class TranslationWorkflowModule {
     private final TranslationRecordRepository translationRecordRepository;
     private final UserPreferencesModule userPreferencesModule;
     private final StructuredImageTranslationAdapter structuredAdapter;
+    private final TargetLocalePolicy localePolicy;
 
     public TranslationWorkflowModule(
             LanguageDetectionService languageDetectionService,
@@ -38,7 +39,17 @@ public class TranslationWorkflowModule {
             TranslationRecordRepository translationRecordRepository,
             UserPreferencesModule userPreferencesModule) {
         this(languageDetectionService, translationAdapter, translationRecordRepository,
-                userPreferencesModule, null);
+                userPreferencesModule, null, new TargetLocalePolicy());
+    }
+
+    public TranslationWorkflowModule(
+            LanguageDetectionService languageDetectionService,
+            CachedTranslationAdapter translationAdapter,
+            TranslationRecordRepository translationRecordRepository,
+            UserPreferencesModule userPreferencesModule,
+            StructuredImageTranslationAdapter structuredAdapter) {
+        this(languageDetectionService, translationAdapter, translationRecordRepository,
+                userPreferencesModule, structuredAdapter, new TargetLocalePolicy());
     }
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -47,12 +58,14 @@ public class TranslationWorkflowModule {
             CachedTranslationAdapter translationAdapter,
             TranslationRecordRepository translationRecordRepository,
             UserPreferencesModule userPreferencesModule,
-            StructuredImageTranslationAdapter structuredAdapter) {
+            StructuredImageTranslationAdapter structuredAdapter,
+            TargetLocalePolicy localePolicy) {
         this.languageDetectionService = languageDetectionService;
         this.translationAdapter = translationAdapter;
         this.translationRecordRepository = translationRecordRepository;
         this.userPreferencesModule = userPreferencesModule;
         this.structuredAdapter = structuredAdapter;
+        this.localePolicy = localePolicy;
     }
 
     public TranslationWorkflowOutcome execute(TranslationWorkflowRequest request) {
@@ -93,6 +106,21 @@ public class TranslationWorkflowModule {
             AiExecutionOutcome providerOutcome = request.requestedStylePresetId() == null
                     ? translationAdapter.translate(preferences, request.sourceText(), targetLanguage)
                     : translationAdapter.translate(preferences, request.sourceText(), targetLanguage, style);
+            if (providerOutcome instanceof AiExecutionOutcome.Success success
+                    && localePolicy != null && localePolicy.needsValidation(targetLanguage)
+                    && !localePolicy.accepts(success.result().text(), targetLanguage)) {
+                providerOutcome = request.requestedStylePresetId() == null
+                        ? translationAdapter.translate(preferences, request.sourceText(), targetLanguage)
+                        : translationAdapter.translate(preferences, request.sourceText(), targetLanguage, style);
+            }
+            if (providerOutcome instanceof AiExecutionOutcome.Success success
+                    && localePolicy != null && localePolicy.needsValidation(targetLanguage)
+                    && !localePolicy.accepts(success.result().text(), targetLanguage)) {
+                return new TranslationWorkflowOutcome.Failure(new com.linetranslate.bot.service.ai.AiExecutionFailure(
+                        com.linetranslate.bot.service.ai.AiProviderException.Outcome.MALFORMED_RESPONSE,
+                        success.result().providerName(), success.result().modelName(),
+                        "TARGET_LOCALE_MISMATCH", "locale-validation", -1, success.result().attempts()));
+            }
             if (providerOutcome instanceof AiExecutionOutcome.Failure failure) {
                 return new TranslationWorkflowOutcome.Failure(failure.failure());
             }

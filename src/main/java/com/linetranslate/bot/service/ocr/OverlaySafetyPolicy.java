@@ -29,11 +29,19 @@ public class OverlaySafetyPolicy {
         List<OverlayRenderDecision> decisions = new ArrayList<>();
         for (ImageRegionOverlay candidate : requested) {
             OcrRegion region = candidate.region();
-            if (candidate.replacement().isBlank() || !region.validGeometry()
-                    || !region.confidenceKnown()
-                    || region.confidence() < properties.lowConfidenceThreshold()) {
+            if (candidate.replacement().isBlank()) {
                 skipped++;
-                decisions.add(preserved(region.id(), "invalid-candidate"));
+                decisions.add(preserved(region.id(), "mapping-empty"));
+                continue;
+            }
+            if (!region.validGeometry()) {
+                skipped++;
+                decisions.add(preserved(region.id(), "invalid-geometry"));
+                continue;
+            }
+            if (!region.confidenceKnown() || region.confidence() < properties.lowConfidenceThreshold()) {
+                skipped++;
+                decisions.add(preserved(region.id(), "untrusted-confidence"));
                 continue;
             }
             java.awt.Rectangle sourceBounds = maskWithoutPadding(region).getBounds();

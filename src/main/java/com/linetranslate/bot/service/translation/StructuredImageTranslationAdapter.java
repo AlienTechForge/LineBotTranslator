@@ -3,6 +3,7 @@ package com.linetranslate.bot.service.translation;
 import java.util.List;
 
 import org.springframework.stereotype.Component;
+import org.springframework.beans.factory.annotation.Autowired;
 
 import com.linetranslate.bot.service.ai.AiExecutionOutcome;
 import com.linetranslate.bot.service.ai.AiExecutionResult;
@@ -13,12 +14,22 @@ import com.linetranslate.bot.service.preference.UserPreferences;
 public class StructuredImageTranslationAdapter {
     private final CachedTranslationAdapter adapter;
     private final StructuredImageTranslationCodec codec;
+    private final TargetLocalePolicy localePolicy;
+
+    @Autowired
+    public StructuredImageTranslationAdapter(
+            CachedTranslationAdapter adapter,
+            StructuredImageTranslationCodec codec,
+            TargetLocalePolicy localePolicy) {
+        this.adapter = adapter;
+        this.codec = codec;
+        this.localePolicy = localePolicy;
+    }
 
     public StructuredImageTranslationAdapter(
             CachedTranslationAdapter adapter,
             StructuredImageTranslationCodec codec) {
-        this.adapter = adapter;
-        this.codec = codec;
+        this(adapter, codec, new TargetLocalePolicy());
     }
 
     public Result translate(
@@ -48,12 +59,15 @@ public class StructuredImageTranslationAdapter {
         AiExecutionOutcome outcome = adapter.translateValidated(
                 preferences, wire, targetLanguage, style,
                 StructuredImageTranslationCodec.SCHEMA_VERSION,
-                result -> isValid(result.text(), regions));
+                result -> isValid(result.text(), regions, targetLanguage));
         if (outcome instanceof AiExecutionOutcome.Failure failure) {
             throw new StructuredTranslationException("Structured provider execution failed: " + failure.failure().outcome());
         }
         AiExecutionResult raw = ((AiExecutionOutcome.Success) outcome).result();
         List<ImageRegionTranslation> translations = codec.decode(raw.text(), regions);
+        if (translations.stream().anyMatch(value -> !localePolicy.accepts(value.translatedText(), targetLanguage))) {
+            throw new StructuredTranslationException("Structured response violates target locale");
+        }
         String readable = regions.stream()
                 .sorted(java.util.Comparator.comparingInt(ImageRegionTranslationInput::readingOrder)
                         .thenComparing(ImageRegionTranslationInput::regionId))
@@ -68,10 +82,10 @@ public class StructuredImageTranslationAdapter {
         return new Result(normalized, translations);
     }
 
-    private boolean isValid(String response, List<ImageRegionTranslationInput> regions) {
+    private boolean isValid(String response, List<ImageRegionTranslationInput> regions, String targetLanguage) {
         try {
-            codec.decode(response, regions);
-            return true;
+            return codec.decode(response, regions).stream()
+                    .allMatch(value -> localePolicy.accepts(value.translatedText(), targetLanguage));
         } catch (StructuredTranslationException invalid) {
             return false;
         }

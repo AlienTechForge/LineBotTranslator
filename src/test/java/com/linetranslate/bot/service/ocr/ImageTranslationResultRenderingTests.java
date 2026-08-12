@@ -110,4 +110,28 @@ class ImageTranslationResultRenderingTests {
                 .contains("翻譯結果：\n你好");
         assertThat(response.translatedText()).isEqualTo("你好");
     }
+
+    @Test
+    void coverageDegradationIsDescribedAccuratelyWithoutCallingItLowConfidence() {
+        ImageTranslationPipeline pipeline = mock(ImageTranslationPipeline.class);
+        UserProfileRepository repository = mock(UserProfileRepository.class);
+        UserProfile profile = UserProfile.builder().userId("U-coverage").build();
+        when(repository.findByUserId("U-coverage")).thenReturn(Optional.of(profile));
+        when(repository.save(any(UserProfile.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        ImageTranslationContext context = new ImageTranslationContext(
+                new DownloadedImage(new byte[] {1}, "image/png"), ImageStorageResult.notStored(), "text", null);
+        TranslationWorkflowResult translation = new TranslationWorkflowResult(
+                "text", "ja", "zh-TW", new AiExecutionResult("文字", "openrouter", "model"),
+                20, TranslationRequestKind.IMAGE_OCR);
+        when(pipeline.execute(any())).thenReturn(new ImageTranslationOutcome.Success(
+                new ImageTranslationPipelineResult(context, translation, ImageStorageResult.notStored(), 0,
+                        ImageOverlayDisposition.SAFETY_DEGRADED,
+                        OverlayDegradationSummary.single(OverlayDegradationReason.COVERAGE, 3))));
+
+        String display = new ImageTranslationService(pipeline, repository)
+                .processImageTranslationResponse("U-coverage", "message").displayText();
+
+        assertThat(display).contains("3 個文字區域因覆蓋範圍過大而保留原文")
+                .doesNotContain("低信心區塊");
+    }
 }

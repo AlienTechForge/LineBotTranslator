@@ -17,6 +17,8 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.linetranslate.bot.config.OpenRouterConfig;
 import com.linetranslate.bot.service.translation.StructuredImageTranslationCodec;
+import com.linetranslate.bot.service.translation.TranslationPromptFactory;
+import com.linetranslate.bot.service.translation.TranslationStylePreset;
 
 import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
@@ -30,10 +32,6 @@ import okhttp3.ResponseBody;
 public class OpenRouterService implements AiProviderAdapter {
 
     private static final MediaType JSON = MediaType.get("application/json");
-    private static final String TRANSLATION_INSTRUCTIONS =
-            "你是專業翻譯助手。將使用者文字翻譯成 %s。只返回翻譯結果，不加解釋。";
-    private static final String OCR_INSTRUCTIONS =
-            "你是專業 OCR 助手。識別並提取圖片中所有文字。只返回文字內容，不加解釋。";
     private static final String GENERATION_INSTRUCTIONS =
             "你是專業語言助手。依照使用者提示簡潔回應。";
 
@@ -41,17 +39,28 @@ public class OpenRouterService implements AiProviderAdapter {
     private final OkHttpClient httpClient;
     private final ObjectMapper objectMapper;
     private final AiModelCatalog modelCatalog;
+    private final TranslationPromptFactory promptFactory;
 
     @Autowired
     public OpenRouterService(
             OpenRouterConfig config,
             @Qualifier("openRouterHttpClient") OkHttpClient httpClient,
             ObjectMapper objectMapper,
-            AiModelCatalog modelCatalog) {
+            AiModelCatalog modelCatalog,
+            TranslationPromptFactory promptFactory) {
         this.config = config;
         this.httpClient = httpClient;
         this.objectMapper = objectMapper;
         this.modelCatalog = modelCatalog;
+        this.promptFactory = promptFactory;
+    }
+
+    public OpenRouterService(
+            OpenRouterConfig config,
+            OkHttpClient httpClient,
+            ObjectMapper objectMapper,
+            AiModelCatalog modelCatalog) {
+        this(config, httpClient, objectMapper, modelCatalog, new TranslationPromptFactory());
     }
 
     @Override
@@ -149,17 +158,17 @@ public class OpenRouterService implements AiProviderAdapter {
 
     private String instructions(AiProviderRequest request) {
         return switch (request.operation()) {
-            case TRANSLATE_TEXT -> (isStructuredImageTranslation(request)
-                    ? "Translate each image region independently. Return only JSON matching the supplied schema. "
-                            + "Return every action=TRANSLATE regionId exactly once. Do not return action=PRESERVE regions; "
-                            + "never add, omit, or change protectedTokens."
-                    : TRANSLATION_INSTRUCTIONS.formatted(request.targetLanguage()))
-                    + "\nStyle preset: " + request.translationStyleId()
-                    + " (" + request.translationPromptVersion() + ").\n"
-                    + request.translationStyleInstruction();
-            case PROCESS_IMAGE -> OCR_INSTRUCTIONS;
+            case TRANSLATE_TEXT -> isStructuredImageTranslation(request)
+                    ? promptFactory.image(request.targetLanguage(), style(request))
+                    : promptFactory.text(request.targetLanguage(), style(request));
+            case PROCESS_IMAGE -> promptFactory.ocr();
             case GENERATE_TEXT -> GENERATION_INSTRUCTIONS;
         };
+    }
+
+    private static TranslationStylePreset style(AiProviderRequest request) {
+        return TranslationStylePreset.find(request.translationStyleId())
+                .orElse(TranslationStylePreset.defaultPreset());
     }
 
     private static boolean isStructuredImageTranslation(AiProviderRequest request) {
