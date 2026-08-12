@@ -170,8 +170,10 @@ public class GoogleVisionOcrService implements OcrService {
                     }
                 }
             }
-            log.info("識別到 {} 個結構化文本區域", regions.size());
-            return regionSegmenter.segment(regions);
+            List<OcrRegion> segmented = regionSegmenter.segment(regions);
+            log.info("結構化 OCR 完成: providerRegions={}, layoutRegions={}",
+                    regions.size(), segmented.size());
+            return segmented;
         } catch (IOException e) {
             log.error("OCR 識別失敗: failure={}", SafeLog.failure(e));
             throw new OcrProcessingException("Google Vision could not read image bytes", e);
