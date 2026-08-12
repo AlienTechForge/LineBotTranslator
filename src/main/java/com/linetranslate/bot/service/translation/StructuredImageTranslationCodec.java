@@ -90,9 +90,6 @@ public class StructuredImageTranslationCodec {
                 ImageRegionTranslationInput source = expected.stream()
                         .filter(ImageRegionTranslationInput::translatable)
                         .filter(value -> value.regionId().equals(id)).findFirst().orElseThrow();
-                if (text.codePointCount(0, text.length()) > source.layout().maxCharacters()) {
-                    throw new StructuredTranslationException("Translated text exceeds its layout budget");
-                }
                 int cursor = 0;
                 for (String token : source.protectedTokens()) {
                     int found = text.indexOf(token, cursor);

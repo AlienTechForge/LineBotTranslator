@@ -397,6 +397,74 @@ class PolygonOverlayRendererTests {
                 new OverlayRenderDecision("readable", OverlayRenderStatus.PRESERVED, "text-fit"));
     }
 
+    @Test
+    void compactEnglishLabelMayUseAReadableModerateScaleReduction() throws Exception {
+        BufferedImage original = new BufferedImage(150, 55, BufferedImage.TYPE_INT_RGB);
+        var graphics = original.createGraphics();
+        try {
+            graphics.setColor(Color.WHITE);
+            graphics.fillRect(0, 0, 150, 55);
+            graphics.setColor(Color.BLACK);
+            graphics.setFont(graphics.getFont().deriveFont(28f));
+            graphics.drawString("染髮", 12, 37);
+        } finally {
+            graphics.dispose();
+        }
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        ImageIO.write(original, "png", bytes);
+        ValidatedImage source = new ImageInputValidator(ImageTranslationProperties.defaults())
+                .validate(bytes.toByteArray(), "image/png");
+        OcrRegion region = new OcrRegion("moderate", "染髮", rectangle(8, 6, 125, 38),
+                List.of(new OcrWord("染髮", rectangle(10, 8, 50, 30), .99f, true)),
+                .99f, true, OcrBlockType.TEXT, List.of(), 0, "menu", true);
+        OverlaySafetyPlan plan = new OverlaySafetyPolicy().evaluate(
+                List.of(new ImageRegionOverlay(region, "Hair colour")), 150, 55,
+                new ImageTranslationProperties(1000, 100, 10000, .6f, true, .8, .9));
+
+        RenderedImage result = new ImageTranslationOverlayRenderer(
+                new ImageTranslationFontProvider(Set.of("dejavu sans"))).render(source, plan);
+
+        assertThat(result.renderedBlockCount()).isEqualTo(1);
+    }
+
+    @Test
+    void oneOverlongCompactCellDoesNotPreventOtherCellsFromRendering() throws Exception {
+        BufferedImage original = new BufferedImage(220, 100, BufferedImage.TYPE_INT_RGB);
+        var graphics = original.createGraphics();
+        try {
+            graphics.setColor(Color.WHITE);
+            graphics.fillRect(0, 0, 220, 100);
+            graphics.setColor(Color.BLACK);
+            graphics.setFont(graphics.getFont().deriveFont(26f));
+            graphics.drawString("染髮", 12, 36);
+            graphics.drawString("剪髮", 12, 82);
+        } finally {
+            graphics.dispose();
+        }
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        ImageIO.write(original, "png", bytes);
+        ValidatedImage source = new ImageInputValidator(ImageTranslationProperties.defaults())
+                .validate(bytes.toByteArray(), "image/png");
+        OcrRegion longCell = new OcrRegion("long", "染髮", rectangle(8, 5, 125, 38),
+                List.of(new OcrWord("染髮", rectangle(10, 8, 50, 30), .99f, true)),
+                .99f, true, OcrBlockType.TEXT, List.of(), 0, "menu", true);
+        OcrRegion shortCell = new OcrRegion("short", "剪髮", rectangle(8, 52, 125, 38),
+                List.of(new OcrWord("剪髮", rectangle(10, 55, 50, 30), .99f, true)),
+                .99f, true, OcrBlockType.TEXT, List.of(), 1, "menu", true);
+        OverlaySafetyPlan plan = new OverlaySafetyPolicy().evaluate(List.of(
+                new ImageRegionOverlay(longCell, "Extremely long translated hair package"),
+                new ImageRegionOverlay(shortCell, "Cut")), 220, 100,
+                new ImageTranslationProperties(1000, 100, 10000, .6f, true, .8, .9));
+
+        RenderedImage result = new ImageTranslationOverlayRenderer(
+                new ImageTranslationFontProvider(Set.of("dejavu sans"))).render(source, plan);
+
+        assertThat(result.renderedBlockCount()).isEqualTo(1);
+        assertThat(result.decisions()).contains(
+                new OverlayRenderDecision("long", OverlayRenderStatus.PRESERVED, "text-fit"),
+                new OverlayRenderDecision("short", OverlayRenderStatus.RENDERED, "rendered"));
+    }
+
     private static List<OcrPoint> rectangle(int x, int y, int width, int height) {
         return List.of(new OcrPoint(x, y), new OcrPoint(x + width, y),
                 new OcrPoint(x + width, y + height), new OcrPoint(x, y + height));

@@ -15,6 +15,7 @@ import java.io.InputStream;
 import java.awt.image.BufferedImage;
 import java.time.Instant;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutorService;
@@ -322,7 +323,7 @@ class ImageTranslationPipelineIntegrationTests {
                 messagingApiBlobClient,
                 minioStorageService,
                 new ImageInputValidator(limits),
-                new ImageTranslationOverlayRenderer(),
+                renderer(),
                 limits);
         when(minioStorageService.uploadImage(any(byte[].class), anyString()))
                 .thenReturn(ImageStorageResult.stored("https://storage.example/source.png"));
@@ -360,7 +361,7 @@ class ImageTranslationPipelineIntegrationTests {
         pipeline = new ImageTranslationPipeline(
                 ocrServiceProvider, workflowModule, aiProviderExecutionModule, userPreferencesModule,
                 messagingApiBlobClient, minioStorageService, new ImageInputValidator(limits),
-                new ImageTranslationOverlayRenderer(), limits);
+                renderer(), limits);
         when(minioStorageService.uploadImage(any(byte[].class), anyString()))
                 .thenReturn(ImageStorageResult.notStored());
         when(ocrService.recognizeRegions(any(InputStream.class))).thenReturn(List.of(
@@ -394,7 +395,7 @@ class ImageTranslationPipelineIntegrationTests {
         pipeline = new ImageTranslationPipeline(
                 ocrServiceProvider, workflowModule, aiProviderExecutionModule, userPreferencesModule,
                 messagingApiBlobClient, minioStorageService, new ImageInputValidator(limits),
-                new ImageTranslationOverlayRenderer(), limits);
+                renderer(), limits);
         when(minioStorageService.uploadImage(any(byte[].class), anyString()))
                 .thenReturn(ImageStorageResult.notStored());
         when(ocrService.recognizeRegions(any(InputStream.class)))
@@ -532,6 +533,11 @@ class ImageTranslationPipelineIntegrationTests {
                 new OcrPoint(x + width, y + height), new OcrPoint(x, y + height)),
                 List.of(), confidence, true, OcrBlockType.TEXT,
                 List.of(new OcrDetectedLanguage("en", .98f)), 0);
+    }
+
+    private static ImageTranslationOverlayRenderer renderer() {
+        return new ImageTranslationOverlayRenderer(
+                new ImageTranslationFontProvider(Set.of("dejavu sans")));
     }
 
     private ImageTranslationPipelineResult successResult(ImageTranslationOutcome outcome) {

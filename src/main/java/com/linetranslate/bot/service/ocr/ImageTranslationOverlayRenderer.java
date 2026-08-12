@@ -168,7 +168,7 @@ public class ImageTranslationOverlayRenderer {
             boolean compactLabel) {
         int maximum = Math.max(MIN_FONT_SIZE, Math.min(maximumFontSize, bounds.height() - 2));
         int minimum = compactLabel
-                ? Math.min(maximum, Math.max(MIN_FONT_SIZE, (int) Math.ceil(maximumFontSize * .72)))
+                ? Math.min(maximum, Math.max(MIN_FONT_SIZE, (int) Math.ceil(maximumFontSize * .55)))
                 : MIN_FONT_SIZE;
         for (int size = maximum; size >= minimum; size--) {
             Font font = baseFont.deriveFont((float) size);
