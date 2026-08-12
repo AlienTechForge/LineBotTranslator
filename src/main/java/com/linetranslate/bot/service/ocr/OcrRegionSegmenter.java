@@ -61,6 +61,12 @@ public class OcrRegionSegmenter {
         if (lines.size() < 2 && !structuredSingleLine) return List.of();
         long columnarLines = segmentsByLine.stream().filter(segments -> segments.size() > 1).count();
         if (columnarLines == 0) return List.of();
+        long structuredRows = lines.stream().filter(OcrRegionSegmenter::isStructuredPriceLine).count();
+        boolean hasStructuredRows = structuredRows >= Math.max(1, (lines.size() + 1) / 2);
+        if (!structuredSingleLine && !hasStructuredRows
+                && !hasRepeatedColumnStructure(segmentsByLine, lines)) {
+            return List.of();
+        }
         int childCount = segmentsByLine.stream().mapToInt(List::size).sum();
         if (childCount < 2 || childCount > MAX_DENSE_CHILDREN) return List.of();
 
@@ -90,6 +96,31 @@ public class OcrRegionSegmenter {
             }
         }
         return List.copyOf(children);
+    }
+
+    private static boolean hasRepeatedColumnStructure(
+            List<List<WordSegment>> segmentsByLine, List<VisualLine> lines) {
+        for (int left = 0; left < segmentsByLine.size(); left++) {
+            List<WordSegment> first = segmentsByLine.get(left);
+            if (first.size() < 2) continue;
+            for (int right = left + 1; right < segmentsByLine.size(); right++) {
+                List<WordSegment> second = segmentsByLine.get(right);
+                if (first.size() != second.size()) continue;
+                int height = Math.min(lines.get(left).bounds().height, lines.get(right).bounds().height);
+                int tolerance = Math.max(8, (int) Math.round(height * .50));
+                boolean aligned = true;
+                for (int column = 0; column < first.size(); column++) {
+                    int firstCenter = midpoint(first.get(column).left(), first.get(column).right());
+                    int secondCenter = midpoint(second.get(column).left(), second.get(column).right());
+                    if (Math.abs(firstCenter - secondCenter) > tolerance) {
+                        aligned = false;
+                        break;
+                    }
+                }
+                if (aligned) return true;
+            }
+        }
+        return false;
     }
 
     private static boolean isStructuredPriceLine(VisualLine line) {

@@ -14,7 +14,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 
 @Component
 public class StructuredImageTranslationCodec {
-    public static final String SCHEMA_VERSION = "image-regions-v2";
+    public static final String SCHEMA_VERSION = "image-regions-v3";
     private static final int MAX_REGION_TEXT = 4_000;
     private final ObjectMapper mapper;
 
@@ -90,6 +90,9 @@ public class StructuredImageTranslationCodec {
                 ImageRegionTranslationInput source = expected.stream()
                         .filter(ImageRegionTranslationInput::translatable)
                         .filter(value -> value.regionId().equals(id)).findFirst().orElseThrow();
+                if (text.codePointCount(0, text.length()) > source.layout().maxCharacters()) {
+                    throw new StructuredTranslationException("Translated text exceeds its layout budget");
+                }
                 int cursor = 0;
                 for (String token : source.protectedTokens()) {
                     int found = text.indexOf(token, cursor);

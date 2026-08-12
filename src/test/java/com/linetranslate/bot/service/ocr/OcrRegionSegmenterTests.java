@@ -170,6 +170,44 @@ class OcrRegionSegmenterTests {
     }
 
     @Test
+    void keepsRaggedCjkArticleLinesAsOneSemanticRegion() {
+        OcrRegion prose = new OcrRegion("jp-article",
+                "自分に対する抗議集会を受けて頼清徳総統は言い返した民進党が国民党を批判する",
+                rectangle(10, 10, 570, 100),
+                List.of(
+                        word("自分に対する抗議集会を受けて", 10, 10, 185, 24),
+                        word("頼清徳総統は", 232, 10, 125, 24),
+                        word("言い返した", 405, 10, 105, 24),
+                        word("民進党が国民党を", 10, 45, 150, 24),
+                        word("批判するとき", 199, 45, 115, 24),
+                        word("最もよく使う", 371, 45, 120, 24),
+                        word("中国共産党の仲間だ", 10, 80, 175, 24),
+                        word("というものだ", 244, 80, 105, 24),
+                        word("異なる意見を攻撃する", 401, 80, 165, 24)),
+                .98f, true, OcrBlockType.TEXT,
+                List.of(new OcrDetectedLanguage("ja", .98f)), 0);
+
+        assertThat(new OcrRegionSegmenter().segment(List.of(prose))).containsExactly(prose);
+    }
+
+    @Test
+    void oneDateInsideProseDoesNotTurnTheParagraphIntoATable() {
+        OcrRegion prose = new OcrRegion("dated-prose", "Report published 2026 followed by ordinary prose",
+                rectangle(10, 10, 400, 90),
+                List.of(
+                        word("Report", 10, 10, 70, 22), word("published", 105, 10, 85, 22),
+                        word("2026", 300, 10, 50, 22),
+                        word("followed", 10, 42, 75, 22), word("by", 115, 42, 25, 22),
+                        word("ordinary", 185, 42, 80, 22),
+                        word("prose", 10, 74, 55, 16), word("continues", 110, 74, 75, 16),
+                        word("here", 240, 74, 45, 16)),
+                .98f, true, OcrBlockType.TEXT,
+                List.of(new OcrDetectedLanguage("en", .98f)), 0);
+
+        assertThat(new OcrRegionSegmenter().segment(List.of(prose))).containsExactly(prose);
+    }
+
+    @Test
     void usesParagraphConfidenceWhenWordConfidenceIsUnavailable() {
         OcrRegion menu = new OcrRegion("fallback", "雞飯 110 魚飯 90", rectangle(0, 0, 180, 50),
                 List.of(

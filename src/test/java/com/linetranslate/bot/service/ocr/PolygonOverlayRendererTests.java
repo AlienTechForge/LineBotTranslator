@@ -106,6 +106,49 @@ class PolygonOverlayRendererTests {
     }
 
     @Test
+    void sourceGlyphsAreErasedWithTheirOwnLocalBackgroundColours() throws Exception {
+        BufferedImage original = new BufferedImage(220, 70, BufferedImage.TYPE_INT_RGB);
+        var graphics = original.createGraphics();
+        try {
+            graphics.setColor(new Color(30, 30, 30));
+            graphics.fillRect(0, 0, 110, 70);
+            graphics.setColor(new Color(82, 82, 82));
+            graphics.fillRect(110, 0, 110, 70);
+            graphics.setColor(Color.WHITE);
+            graphics.fillRect(65, 24, 22, 24);
+            graphics.fillRect(155, 24, 22, 24);
+        } finally {
+            graphics.dispose();
+        }
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        ImageIO.write(original, "png", bytes);
+        ValidatedImage source = new ImageInputValidator(ImageTranslationProperties.defaults())
+                .validate(bytes.toByteArray(), "image/png");
+        OcrWord word = new OcrWord("AB", rectangle(65, 24, 112, 24), .99f, true, List.of(
+                new OcrSymbol("A", rectangle(65, 24, 22, 24), .99f, true),
+                new OcrSymbol("B", rectangle(155, 24, 22, 24), .99f, true)));
+        OcrRegion region = new OcrRegion("local-background", "AB", rectangle(10, 10, 200, 50),
+                List.of(word), .99f, true, OcrBlockType.TEXT, List.of(), 0);
+        OverlaySafetyPlan plan = new OverlaySafetyPolicy().evaluate(
+                List.of(new ImageRegionOverlay(region, "X")), 220, 70,
+                new ImageTranslationProperties(1000, 100, 10000, .6f, true, .8, .9));
+        List<java.awt.geom.Area> cleanupAreas = OverlaySafetyPolicy.sourceCleanupAreas(region, 220, 70);
+        assertThat(cleanupAreas).hasSize(2);
+        assertThat(ImageTranslationStyleEstimator.localBackground(
+                original, cleanupAreas.get(0), Color.PINK)).isEqualTo(new Color(30, 30, 30));
+        assertThat(ImageTranslationStyleEstimator.localBackground(
+                original, cleanupAreas.get(1), Color.PINK)).isEqualTo(new Color(82, 82, 82));
+
+        RenderedImage rendered = new ImageTranslationOverlayRenderer(
+                new ImageTranslationFontProvider(Set.of("dejavu sans"))).render(source, plan);
+        assertThat(rendered.renderedBlockCount()).as("decisions=%s", rendered.decisions()).isEqualTo(1);
+        BufferedImage output = ImageIO.read(new ByteArrayInputStream(rendered.pngBytes()));
+
+        assertThat(new Color(output.getRGB(76, 36))).isEqualTo(new Color(30, 30, 30));
+        assertThat(new Color(output.getRGB(166, 36))).isEqualTo(new Color(82, 82, 82));
+    }
+
+    @Test
     void translatedTextUsesWholeParagraphInsteadOfSparseSourceWordMasks() throws Exception {
         BufferedImage original = new BufferedImage(240, 100, BufferedImage.TYPE_INT_RGB);
         var graphics = original.createGraphics();
@@ -138,7 +181,8 @@ class PolygonOverlayRendererTests {
                 new ImageTranslationProperties(1000, 100, 10000, .6f, true, .7, .8));
 
         BufferedImage output = ImageIO.read(new ByteArrayInputStream(
-                new ImageTranslationOverlayRenderer().render(source, plan).pngBytes()));
+                new ImageTranslationOverlayRenderer(new ImageTranslationFontProvider(
+                        Set.of("dejavu sans"))).render(source, plan).pngBytes()));
 
         int changedInGap = 0;
         for (int y = 15; y < 75; y++) for (int x = 80; x < 160; x++) {
@@ -177,7 +221,8 @@ class PolygonOverlayRendererTests {
                 new ImageTranslationProperties(1000, 100, 10000, .6f, true, .6, .7));
 
         BufferedImage output = ImageIO.read(new ByteArrayInputStream(
-                new ImageTranslationOverlayRenderer().render(source, plan).pngBytes()));
+                new ImageTranslationOverlayRenderer(new ImageTranslationFontProvider(
+                        Set.of("dejavu sans"))).render(source, plan).pngBytes()));
 
         int matchingPixels = 0;
         for (int y = 14; y < 62; y++) for (int x = 16; x < 130; x++) {
@@ -218,7 +263,8 @@ class PolygonOverlayRendererTests {
                 new ImageTranslationProperties(1000, 100, 10000, .6f, true, .6, .7));
 
         BufferedImage output = ImageIO.read(new ByteArrayInputStream(
-                new ImageTranslationOverlayRenderer().render(source, plan).pngBytes()));
+                new ImageTranslationOverlayRenderer(new ImageTranslationFontProvider(
+                        Set.of("dejavu sans"))).render(source, plan).pngBytes()));
 
         assertThat(output.getRGB(91, 32)).isEqualTo(Color.WHITE.getRGB());
         assertThat(output.getRGB(91, 33)).isEqualTo(Color.WHITE.getRGB());
@@ -240,7 +286,8 @@ class PolygonOverlayRendererTests {
         OverlaySafetyPlan plan = new OverlaySafetyPolicy().evaluate(
                 List.of(new ImageRegionOverlay(rotated, "Translated cheese")), 180, 140,
                 new ImageTranslationProperties(10_485_760, 4096, 16_000_000, .6f, true, .2, .35));
-        RenderedImage rendered = new ImageTranslationOverlayRenderer().render(source, plan);
+        RenderedImage rendered = new ImageTranslationOverlayRenderer(
+                new ImageTranslationFontProvider(Set.of("dejavu sans"))).render(source, plan);
         BufferedImage output = ImageIO.read(new ByteArrayInputStream(rendered.pngBytes()));
         java.awt.geom.Area mask = OverlaySafetyPolicy.mask(rotated);
         int changedInside = 0;
@@ -271,7 +318,7 @@ class PolygonOverlayRendererTests {
                 List.of(new ImageRegionOverlay(region, "中文")), 100, 60,
                 new ImageTranslationProperties(1000, 100, 10000, .6f, true, .5, .6));
         ImageTranslationOverlayRenderer renderer = new ImageTranslationOverlayRenderer(
-                new ImageTranslationFontProvider(Set.of("dejavu sans")));
+                new ImageTranslationFontProvider(Set.of()));
 
         RenderedImage result = renderer.render(source, plan);
         BufferedImage output = ImageIO.read(new ByteArrayInputStream(result.pngBytes()));
@@ -308,13 +355,51 @@ class PolygonOverlayRendererTests {
                 List.of(new ImageRegionOverlay(region, "Sunday with very long overflow")), 90, 36,
                 new ImageTranslationProperties(1000, 100, 10000, .6f, true, .5, .6));
 
-        RenderedImage result = new ImageTranslationOverlayRenderer().render(source, plan);
+        RenderedImage result = new ImageTranslationOverlayRenderer(
+                new ImageTranslationFontProvider(Set.of("dejavu sans"))).render(source, plan);
         BufferedImage output = ImageIO.read(new ByteArrayInputStream(result.pngBytes()));
 
         assertThat(result.renderedBlockCount()).isZero();
         assertThat(result.degradation().count(OverlayDegradationReason.TEXT_FIT)).isEqualTo(1);
         for (int y = 0; y < 36; y++) for (int x = 0; x < 90; x++)
             assertThat(output.getRGB(x, y)).isEqualTo(original.getRGB(x, y));
+    }
+
+    @Test
+    void compactLabelIsNotShrunkFarBelowItsSourceTextSize() throws Exception {
+        BufferedImage original = new BufferedImage(150, 55, BufferedImage.TYPE_INT_RGB);
+        var graphics = original.createGraphics();
+        try {
+            graphics.setColor(Color.WHITE);
+            graphics.fillRect(0, 0, 150, 55);
+            graphics.setColor(Color.BLACK);
+            graphics.setFont(graphics.getFont().deriveFont(28f));
+            graphics.drawString("染髮", 12, 37);
+        } finally {
+            graphics.dispose();
+        }
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        ImageIO.write(original, "png", bytes);
+        ValidatedImage source = new ImageInputValidator(ImageTranslationProperties.defaults())
+                .validate(bytes.toByteArray(), "image/png");
+        OcrRegion region = new OcrRegion("readable", "染髮", rectangle(8, 6, 125, 38),
+                List.of(new OcrWord("染髮", rectangle(10, 8, 50, 30), .99f, true)),
+                .99f, true, OcrBlockType.TEXT, List.of(), 0, "menu", true);
+        OverlaySafetyPlan plan = new OverlaySafetyPolicy().evaluate(
+                List.of(new ImageRegionOverlay(region, "Long menu label")), 150, 55,
+                new ImageTranslationProperties(1000, 100, 10000, .6f, true, .8, .9));
+
+        RenderedImage result = new ImageTranslationOverlayRenderer(
+                new ImageTranslationFontProvider(Set.of("dejavu sans"))).render(source, plan);
+
+        assertThat(result.renderedBlockCount()).isZero();
+        assertThat(result.decisions()).containsExactly(
+                new OverlayRenderDecision("readable", OverlayRenderStatus.PRESERVED, "text-fit"));
+    }
+
+    private static List<OcrPoint> rectangle(int x, int y, int width, int height) {
+        return List.of(new OcrPoint(x, y), new OcrPoint(x + width, y),
+                new OcrPoint(x + width, y + height), new OcrPoint(x, y + height));
     }
 
     @Test

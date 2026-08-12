@@ -33,6 +33,10 @@ final class ImageTranslationStyleEstimator {
         return new ImageTranslationTextStyle(background, text, fontStyle, sourceFontSize(region, bounds));
     }
 
+    static Color localBackground(BufferedImage image, Area cleanupArea, Color fallback) {
+        return dominant(borderPixels(image, cleanupArea, cleanupArea.getBounds()), fallback);
+    }
+
     private static List<Color> borderPixels(BufferedImage image, Area regionArea, Rectangle bounds) {
         List<Color> pixels = new ArrayList<>();
         int left = Math.max(0, bounds.x - SAMPLE_MARGIN);

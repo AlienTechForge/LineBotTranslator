@@ -75,8 +75,8 @@ public class ImageTranslationOverlayRenderer {
                 }
                 Shape oldClip = graphics.getClip();
                 AffineTransform oldTransform = graphics.getTransform();
-                Area modifiedMask = new Area(layoutMask);
-                modifiedMask.add(new Area(cleanupMask));
+                Area modifiedMask = OverlaySafetyPolicy.mask(
+                        overlay.region(), output.getWidth(), output.getHeight());
                 boolean painted = false;
                 try {
                     List<OcrPoint> polygon = overlay.region().polygon();
@@ -95,14 +95,18 @@ public class ImageTranslationOverlayRenderer {
                             Math.max(2, localWidthPixels - inset * 2),
                             Math.max(2, localHeightPixels - inset * 2));
                     Layout layout = fitHorizontal(graphics, overlay.replacement(), localBounds,
-                            supportedFont, style.maximumFontSize());
+                            supportedFont, style.maximumFontSize(), overlay.region().compactLabel());
                     if (!layout.fits()) {
                         decisions.add(new OverlayRenderDecision(
                                 overlay.region().id(), OverlayRenderStatus.PRESERVED, "text-fit"));
                         continue;
                     }
-                    graphics.setColor(style.background());
-                    graphics.fill(cleanupMask);
+                    for (Area cleanupArea : OverlaySafetyPolicy.sourceCleanupAreas(
+                            overlay.region(), output.getWidth(), output.getHeight())) {
+                        graphics.setColor(ImageTranslationStyleEstimator.localBackground(
+                                pristine, cleanupArea, style.background()));
+                        graphics.fill(cleanupArea);
+                    }
                     graphics.clip(layoutMask);
                     graphics.setColor(style.foreground());
                     graphics.translate(origin.x(), origin.y());
@@ -126,7 +130,7 @@ public class ImageTranslationOverlayRenderer {
         return new RenderedImage(encode(output), rendered, plan.skipped() + fontSkipped, decisions);
     }
 
-    /** Restores only the rasterization fringe near one overlay, never the whole image. */
+    /** Restores the one-pixel rasterization fringe outside the approved overlay geometry. */
     private static void restoreOutsideMask(BufferedImage output, BufferedImage pristine, Area mask) {
         java.awt.Rectangle bounds = mask.getBounds();
         bounds.grow(1, 1);
@@ -136,9 +140,7 @@ public class ImageTranslationOverlayRenderer {
         int bottom = Math.min(output.getHeight(), bounds.y + bounds.height);
         for (int y = top; y < bottom; y++) {
             for (int x = left; x < right; x++) {
-                if (!mask.contains(x + .5, y + .5)) {
-                    output.setRGB(x, y, pristine.getRGB(x, y));
-                }
+                if (!mask.contains(x + .5, y + .5)) output.setRGB(x, y, pristine.getRGB(x, y));
             }
         }
     }
@@ -162,22 +164,26 @@ public class ImageTranslationOverlayRenderer {
             String text,
             Bounds bounds,
             Font baseFont,
-            int maximumFontSize) {
+            int maximumFontSize,
+            boolean compactLabel) {
         int maximum = Math.max(MIN_FONT_SIZE, Math.min(maximumFontSize, bounds.height() - 2));
-        for (int size = maximum; size >= MIN_FONT_SIZE; size--) {
+        int minimum = compactLabel
+                ? Math.min(maximum, Math.max(MIN_FONT_SIZE, (int) Math.ceil(maximumFontSize * .72)))
+                : MIN_FONT_SIZE;
+        for (int size = maximum; size >= minimum; size--) {
             Font font = baseFont.deriveFont((float) size);
             graphics.setFont(font);
             FontMetrics metrics = graphics.getFontMetrics();
             List<String> lines = wrap(text, metrics, Math.max(1, bounds.width() - 2));
             if ((long) lines.size() * metrics.getHeight() <= bounds.height()) return new Layout(font, lines, true);
         }
-        Font font = baseFont.deriveFont((float) MIN_FONT_SIZE);
+        Font font = baseFont.deriveFont((float) minimum);
         graphics.setFont(font);
         FontMetrics metrics = graphics.getFontMetrics();
         int availableWidth = Math.max(1, bounds.width() - 2);
         List<String> lines = wrap(text, metrics, availableWidth);
         int allowed = Math.max(1, bounds.height() / Math.max(1, metrics.getHeight()));
-        return new Layout(font, lines, lines.size() <= allowed);
+        return new Layout(font, lines, false);
     }
 
     public RenderedImage render(

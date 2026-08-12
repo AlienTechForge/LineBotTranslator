@@ -9,7 +9,7 @@
     {"id":"vi-body","text":"Nhiệt độ cao có thể gây nguy hiểm","polygon":[[20,100],[360,100],[360,145],[20,145]],"confidence":0.94,"language":"vi","decision":"TRANSLATE"}
   ],
   "structuredTranslationResponse": {
-    "schemaVersion":"image-regions-v2",
+    "schemaVersion":"image-regions-v3",
     "regions":[
       {"regionId":"vi-body","translatedText":"高溫可能造成危險"},
       {"regionId":"vi-title","translatedText":"保護自己免受熱傷害"}

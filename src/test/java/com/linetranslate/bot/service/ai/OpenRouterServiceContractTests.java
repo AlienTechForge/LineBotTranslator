@@ -109,11 +109,11 @@ class OpenRouterServiceContractTests {
             return call;
         });
         when(call.execute()).thenReturn(response(200, """
-                {"model":"openai/gpt-4o-mini","choices":[{"message":{"content":"{\\\"schemaVersion\\\":\\\"image-regions-v2\\\",\\\"regions\\\":[{\\\"regionId\\\":\\\"r1\\\",\\\"translatedText\\\":\\\"你好\\\"}]}"}}]}
+                {"model":"openai/gpt-4o-mini","choices":[{"message":{"content":"{\\\"schemaVersion\\\":\\\"image-regions-v3\\\",\\\"regions\\\":[{\\\"regionId\\\":\\\"r1\\\",\\\"translatedText\\\":\\\"你好\\\"}]}"}}]}
                 """));
         OpenRouterService adapter = new OpenRouterService(
                 config, httpClient, objectMapper, catalog("openai/gpt-5.5", Set.of("text")));
-        String wire = "{\"schemaVersion\":\"image-regions-v2\",\"targetLocale\":\"zh-TW\",\"regions\":[]}";
+        String wire = "{\"schemaVersion\":\"image-regions-v3\",\"targetLocale\":\"zh-TW\",\"regions\":[]}";
 
         adapter.execute(AiProviderRequest.translate("openai/gpt-5.5", wire, "zh-TW"));
 

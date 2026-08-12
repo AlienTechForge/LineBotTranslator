@@ -419,14 +419,30 @@ public class ImageTranslationPipeline {
                 : null;
     }
 
-    private static ImageRegionLayout layout(OcrRegion region) {
+    static ImageRegionLayout layout(OcrRegion region) {
         java.awt.Rectangle bounds = OverlaySafetyPolicy.polygon(region.polygon()).getBounds();
-        int maxLines = region.compactLabel() ? 1 : Math.max(1, bounds.height / 14);
-        int maxCharacters = region.compactLabel()
-                ? Math.max(2, region.text().codePointCount(0, region.text().length()) * 3)
-                : Math.max(8, bounds.width / 6 * maxLines);
+        OcrPoint origin = region.polygon().get(0);
+        OcrPoint edge = region.polygon().get(1);
+        OcrPoint side = region.polygon().get(region.polygon().size() - 1);
+        int localWidth = Math.max(1, (int) Math.round(Math.hypot(
+                edge.x() - origin.x(), edge.y() - origin.y())));
+        int localHeight = Math.max(1, (int) Math.round(Math.hypot(
+                side.x() - origin.x(), side.y() - origin.y())));
+        List<Integer> wordHeights = region.words().stream()
+                .map(OcrWord::polygon).filter(points -> points.size() >= 4)
+                .map(points -> (int) Math.round(Math.hypot(
+                        points.get(points.size() - 1).x() - points.get(0).x(),
+                        points.get(points.size() - 1).y() - points.get(0).y())))
+                .filter(value -> value > 1).sorted().toList();
+        int sourceHeight = wordHeights.isEmpty()
+                ? Math.min(localHeight, 24) : wordHeights.get(wordHeights.size() / 2);
+        int maxLines = region.compactLabel() ? 1
+                : Math.max(1, (int) Math.floor((double) localHeight / Math.max(10, sourceHeight * 1.15)));
+        int charactersPerLine = Math.max(2,
+                (int) Math.floor(localWidth / Math.max(4d, sourceHeight * .50d)));
+        int maxCharacters = Math.max(2, charactersPerLine * maxLines);
         return new ImageRegionLayout(region.groupId(), bounds.x, bounds.y,
-                bounds.width, bounds.height, maxLines, maxCharacters, region.compactLabel());
+                localWidth, localHeight, maxLines, maxCharacters, region.compactLabel());
     }
 
     private record OverlayOutcome(
