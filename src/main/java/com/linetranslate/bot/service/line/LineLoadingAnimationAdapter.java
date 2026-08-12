@@ -5,6 +5,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import jakarta.annotation.PreDestroy;
@@ -31,6 +32,7 @@ public class LineLoadingAnimationAdapter implements LineLoadingFeedback {
     private final ScheduledExecutorService scheduler;
     private final boolean ownsScheduler;
 
+    @Autowired
     public LineLoadingAnimationAdapter(MessagingApiClient messagingApiClient) {
         this(messagingApiClient, Executors.newSingleThreadScheduledExecutor(runnable -> {
             Thread thread = new Thread(runnable, "line-loading-renewal");
