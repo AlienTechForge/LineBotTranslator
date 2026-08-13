@@ -416,6 +416,33 @@ class PolygonOverlayRendererTests {
                 .isGreaterThan(.2);
     }
 
+    @Test
+    void residualInkRatioDistinguishesACleanEraseFromSurvivingSourceGlyphs() {
+        Color paper = Color.WHITE;
+        Color ink = new Color(20, 20, 20);
+        BufferedImage erased = whiteImage(60, 40);
+        java.awt.geom.Area cleanup = new java.awt.geom.Area(
+                OverlaySafetyPolicy.polygon(rectangle(10, 10, 40, 20)));
+
+        assertThat(ImageTranslationOverlayRenderer.residualInkRatio(
+                erased, List.of(cleanup), ink, paper))
+                .as("fully erased area").isZero();
+
+        BufferedImage partly = whiteImage(60, 40);
+        var graphics = partly.createGraphics();
+        try {
+            graphics.setColor(ink);
+            graphics.fillRect(10, 10, 20, 20);
+        } finally {
+            graphics.dispose();
+        }
+
+        assertThat(ImageTranslationOverlayRenderer.residualInkRatio(
+                partly, List.of(cleanup), ink, paper))
+                .as("half the cleanup area still holds source ink")
+                .isBetween(.45, .55);
+    }
+
     private static OcrRegion compactCell(
             String id, String text, int x, int y, int width, int height) {
         List<OcrPoint> polygon = rectangle(x, y, width, height);
