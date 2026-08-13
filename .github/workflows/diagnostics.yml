@@ -1,0 +1,69 @@
+name: Diagnostics
+
+# Read-only access to the running container's application logs. The logs are already bound by
+# docs/logging-data-policy.md and enforced by ProductionLoggingPolicyTests, so they carry no
+# credentials, user content, OCR results, signed URLs or third-party payloads.
+
+on:
+  workflow_dispatch:
+    inputs:
+      pattern:
+        description: 'Extended regex matched against application log lines'
+        required: true
+        default: 'Image overlay outcome'
+      since:
+        description: 'How far back to read (docker logs --since), e.g. 30m, 2h, 1d'
+        required: false
+        default: '2h'
+      lines:
+        description: 'Maximum matching lines to print (hard capped at 200)'
+        required: false
+        default: '40'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linebot-translator-diagnostics
+  cancel-in-progress: false
+
+jobs:
+  logs:
+    name: Application logs
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 5
+    steps:
+      - name: Print matching application log lines
+        env:
+          CONTAINER_NAME: ${{ vars.CONTAINER_NAME || 'linebot-translator' }}
+          PATTERN: ${{ inputs.pattern }}
+          SINCE: ${{ inputs.since }}
+          LINES: ${{ inputs.lines }}
+        run: |
+          set -euo pipefail
+
+          limit="$(printf '%s' "$LINES" | tr -cd '0-9')"
+          [ -n "$limit" ] || limit=40
+          [ "$limit" -le 200 ] || limit=200
+
+          since="$(printf '%s' "$SINCE" | tr -cd '0-9smhd')"
+          [ -n "$since" ] || since=2h
+
+          if ! docker inspect --format '{{.State.Running}}' "$CONTAINER_NAME" >/dev/null 2>&1; then
+            echo "Container $CONTAINER_NAME is not present on this runner."
+            exit 1
+          fi
+
+          echo "container=$CONTAINER_NAME since=$since limit=$limit"
+          echo "pattern=$PATTERN"
+          echo '---'
+
+          matched="$(docker logs --since "$since" "$CONTAINER_NAME" 2>&1 \
+            | grep -E -- "$PATTERN" \
+            | tail -n "$limit" || true)"
+
+          if [ -z "$matched" ]; then
+            echo 'No matching log lines in the requested window.'
+          else
+            printf '%s\n' "$matched"
+          fi
