@@ -35,6 +35,8 @@ public class ImageTranslationOverlayRenderer {
      * at or above this size or keeps its source text.
      */
     private static final int READABLE_LABEL_FLOOR = 12;
+    /** Relative opposite-edge mismatch above which placement error is worth reporting. */
+    private static final double SKEW_REPORT_THRESHOLD = .02;
     private final ImageTranslationFontProvider fontProvider;
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -113,6 +115,7 @@ public class ImageTranslationOverlayRenderer {
                             layout.lines().size(), overlay.region().compactLabel());
                     continue;
                 }
+                logPolygonSkew(overlay.region(), localWidthPixels, localHeightPixels);
                 prepared.add(new PreparedOverlay(overlay, style, layoutMask, modifiedMask,
                         OverlaySafetyPolicy.sourceCleanupAreas(
                                 overlay.region(), output.getWidth(), output.getHeight()),
@@ -255,6 +258,44 @@ public class ImageTranslationOverlayRenderer {
         graphics.setFont(font);
         List<String> lines = wrap(text, graphics.getFontMetrics(), Math.max(1, bounds.width() - 2));
         return new Layout(font, lines, false);
+    }
+
+    /**
+     * Overlays are placed with translate + rotate, which can only reproduce a parallelogram. A
+     * perspective view of a plane yields a trapezoid, and the fourth polygon point is never read,
+     * so any deviation from a parallelogram is placement error. Opposite edges of a parallelogram
+     * are equal vectors, so their difference relative to edge length measures that deviation.
+     */
+    static double polygonSkew(List<OcrPoint> polygon) {
+        if (polygon == null || polygon.size() != 4) return 0d;
+        OcrPoint p0 = polygon.get(0);
+        OcrPoint p1 = polygon.get(1);
+        OcrPoint p2 = polygon.get(2);
+        OcrPoint p3 = polygon.get(3);
+        double topX = p1.x() - p0.x();
+        double topY = p1.y() - p0.y();
+        double bottomX = p2.x() - p3.x();
+        double bottomY = p2.y() - p3.y();
+        double sideX = p3.x() - p0.x();
+        double sideY = p3.y() - p0.y();
+        double oppositeX = p2.x() - p1.x();
+        double oppositeY = p2.y() - p1.y();
+        double topSkew = Math.hypot(topX - bottomX, topY - bottomY)
+                / Math.max(1d, Math.hypot(topX, topY));
+        double sideSkew = Math.hypot(sideX - oppositeX, sideY - oppositeY)
+                / Math.max(1d, Math.hypot(sideX, sideY));
+        return Math.max(topSkew, sideSkew);
+    }
+
+    private static void logPolygonSkew(OcrRegion region, int localWidth, int localHeight) {
+        double skew = polygonSkew(region.polygon());
+        if (skew < SKEW_REPORT_THRESHOLD) return;
+        log.info("Overlay polygon is not a parallelogram: skew={}, cellWidth={}, cellHeight={}, "
+                        + "corners={}",
+                String.format(java.util.Locale.ROOT, "%.3f", skew), localWidth, localHeight,
+                region.polygon().stream()
+                        .map(point -> point.x() + "," + point.y())
+                        .reduce((left, right) -> left + " " + right).orElse(""));
     }
 
     /**
