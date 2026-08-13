@@ -230,6 +230,60 @@ class PolygonOverlayRendererTests {
                 .isLessThanOrEqualTo(2);
     }
 
+    @Test
+    void narrowCellCondensesGlyphWidthInsteadOfAbandoningTheWholeCell() throws Exception {
+        BufferedImage original = whiteImage(320, 60);
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        ImageIO.write(original, "png", bytes);
+        ValidatedImage source = new ImageInputValidator(ImageTranslationProperties.defaults())
+                .validate(bytes.toByteArray(), "image/png");
+        // A single-line menu cell: plenty of width for the source, far too little for a literal
+        // English translation unless glyphs may be narrowed.
+        OcrRegion cell = groupedRegion("menu-cell", "南洋綠咖哩雞飯", 10, 14, 250, 30);
+        OverlaySafetyPlan plan = new OverlaySafetyPolicy().evaluate(
+                List.of(new ImageRegionOverlay(cell, "Nanyang Green Curry Chicken Rice")),
+                320, 60, new ImageTranslationProperties(1000, 400, 100000, .6f, true, .8, .9));
+
+        RenderedImage rendered = new ImageTranslationOverlayRenderer(
+                new ImageTranslationFontProvider(Set.of("dejavu sans"))).render(source, plan);
+
+        assertThat(rendered.decisions())
+                .extracting(OverlayRenderDecision::reason)
+                .doesNotContain("text-fit");
+        assertThat(rendered.renderedBlockCount()).isEqualTo(1);
+        BufferedImage output = ImageIO.read(new ByteArrayInputStream(rendered.pngBytes()));
+        assertThat(inkHeight(output, 10, 14, 250, 30))
+                .as("condensed text keeps readable height")
+                .isGreaterThanOrEqualTo(6);
+    }
+
+    @Test
+    void condensingNeverSpillsInkOutsideTheApprovedCell() throws Exception {
+        BufferedImage original = whiteImage(320, 60);
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        ImageIO.write(original, "png", bytes);
+        ValidatedImage source = new ImageInputValidator(ImageTranslationProperties.defaults())
+                .validate(bytes.toByteArray(), "image/png");
+        OcrRegion cell = groupedRegion("tight-cell", "蔥爆牛肉", 40, 20, 120, 20);
+        OverlaySafetyPlan plan = new OverlaySafetyPolicy().evaluate(
+                List.of(new ImageRegionOverlay(cell, "Stir-Fried Beef with Scallions Rice")),
+                320, 60, new ImageTranslationProperties(1000, 400, 100000, .6f, true, .8, .9));
+
+        RenderedImage rendered = new ImageTranslationOverlayRenderer(
+                new ImageTranslationFontProvider(Set.of("dejavu sans"))).render(source, plan);
+        BufferedImage output = ImageIO.read(new ByteArrayInputStream(rendered.pngBytes()));
+
+        for (int y = 0; y < 60; y++) {
+            for (int x = 0; x < 320; x++) {
+                boolean inside = x >= 38 && x <= 162 && y >= 18 && y <= 42;
+                if (inside) continue;
+                assertThat(new Color(output.getRGB(x, y)))
+                        .as("pixel outside the cell at %s,%s", x, y)
+                        .isEqualTo(Color.WHITE);
+            }
+        }
+    }
+
     private static BufferedImage whiteImage(int width, int height) {
         BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
         var graphics = image.createGraphics();

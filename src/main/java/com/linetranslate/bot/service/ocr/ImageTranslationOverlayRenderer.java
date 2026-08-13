@@ -23,8 +23,12 @@ import org.springframework.stereotype.Component;
 @Component
 public class ImageTranslationOverlayRenderer {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(ImageTranslationOverlayRenderer.class);
     private static final Color LOW_CONFIDENCE = new Color(230, 138, 0);
     private static final int MIN_FONT_SIZE = 8;
+    /** Glyph width scales tried in order; 0.8 is the narrowest that stays comfortably readable. */
+    private static final double[] CONDENSE_STEPS = {1d, .9d, .8d};
     private final ImageTranslationFontProvider fontProvider;
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -96,6 +100,11 @@ public class ImageTranslationOverlayRenderer {
                 if (!layout.fits()) {
                     decisions.add(new OverlayRenderDecision(
                             overlay.region().id(), OverlayRenderStatus.PRESERVED, "text-fit"));
+                    log.info("Overlay cell preserved by fit: cellWidth={}, cellHeight={}, "
+                                    + "sourceFontSize={}, translatedChars={}, lines={}, compactLabel={}",
+                            localBounds.width(), localBounds.height(), style.maximumFontSize(),
+                            overlay.replacement().codePointCount(0, overlay.replacement().length()),
+                            layout.lines().size(), overlay.region().compactLabel());
                     continue;
                 }
                 prepared.add(new PreparedOverlay(overlay, style, layoutMask, modifiedMask,
@@ -223,20 +232,32 @@ public class ImageTranslationOverlayRenderer {
         int minimum = compactLabel
                 ? Math.min(maximum, Math.max(MIN_FONT_SIZE, (int) Math.ceil(maximumFontSize * .55)))
                 : MIN_FONT_SIZE;
-        for (int size = maximum; size >= minimum; size--) {
-            Font font = baseFont.deriveFont((float) size);
-            graphics.setFont(font);
-            FontMetrics metrics = graphics.getFontMetrics();
-            List<String> lines = wrap(text, metrics, Math.max(1, bounds.width() - 2));
-            if ((long) lines.size() * metrics.getHeight() <= bounds.height()) return new Layout(font, lines, true);
+        // A fixed-width cell is limited by width, not height, and a translation usually needs more
+        // characters than its source. Shrinking type uniformly spends readable height to buy width,
+        // so try the full size range at each condensing step before giving the whole cell up.
+        for (double widthScale : CONDENSE_STEPS) {
+            for (int size = maximum; size >= minimum; size--) {
+                Font font = condensed(baseFont, size, widthScale);
+                graphics.setFont(font);
+                FontMetrics metrics = graphics.getFontMetrics();
+                List<String> lines = wrap(text, metrics, Math.max(1, bounds.width() - 2));
+                if ((long) lines.size() * metrics.getHeight() <= bounds.height()) {
+                    return new Layout(font, lines, true);
+                }
+            }
         }
-        Font font = baseFont.deriveFont((float) minimum);
+        Font font = condensed(baseFont, minimum, CONDENSE_STEPS[CONDENSE_STEPS.length - 1]);
         graphics.setFont(font);
-        FontMetrics metrics = graphics.getFontMetrics();
-        int availableWidth = Math.max(1, bounds.width() - 2);
-        List<String> lines = wrap(text, metrics, availableWidth);
-        int allowed = Math.max(1, bounds.height() / Math.max(1, metrics.getHeight()));
+        List<String> lines = wrap(text, graphics.getFontMetrics(), Math.max(1, bounds.width() - 2));
         return new Layout(font, lines, false);
+    }
+
+    /** Narrows glyphs without touching their height, which is what a narrow cell actually lacks. */
+    private static Font condensed(Font base, int size, double widthScale) {
+        Font sized = base.deriveFont((float) size);
+        return widthScale >= 1d
+                ? sized
+                : sized.deriveFont(AffineTransform.getScaleInstance(widthScale, 1d));
     }
 
     public RenderedImage render(
