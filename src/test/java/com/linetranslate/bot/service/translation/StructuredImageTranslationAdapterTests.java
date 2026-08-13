@@ -107,6 +107,52 @@ class StructuredImageTranslationAdapterTests {
                 eq(TranslationStylePreset.FAITHFUL), eq(StructuredImageTranslationCodec.SCHEMA_VERSION), any());
     }
 
+    @Test
+    void incompleteResponseStillOverlaysTheRegionsThatWereReturnedCorrectly() {
+        CachedTranslationAdapter provider = mock(CachedTranslationAdapter.class);
+        UserPreferences preferences = new UserPreferences("zh-TW", "en", "zh-TW", "model", List.of());
+        when(provider.translateValidated(eq(preferences), anyString(), eq("zh-TW"),
+                eq(TranslationStylePreset.FAITHFUL), eq(StructuredImageTranslationCodec.SCHEMA_VERSION), any()))
+                .thenReturn(success("{\"schemaVersion\":\"image-regions-v3\",\"regions\":["
+                        + "{\"regionId\":\"r1\",\"translatedText\":\"你好\"}]}"));
+        StructuredImageTranslationAdapter adapter = new StructuredImageTranslationAdapter(
+                provider, new StructuredImageTranslationCodec(new ObjectMapper()));
+
+        StructuredImageTranslationAdapter.Result result = adapter.translate(preferences,
+                List.of(
+                        new ImageRegionTranslationInput("r1", "hello", "en", List.of(), true, 0),
+                        new ImageRegionTranslationInput("r2", "world", "en", List.of(), true, 1)),
+                "zh-TW", TranslationStylePreset.FAITHFUL);
+
+        assertThat(result.translations()).containsExactly(new ImageRegionTranslation("r1", "你好"));
+        assertThat(result.execution().text()).isEqualTo("你好\nworld");
+        verify(provider, times(2)).translateValidated(eq(preferences), anyString(), eq("zh-TW"),
+                eq(TranslationStylePreset.FAITHFUL), eq(StructuredImageTranslationCodec.SCHEMA_VERSION), any());
+    }
+
+    @Test
+    void localeViolationDropsOnlyTheOffendingRegionAfterTheRepairAttempt() {
+        CachedTranslationAdapter provider = mock(CachedTranslationAdapter.class);
+        UserPreferences preferences = new UserPreferences("zh-TW", "en", "zh-TW", "model", List.of());
+        String simplifiedSecondRegion = "{\"schemaVersion\":\"image-regions-v3\",\"regions\":["
+                + "{\"regionId\":\"r1\",\"translatedText\":\"保護自己\"},"
+                + "{\"regionId\":\"r2\",\"translatedText\":\"这为个们来时说对会还国\"}]}";
+        when(provider.translateValidated(eq(preferences), anyString(), eq("zh-TW"),
+                eq(TranslationStylePreset.FAITHFUL), eq(StructuredImageTranslationCodec.SCHEMA_VERSION), any()))
+                .thenReturn(success(simplifiedSecondRegion));
+        StructuredImageTranslationAdapter adapter = new StructuredImageTranslationAdapter(
+                provider, new StructuredImageTranslationCodec(new ObjectMapper()), new TargetLocalePolicy());
+
+        StructuredImageTranslationAdapter.Result result = adapter.translate(preferences,
+                List.of(
+                        new ImageRegionTranslationInput("r1", "Protect yourself", "en", List.of(), true, 0),
+                        new ImageRegionTranslationInput("r2", "Stay hydrated", "en", List.of(), true, 1)),
+                "zh-TW", TranslationStylePreset.FAITHFUL);
+
+        assertThat(result.translations()).containsExactly(new ImageRegionTranslation("r1", "保護自己"));
+        assertThat(result.execution().text()).isEqualTo("保護自己\nStay hydrated");
+    }
+
     private static AiExecutionOutcome success(String text) {
         return new AiExecutionOutcome.Success(new AiExecutionResult(text, "openrouter", "model"));
     }

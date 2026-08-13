@@ -429,6 +429,41 @@ class ImageTranslationPipelineIntegrationTests {
     }
 
     @Test
+    void partiallyMappedRegionsStillOverlayTheAnsweredOnesAndReportTheRest() throws Exception {
+        byte[] png = png(240, 120);
+        image("message-partial-mapping", png, "image/png");
+        ImageTranslationProperties limits = ImageTranslationProperties.defaults();
+        pipeline = new ImageTranslationPipeline(
+                ocrServiceProvider,
+                workflowModule,
+                aiProviderExecutionModule,
+                userPreferencesModule,
+                messagingApiBlobClient,
+                minioStorageService,
+                new ImageInputValidator(limits),
+                renderer(),
+                limits);
+        when(minioStorageService.uploadImage(any(byte[].class), anyString()))
+                .thenReturn(ImageStorageResult.notStored());
+        when(ocrService.recognizeRegions(any(InputStream.class))).thenReturn(List.of(
+                region("r-hello", "hello", 10, 10, 90, 35, .98f),
+                region("r-world", "world", 10, 60, 90, 35, .92f)));
+        when(workflowModule.execute(any())).thenReturn(successStructured(
+                "hello\nworld", "greetings\nworld",
+                List.of(new ImageRegionTranslation("r-hello", "greetings"))));
+        when(minioStorageService.uploadTranslatedImage(any(byte[].class)))
+                .thenReturn(ImageStorageResult.stored("https://storage.example/partial.png"));
+
+        ImageTranslationPipelineResult result =
+                successResult(pipeline.execute(request("message-partial-mapping")));
+
+        assertThat(result.overlayDisposition()).isEqualTo(ImageOverlayDisposition.GENERATED);
+        assertThat(result.renderedImage().url()).contains("https://storage.example/partial.png");
+        assertThat(result.degradation().count(OverlayDegradationReason.MAPPING)).isEqualTo(1);
+        verify(minioStorageService).uploadTranslatedImage(any(byte[].class));
+    }
+
+    @Test
     void preserveRegionsStayReadableButNeverBecomeProviderOrOverlayTargets() throws Exception {
         image("message-preserve", png(300, 150), "image/png");
         when(minioStorageService.uploadImage(any(byte[].class), anyString()))

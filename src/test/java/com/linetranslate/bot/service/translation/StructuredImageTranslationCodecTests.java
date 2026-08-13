@@ -80,6 +80,47 @@ class StructuredImageTranslationCodecTests {
                 .containsExactly(new ImageRegionTranslation("menu-label", "Hair dye package"));
     }
 
+    @Test
+    void decodeAvailableKeepsTheValidRegionsOfAnIncompleteResponse() {
+        String response = """
+                {"schemaVersion":"image-regions-v3","regions":[
+                  {"regionId":"r-b","translatedText":"辣雞炒麵"}
+                ]}
+                """;
+
+        assertThatThrownBy(() -> codec.decode(response, input))
+                .isInstanceOf(StructuredTranslationException.class);
+        assertThat(codec.decodeAvailable(response, input))
+                .containsExactly(new ImageRegionTranslation("r-b", "辣雞炒麵"));
+    }
+
+    @Test
+    void decodeAvailableDropsOnlyTheRegionsThatAreIndividuallyInvalid() {
+        String response = """
+                {"schemaVersion":"image-regions-v3","regions":[
+                  {"regionId":"r-a","translatedText":"溫度 39°C"},
+                  {"regionId":"r-b","translatedText":"辣雞炒麵"},
+                  {"regionId":"evil","translatedText":"x"},
+                  {"regionId":"r-b","translatedText":"重複"}
+                ]}
+                """;
+
+        assertThat(codec.decodeAvailable(response, input))
+                .containsExactly(new ImageRegionTranslation("r-b", "辣雞炒麵"));
+    }
+
+    @Test
+    void decodeAvailableReturnsNothingWhenTheEnvelopeItselfIsUnusable() {
+        assertThat(codec.decodeAvailable("not-json", input)).isEmpty();
+        assertThat(codec.decodeAvailable(
+                "{\"schemaVersion\":\"image-regions-v3\",\"unexpected\":true,\"regions\":[]}", input))
+                .isEmpty();
+        assertThat(codec.decodeAvailable(
+                "{\"schemaVersion\":\"image-regions-v2\",\"regions\":[{\"regionId\":\"r-b\",\"translatedText\":\"x\"}]}",
+                input))
+                .isEmpty();
+    }
+
     private void assertInvalid(String response) {
         assertThatThrownBy(() -> codec.decode(response, input))
                 .isInstanceOf(StructuredTranslationException.class);

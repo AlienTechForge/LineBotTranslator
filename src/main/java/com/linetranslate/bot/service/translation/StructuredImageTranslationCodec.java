@@ -57,55 +57,91 @@ public class StructuredImageTranslationCodec {
         }
     }
 
+    /** Strict decode: the whole mapping is rejected unless every expected region is answered exactly. */
     public List<ImageRegionTranslation> decode(
             String response,
             List<ImageRegionTranslationInput> expected) {
+        Decoded decoded = read(response, expected);
+        if (!decoded.complete()) {
+            throw new StructuredTranslationException(decoded.failure());
+        }
+        return decoded.translations();
+    }
+
+    /**
+     * Lenient decode used only after the strict attempt and its repair have failed. Regions the
+     * provider answered correctly are kept; every other region is left untranslated so the caller
+     * preserves its source pixels. Region identity is never guessed or reassigned.
+     */
+    public List<ImageRegionTranslation> decodeAvailable(
+            String response,
+            List<ImageRegionTranslationInput> expected) {
+        return read(response, expected).translations();
+    }
+
+    private Decoded read(String response, List<ImageRegionTranslationInput> expected) {
         try {
             JsonNode root = mapper.readTree(stripFence(response));
             if (!root.isObject() || !hasOnlyFields(root, Set.of("schemaVersion", "regions"))
                     || !root.path("schemaVersion").isTextual()
                     || !SCHEMA_VERSION.equals(root.path("schemaVersion").asText())
                     || !root.path("regions").isArray()) {
-                throw new StructuredTranslationException("Structured response schema is invalid");
+                return Decoded.unusable("Structured response schema is invalid");
+            }
+            if (expected.stream().map(ImageRegionTranslationInput::regionId).distinct().count() != expected.size()) {
+                throw new StructuredTranslationException("Structured request contains duplicate region IDs");
             }
             Set<String> expectedIds = new HashSet<>();
             expected.stream().filter(ImageRegionTranslationInput::translatable)
                     .forEach(region -> expectedIds.add(region.regionId()));
-            if (expected.stream().map(ImageRegionTranslationInput::regionId).distinct().count() != expected.size()) {
-                throw new StructuredTranslationException("Structured request contains duplicate region IDs");
-            }
             Set<String> seen = new HashSet<>();
             List<ImageRegionTranslation> result = new ArrayList<>();
+            String failure = null;
             for (JsonNode node : root.path("regions")) {
                 if (!node.isObject() || !hasOnlyFields(node, Set.of("regionId", "translatedText"))
                         || !node.path("regionId").isTextual()
                         || !node.path("translatedText").isTextual()) {
-                    throw new StructuredTranslationException("Structured response fields are invalid");
+                    failure = failure == null ? "Structured response fields are invalid" : failure;
+                    continue;
                 }
                 String id = node.path("regionId").asText("");
                 String text = node.path("translatedText").asText("").strip();
                 if (!expectedIds.contains(id) || !seen.add(id) || text.isBlank() || text.length() > MAX_REGION_TEXT) {
-                    throw new StructuredTranslationException("Structured response region set is invalid");
+                    failure = failure == null ? "Structured response region set is invalid" : failure;
+                    continue;
                 }
                 ImageRegionTranslationInput source = expected.stream()
                         .filter(ImageRegionTranslationInput::translatable)
                         .filter(value -> value.regionId().equals(id)).findFirst().orElseThrow();
-                int cursor = 0;
-                for (String token : source.protectedTokens()) {
-                    int found = text.indexOf(token, cursor);
-                    if (found < 0) throw new StructuredTranslationException("Protected token was changed");
-                    cursor = found + token.length();
+                if (!preservesProtectedTokens(text, source)) {
+                    failure = failure == null ? "Protected token was changed" : failure;
+                    continue;
                 }
                 result.add(new ImageRegionTranslation(id, text));
             }
-            if (!seen.equals(expectedIds)) {
-                throw new StructuredTranslationException("Structured response is incomplete");
-            }
-            return List.copyOf(result);
+            boolean complete = failure == null && seen.equals(expectedIds);
+            return new Decoded(List.copyOf(result), complete,
+                    failure == null ? "Structured response is incomplete" : failure);
         } catch (StructuredTranslationException failure) {
             throw failure;
         } catch (Exception failure) {
-            throw new StructuredTranslationException("Structured response is malformed");
+            return Decoded.unusable("Structured response is malformed");
+        }
+    }
+
+    private static boolean preservesProtectedTokens(String text, ImageRegionTranslationInput source) {
+        int cursor = 0;
+        for (String token : source.protectedTokens()) {
+            int found = text.indexOf(token, cursor);
+            if (found < 0) return false;
+            cursor = found + token.length();
+        }
+        return true;
+    }
+
+    private record Decoded(List<ImageRegionTranslation> translations, boolean complete, String failure) {
+        static Decoded unusable(String failure) {
+            return new Decoded(List.of(), false, failure);
         }
     }
 
