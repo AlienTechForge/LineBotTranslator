@@ -395,6 +395,27 @@ class PolygonOverlayRendererTests {
                 .isGreaterThanOrEqualTo(14);
     }
 
+    @Test
+    void polygonSkewIsZeroForRectanglesAndParallelogramsButNotForTrapezoids() {
+        assertThat(ImageTranslationOverlayRenderer.polygonSkew(rectangle(10, 10, 200, 40)))
+                .as("axis-aligned rectangle").isZero();
+
+        List<OcrPoint> parallelogram = List.of(
+                new OcrPoint(10, 10), new OcrPoint(210, 30),
+                new OcrPoint(230, 90), new OcrPoint(30, 70));
+        assertThat(ImageTranslationOverlayRenderer.polygonSkew(parallelogram))
+                .as("rotated/sheared parallelogram is reproducible by translate+rotate")
+                .isLessThan(.001);
+
+        // Perspective view of a plane: the far edge is shorter than the near edge.
+        List<OcrPoint> trapezoid = List.of(
+                new OcrPoint(10, 10), new OcrPoint(210, 10),
+                new OcrPoint(180, 70), new OcrPoint(40, 70));
+        assertThat(ImageTranslationOverlayRenderer.polygonSkew(trapezoid))
+                .as("trapezoid cannot be reproduced by translate+rotate")
+                .isGreaterThan(.2);
+    }
+
     private static OcrRegion compactCell(
             String id, String text, int x, int y, int width, int height) {
         List<OcrPoint> polygon = rectangle(x, y, width, height);
