@@ -205,6 +205,7 @@ public class ImageTranslationPipeline {
                 recognition.text(),
                 requestedTargetLanguage(translatableText));
         TranslationWorkflowOutcome workflowOutcome;
+        List<String> translatableRegionIds = List.of();
         long translationStarted = System.nanoTime();
         try {
             String resolvedSourceLanguage = sourceLanguageResolver.resolve(
@@ -221,6 +222,10 @@ public class ImageTranslationPipeline {
                             decision.qualification() == OcrQualification.TRANSLATE,
                             decision.region().readingOrder(),
                             layout(decision.region())))
+                    .toList();
+            translatableRegionIds = structuredRegions.stream()
+                    .filter(ImageRegionTranslationInput::translatable)
+                    .map(ImageRegionTranslationInput::regionId)
                     .toList();
             workflowOutcome = translationWorkflowModule.execute(new TranslationWorkflowRequest(
                     request.userProfile(),
@@ -248,7 +253,7 @@ public class ImageTranslationPipeline {
                 ((TranslationWorkflowOutcome.Success) workflowOutcome).result();
         long translationMillis = elapsedMillis(translationStarted);
         long renderingStarted = System.nanoTime();
-        OverlayOutcome overlay = renderAndStore(image, recognition, translation);
+        OverlayOutcome overlay = renderAndStore(image, recognition, translation, translatableRegionIds);
         long renderingMillis = elapsedMillis(renderingStarted);
         log.info("Image translation timing: downloadMs={}, storageMs={}, recognitionMs={}, "
                         + "translationMs={}, renderingMs={}, totalMs={}, ocrRegions={}, translatedRegions={}",
@@ -346,20 +351,26 @@ public class ImageTranslationPipeline {
     private OverlayOutcome renderAndStore(
             ValidatedImage image,
             OcrRecognition recognition,
-            TranslationWorkflowResult translation) {
+            TranslationWorkflowResult translation,
+            List<String> translatableRegionIds) {
         if (recognition.regions().isEmpty()) {
             return OverlayOutcome.unavailable();
         }
         if (translation.imageRegionTranslations().isEmpty()) {
             return new OverlayOutcome(ImageStorageResult.notStored(), 0,
                     ImageOverlayDisposition.SAFETY_DEGRADED,
-                    OverlayDegradationSummary.single(OverlayDegradationReason.MAPPING, 1));
+                    OverlayDegradationSummary.single(OverlayDegradationReason.MAPPING,
+                            Math.max(1, translatableRegionIds.size())));
         }
         try {
             java.util.Map<String, String> replacements = translation.imageRegionTranslations().stream()
                     .collect(java.util.stream.Collectors.toUnmodifiableMap(
                             com.linetranslate.bot.service.translation.ImageRegionTranslation::regionId,
                             com.linetranslate.bot.service.translation.ImageRegionTranslation::translatedText));
+            // Regions the provider never answered keep their source pixels and are reported, not hidden.
+            OverlayDegradationSummary unmapped = OverlayDegradationSummary.single(
+                    OverlayDegradationReason.MAPPING,
+                    (int) translatableRegionIds.stream().filter(id -> !replacements.containsKey(id)).count());
             List<ImageRegionOverlay> candidates = recognition.regions().stream()
                     .filter(region -> replacements.containsKey(region.id()))
                     .map(region -> new ImageRegionOverlay(region, replacements.get(region.id())))
@@ -368,10 +379,13 @@ public class ImageTranslationPipeline {
                     image.image(), candidates.stream().map(ImageRegionOverlay::region).toList());
             OverlaySafetyPlan plan = overlaySafetyPolicy.evaluate(
                     candidates, image.image().getWidth(), image.image().getHeight(), properties, contentMode);
-            log.info("Image overlay decision: mode={}, candidates={}, accepted={}, preserved={}, reason={}",
-                    contentMode, candidates.size(), plan.overlays().size(), plan.skipped(), plan.reason());
+            log.info("Image overlay decision: mode={}, candidates={}, accepted={}, preserved={}, "
+                            + "unmappedRegions={}, reason={}",
+                    contentMode, candidates.size(), plan.overlays().size(), plan.skipped(),
+                    unmapped.count(OverlayDegradationReason.MAPPING), plan.reason());
             if (!plan.safe() || plan.overlays().isEmpty()) {
-                OverlayDegradationSummary degradation = OverlayDegradationSummary.fromDecisions(plan.decisions());
+                OverlayDegradationSummary degradation =
+                        OverlayDegradationSummary.fromDecisions(plan.decisions()).merge(unmapped);
                 return new OverlayOutcome(ImageStorageResult.notStored(),
                         degradation.count(OverlayDegradationReason.LOW_CONFIDENCE),
                         ImageOverlayDisposition.SAFETY_DEGRADED, degradation);
@@ -385,7 +399,7 @@ public class ImageTranslationPipeline {
                         rendererMillis, renderedBytes.length);
                 return new OverlayOutcome(
                         ImageStorageResult.notStored(), rendered.lowConfidenceBlockCount(),
-                        ImageOverlayDisposition.SAFETY_DEGRADED, rendered.degradation());
+                        ImageOverlayDisposition.SAFETY_DEGRADED, rendered.degradation().merge(unmapped));
             }
             long uploadStarted = System.nanoTime();
             ImageStorageResult storage = minioStorageService.uploadTranslatedImage(renderedBytes);
@@ -397,7 +411,7 @@ public class ImageTranslationPipeline {
                     rendered.lowConfidenceBlockCount(),
                     storage != null && storage.stored()
                             ? ImageOverlayDisposition.GENERATED : ImageOverlayDisposition.UNAVAILABLE,
-                    rendered.degradation().merge(storage != null && storage.stored()
+                    rendered.degradation().merge(unmapped).merge(storage != null && storage.stored()
                             ? OverlayDegradationSummary.none()
                             : OverlayDegradationSummary.single(OverlayDegradationReason.STORAGE, 1)));
         } catch (RuntimeException failure) {

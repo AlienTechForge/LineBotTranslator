@@ -117,6 +117,20 @@ public class ImageTranslationService {
                 " 個文字區域因找不到完整字形而保留原文。");
         appendDegradation(display, result.degradation(), OverlayDegradationReason.TEXT_FIT,
                 " 個文字區域因譯文無法以可讀大小完整放入而保留原文。");
+        appendDegradation(display, result.degradation(), OverlayDegradationReason.MAPPING,
+                " 個文字區域未取得可靠的對應譯文而保留原文。");
+        appendDegradation(display, result.degradation(), OverlayDegradationReason.DISABLED,
+                " 個文字區域因圖片覆寫功能已停用而保留原文。");
+        appendDegradation(display, result.degradation(), OverlayDegradationReason.OTHER,
+                " 個文字區域因未預期的處理錯誤而保留原文。");
+        if (result.degradation().count(OverlayDegradationReason.STORAGE) > 0) {
+            display.append("⚠️ 譯圖已產生，但上傳儲存失敗，暫時無法提供圖片連結。\n\n");
+        }
+        if (result.overlayDisposition() == ImageOverlayDisposition.SAFETY_DEGRADED
+                && result.degradation().total() == 0
+                && result.lowConfidenceBlockCount() == 0) {
+            display.append("⚠️ 本次未取得可安全覆寫的文字區域，因此保留原圖。\n\n");
+        }
         display.append("[偵測到: ").append(LanguageUtils.toChineseName(translation.sourceLanguage()))
                 .append(" | 翻譯成: ").append(LanguageUtils.toChineseName(translation.targetLanguage()))
                 .append("]");

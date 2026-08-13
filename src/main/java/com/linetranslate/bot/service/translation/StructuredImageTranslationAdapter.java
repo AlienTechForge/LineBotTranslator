@@ -37,19 +37,21 @@ public class StructuredImageTranslationAdapter {
             List<ImageRegionTranslationInput> regions,
             String targetLanguage,
             TranslationStylePreset style) {
-        try {
-            return execute(preferences, regions, targetLanguage, style, false);
-        } catch (StructuredTranslationException failure) {
-            // One bounded repair attempt; provider content is intentionally not propagated.
-        }
-        try {
-            return execute(preferences, regions, targetLanguage, style, true);
-        } catch (StructuredTranslationException failure) {
+        Attempt first = execute(preferences, regions, targetLanguage, style, false);
+        if (first.complete()) return first.result(regions);
+        Attempt repaired = execute(preferences, regions, targetLanguage, style, true);
+        if (repaired.complete()) return repaired.result(regions);
+
+        // Both attempts are imperfect. Keep the regions the provider answered correctly instead of
+        // discarding the whole overlay; unanswered regions keep their source pixels.
+        Attempt best = repaired.translations().size() > first.translations().size() ? repaired : first;
+        if (best.translations().isEmpty()) {
             throw new StructuredTranslationException("Structured response and repair are invalid");
         }
+        return best.result(regions);
     }
 
-    private Result execute(
+    private Attempt execute(
             UserPreferences preferences,
             List<ImageRegionTranslationInput> regions,
             String targetLanguage,
@@ -60,26 +62,15 @@ public class StructuredImageTranslationAdapter {
                 preferences, wire, targetLanguage, style,
                 StructuredImageTranslationCodec.SCHEMA_VERSION,
                 result -> isValid(result.text(), regions, targetLanguage));
-        if (outcome instanceof AiExecutionOutcome.Failure failure) {
-            throw new StructuredTranslationException("Structured provider execution failed: " + failure.failure().outcome());
+        if (outcome instanceof AiExecutionOutcome.Failure) {
+            return Attempt.none();
         }
         AiExecutionResult raw = ((AiExecutionOutcome.Success) outcome).result();
-        List<ImageRegionTranslation> translations = codec.decode(raw.text(), regions);
-        if (translations.stream().anyMatch(value -> !localePolicy.accepts(value.translatedText(), targetLanguage))) {
-            throw new StructuredTranslationException("Structured response violates target locale");
-        }
-        String readable = regions.stream()
-                .sorted(java.util.Comparator.comparingInt(ImageRegionTranslationInput::readingOrder)
-                        .thenComparing(ImageRegionTranslationInput::regionId))
-                .map(input -> input.translatable()
-                        ? translations.stream().filter(value -> value.regionId().equals(input.regionId()))
-                                .findFirst().orElseThrow().translatedText()
-                        : input.sourceText())
-                .reduce((left, right) -> left + "\n" + right).orElseThrow();
-        AiExecutionResult normalized = new AiExecutionResult(
-                readable, raw.providerName(), raw.modelName(), raw.tokenUsage(), raw.latencyMillis(),
-                raw.fallbackUsed(), raw.attempts());
-        return new Result(normalized, translations);
+        List<ImageRegionTranslation> accepted = codec.decodeAvailable(raw.text(), regions).stream()
+                .filter(value -> localePolicy.accepts(value.translatedText(), targetLanguage))
+                .toList();
+        long expected = regions.stream().filter(ImageRegionTranslationInput::translatable).count();
+        return new Attempt(raw, accepted, accepted.size() == expected);
     }
 
     private boolean isValid(String response, List<ImageRegionTranslationInput> regions, String targetLanguage) {
@@ -88,6 +79,34 @@ public class StructuredImageTranslationAdapter {
                     .allMatch(value -> localePolicy.accepts(value.translatedText(), targetLanguage));
         } catch (StructuredTranslationException invalid) {
             return false;
+        }
+    }
+
+    /** One provider round trip and the regions it answered acceptably. */
+    private record Attempt(
+            AiExecutionResult raw,
+            List<ImageRegionTranslation> translations,
+            boolean complete) {
+
+        static Attempt none() {
+            return new Attempt(null, List.of(), false);
+        }
+
+        Result result(List<ImageRegionTranslationInput> regions) {
+            String readable = regions.stream()
+                    .sorted(java.util.Comparator.comparingInt(ImageRegionTranslationInput::readingOrder)
+                            .thenComparing(ImageRegionTranslationInput::regionId))
+                    .map(input -> translations.stream()
+                            .filter(value -> value.regionId().equals(input.regionId()))
+                            .findFirst()
+                            .map(ImageRegionTranslation::translatedText)
+                            .orElseGet(input::sourceText))
+                    .reduce((left, right) -> left + "\n" + right)
+                    .orElseThrow();
+            AiExecutionResult normalized = new AiExecutionResult(
+                    readable, raw.providerName(), raw.modelName(), raw.tokenUsage(), raw.latencyMillis(),
+                    raw.fallbackUsed(), raw.attempts());
+            return new Result(normalized, translations);
         }
     }
 
