@@ -11,6 +11,10 @@ import org.springframework.stereotype.Component;
 /** Splits reliable OCR paragraphs along visible row and column boundaries. */
 @Component
 public class OcrRegionSegmenter {
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(OcrRegionSegmenter.class);
+    /** Only paragraphs this dense are worth reporting; smaller ones are not the layout problem. */
+    private static final int DECISION_REPORT_MIN_WORDS = 8;
     private static final int MAX_COMPACT_CODEPOINTS = 3;
     private static final int MAX_DENSE_CHILDREN = 100;
     private static final Pattern PRICE_TOKEN = Pattern.compile(
@@ -124,7 +128,10 @@ public class OcrRegionSegmenter {
 
         Rectangle paragraph = frame.bounds();
         if (isCompactSingleColumn(lines)) {
-            return splitCompactSingleColumn(region, frame, lines, paragraph);
+            List<OcrRegion> compactChildren = splitCompactSingleColumn(region, frame, lines, paragraph);
+            reportDecision(region, lines.size(), 0, 0, false, compactChildren.size(),
+                    "split-compact-single-column");
+            return compactChildren;
         }
         List<List<WordSegment>> segmentsByLine = new ArrayList<>(lines.size());
         for (VisualLine line : lines) {
@@ -133,17 +140,31 @@ public class OcrRegionSegmenter {
         }
         boolean structuredSingleLine = lines.size() == 1
                 && isStructuredPriceLine(lines.get(0));
-        if (lines.size() < 2 && !structuredSingleLine) return List.of();
+        if (lines.size() < 2 && !structuredSingleLine) {
+            reportDecision(region, lines.size(), 0, 0, false, 0, "kept-single-line");
+            return List.of();
+        }
         long columnarLines = segmentsByLine.stream().filter(segments -> segments.size() > 1).count();
-        if (columnarLines == 0) return List.of();
+        if (columnarLines == 0) {
+            reportDecision(region, lines.size(), 0, 0, false, 0, "kept-no-columnar-line");
+            return List.of();
+        }
         long structuredRows = lines.stream().filter(OcrRegionSegmenter::isStructuredPriceLine).count();
         boolean hasStructuredRows = structuredRows >= Math.max(1, (lines.size() + 1) / 2);
-        if (!structuredSingleLine && !hasStructuredRows
-                && !hasRepeatedColumnStructure(segmentsByLine, lines)) {
+        boolean repeatedColumns = hasRepeatedColumnStructure(segmentsByLine, lines);
+        if (!structuredSingleLine && !hasStructuredRows && !repeatedColumns) {
+            reportDecision(region, lines.size(), (int) columnarLines, structuredRows, false, 0,
+                    "kept-no-column-structure");
             return List.of();
         }
         int childCount = segmentsByLine.stream().mapToInt(List::size).sum();
-        if (childCount < 2 || childCount > MAX_DENSE_CHILDREN) return List.of();
+        if (childCount < 2 || childCount > MAX_DENSE_CHILDREN) {
+            reportDecision(region, lines.size(), (int) columnarLines, structuredRows, repeatedColumns,
+                    childCount, "kept-child-count-out-of-range");
+            return List.of();
+        }
+        reportDecision(region, lines.size(), (int) columnarLines, structuredRows, repeatedColumns,
+                childCount, "split-rows-and-columns");
 
         List<OcrRegion> children = new ArrayList<>(childCount);
         for (int lineIndex = 0; lineIndex < lines.size(); lineIndex++) {
@@ -171,6 +192,25 @@ public class OcrRegionSegmenter {
             }
         }
         return List.copyOf(children);
+    }
+
+    /**
+     * Why a dense paragraph was or was not split. A paragraph that stays whole becomes one long
+     * translation laid out horizontally, which is what destroys a column layout, so the blocking
+     * condition needs to be visible. Counts and flags only; no source text reaches the log.
+     */
+    private static void reportDecision(OcrRegion region, int lineCount, int columnarLines,
+            long structuredRows, boolean repeatedColumns, int childCount, String verdict) {
+        int wordCount = region.words().size();
+        if (wordCount < DECISION_REPORT_MIN_WORDS) return;
+        Rectangle bounds = OverlaySafetyPolicy.polygon(region.polygon()).getBounds();
+        String source = region.text();
+        int sourceChars = source.codePointCount(0, source.length());
+        log.info("Dense paragraph split decision: verdict={}, words={}, lines={}, columnarLines={}, "
+                        + "structuredRows={}, repeatedColumns={}, children={}, "
+                        + "regionWidth={}, regionHeight={}, sourceChars={}",
+                verdict, wordCount, lineCount, columnarLines, structuredRows,
+                repeatedColumns, childCount, bounds.width, bounds.height, sourceChars);
     }
 
     private static boolean isCompactSingleColumn(List<VisualLine> lines) {
