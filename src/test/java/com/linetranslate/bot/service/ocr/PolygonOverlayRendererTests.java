@@ -135,9 +135,9 @@ class PolygonOverlayRendererTests {
         List<java.awt.geom.Area> cleanupAreas = OverlaySafetyPolicy.sourceCleanupAreas(region, 220, 70);
         assertThat(cleanupAreas).hasSize(2);
         assertThat(ImageTranslationStyleEstimator.localBackground(
-                original, cleanupAreas.get(0), Color.PINK)).isEqualTo(new Color(30, 30, 30));
+                original, cleanupAreas.get(0), Color.PINK, Color.WHITE)).isEqualTo(new Color(30, 30, 30));
         assertThat(ImageTranslationStyleEstimator.localBackground(
-                original, cleanupAreas.get(1), Color.PINK)).isEqualTo(new Color(82, 82, 82));
+                original, cleanupAreas.get(1), Color.PINK, Color.WHITE)).isEqualTo(new Color(82, 82, 82));
 
         RenderedImage rendered = new ImageTranslationOverlayRenderer(
                 new ImageTranslationFontProvider(Set.of("dejavu sans"))).render(source, plan);
@@ -164,11 +164,107 @@ class PolygonOverlayRendererTests {
         java.awt.geom.Area cleanup = new java.awt.geom.Area(
                 OverlaySafetyPolicy.polygon(rectangle(40, 30, 40, 20)));
 
-        Color sampled = ImageTranslationStyleEstimator.localBackground(original, cleanup, dark);
+        Color sampled = ImageTranslationStyleEstimator.localBackground(
+                original, cleanup, dark, Color.WHITE);
 
         assertThat(sampled.getRed()).isLessThan(90);
         assertThat(sampled.getGreen()).isLessThan(90);
         assertThat(sampled.getBlue()).isLessThan(90);
+    }
+
+    @Test
+    void neighbouringInkNeverBecomesTheCleanupFillColour() {
+        Color paper = Color.WHITE;
+        Color ink = new Color(20, 20, 20);
+        BufferedImage original = new BufferedImage(120, 80, BufferedImage.TYPE_INT_RGB);
+        var graphics = original.createGraphics();
+        try {
+            graphics.setColor(paper);
+            graphics.fillRect(0, 0, 120, 80);
+            // Dense neighbouring glyphs surround the cleanup area on every side.
+            graphics.setColor(ink);
+            graphics.fillRect(20, 10, 80, 20);
+            graphics.fillRect(20, 54, 80, 20);
+            graphics.fillRect(20, 30, 16, 24);
+            graphics.fillRect(84, 30, 16, 24);
+        } finally {
+            graphics.dispose();
+        }
+        java.awt.geom.Area cleanup = new java.awt.geom.Area(
+                OverlaySafetyPolicy.polygon(rectangle(40, 34, 40, 16)));
+
+        Color darkPaper = ImageTranslationStyleEstimator.localBackground(original, cleanup, paper, ink);
+        Color invertedPaper = ImageTranslationStyleEstimator.localBackground(original, cleanup, ink, paper);
+
+        assertThat(darkPaper).as("ink-dominated perimeter must fall back to the region background")
+                .isEqualTo(paper);
+        assertThat(invertedPaper).as("sample matching the region background is still trusted")
+                .isEqualTo(ink);
+    }
+
+    @Test
+    void oneVisualGroupRendersEveryCellAtTheSameFontSize() throws Exception {
+        BufferedImage original = whiteImage(360, 120);
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        ImageIO.write(original, "png", bytes);
+        ValidatedImage source = new ImageInputValidator(ImageTranslationProperties.defaults())
+                .validate(bytes.toByteArray(), "image/png");
+        OcrRegion shortCell = groupedRegion("cell-short", "染髮", 20, 20, 300, 34);
+        OcrRegion longCell = groupedRegion("cell-long", "洗髮剪髮頭皮隔離", 20, 66, 300, 34);
+        OverlaySafetyPlan plan = new OverlaySafetyPolicy().evaluate(
+                List.of(new ImageRegionOverlay(shortCell, "Dye"),
+                        new ImageRegionOverlay(longCell, "Shampoo, haircut and scalp isolation")),
+                360, 120, new ImageTranslationProperties(1000, 400, 100000, .6f, true, .8, .9));
+
+        RenderedImage rendered = new ImageTranslationOverlayRenderer(
+                new ImageTranslationFontProvider(Set.of("dejavu sans"))).render(source, plan);
+
+        assertThat(rendered.renderedBlockCount()).as("decisions=%s", rendered.decisions()).isEqualTo(2);
+        BufferedImage output = ImageIO.read(new ByteArrayInputStream(rendered.pngBytes()));
+        int shortHeight = inkHeight(output, 20, 20, 300, 34);
+        int longHeight = inkHeight(output, 20, 66, 300, 34);
+        assertThat(shortHeight).isPositive();
+        assertThat(longHeight).isPositive();
+        assertThat(Math.abs(shortHeight - longHeight))
+                .as("group cells must share one type size (short=%s, long=%s)", shortHeight, longHeight)
+                .isLessThanOrEqualTo(2);
+    }
+
+    private static BufferedImage whiteImage(int width, int height) {
+        BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+        var graphics = image.createGraphics();
+        try {
+            graphics.setColor(Color.WHITE);
+            graphics.fillRect(0, 0, width, height);
+        } finally {
+            graphics.dispose();
+        }
+        return image;
+    }
+
+    private static OcrRegion groupedRegion(
+            String id, String text, int x, int y, int width, int height) {
+        List<OcrPoint> polygon = rectangle(x, y, width, height);
+        return new OcrRegion(id, text, polygon,
+                List.of(new OcrWord(text, polygon, .99f, true)),
+                .99f, true, OcrBlockType.TEXT, List.of(), 0, "price-table", false);
+    }
+
+    /** Height of the ink bounding box inside a cell, used as a proxy for the rendered type size. */
+    private static int inkHeight(BufferedImage image, int x, int y, int width, int height) {
+        int top = Integer.MAX_VALUE;
+        int bottom = Integer.MIN_VALUE;
+        for (int row = y; row < y + height; row++) {
+            for (int column = x; column < x + width; column++) {
+                Color colour = new Color(image.getRGB(column, row));
+                if (colour.getRed() < 128 && colour.getGreen() < 128 && colour.getBlue() < 128) {
+                    top = Math.min(top, row);
+                    bottom = Math.max(bottom, row);
+                    break;
+                }
+            }
+        }
+        return bottom < top ? 0 : bottom - top + 1;
     }
 
     @Test
