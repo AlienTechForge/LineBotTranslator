@@ -284,6 +284,79 @@ class PolygonOverlayRendererTests {
         }
     }
 
+    @Test
+    void shortLabelFitsACellWhoseHeightMatchesTheProductionRatio() throws Exception {
+        // Production geometry: sourceFontSize is ~1.3x cell height, and these cells failed for
+        // translations as short as one character, which cannot be a width problem.
+        BufferedImage original = whiteImage(200, 60);
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        ImageIO.write(original, "png", bytes);
+        ValidatedImage source = new ImageInputValidator(ImageTranslationProperties.defaults())
+                .validate(bytes.toByteArray(), "image/png");
+        OcrRegion cell = compactCell("tight-row", "會員", 20, 20, 43, 14);
+        OverlaySafetyPlan plan = new OverlaySafetyPolicy().evaluate(
+                List.of(new ImageRegionOverlay(cell, "Mem")), 200, 60,
+                new ImageTranslationProperties(1000, 400, 100000, .6f, true, .8, .9));
+
+        RenderedImage rendered = new ImageTranslationOverlayRenderer(
+                new ImageTranslationFontProvider(Set.of("dejavu sans"))).render(source, plan);
+
+        assertThat(rendered.decisions())
+                .extracting(OverlayRenderDecision::reason)
+                .doesNotContain("text-fit");
+        assertThat(rendered.renderedBlockCount()).isEqualTo(1);
+    }
+
+    @Test
+    void wideCompactCellMayShrinkBelowTheSourceGlyphBoxRatioToFitOneLine() throws Exception {
+        BufferedImage original = whiteImage(300, 60);
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        ImageIO.write(original, "png", bytes);
+        ValidatedImage source = new ImageInputValidator(ImageTranslationProperties.defaults())
+                .validate(bytes.toByteArray(), "image/png");
+        OcrRegion cell = compactCell("wide-row", "洗髮剪髮頭皮隔離染髮", 20, 16, 234, 27);
+        OverlaySafetyPlan plan = new OverlaySafetyPolicy().evaluate(
+                List.of(new ImageRegionOverlay(cell,
+                        "Shampoo, Haircut, Scalp Care and Dye")), 300, 60,
+                new ImageTranslationProperties(1000, 400, 100000, .6f, true, .8, .9));
+
+        RenderedImage rendered = new ImageTranslationOverlayRenderer(
+                new ImageTranslationFontProvider(Set.of("dejavu sans"))).render(source, plan);
+
+        assertThat(rendered.decisions())
+                .extracting(OverlayRenderDecision::reason)
+                .doesNotContain("text-fit");
+        assertThat(rendered.renderedBlockCount()).isEqualTo(1);
+    }
+
+    @Test
+    void cellShorterThanTheMinimumReadableSizeStillPreservesItsSource() throws Exception {
+        BufferedImage original = whiteImage(200, 40);
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        ImageIO.write(original, "png", bytes);
+        ValidatedImage source = new ImageInputValidator(ImageTranslationProperties.defaults())
+                .validate(bytes.toByteArray(), "image/png");
+        OcrRegion sliver = groupedRegion("sliver", "る。", 20, 16, 81, 7);
+        OverlaySafetyPlan plan = new OverlaySafetyPolicy().evaluate(
+                List.of(new ImageRegionOverlay(sliver, "and so on")), 200, 40,
+                new ImageTranslationProperties(1000, 400, 100000, .6f, true, .8, .9));
+
+        RenderedImage rendered = new ImageTranslationOverlayRenderer(
+                new ImageTranslationFontProvider(Set.of("dejavu sans"))).render(source, plan);
+
+        assertThat(rendered.renderedBlockCount())
+                .as("a 7px cell cannot hold readable type and must keep its source")
+                .isZero();
+    }
+
+    private static OcrRegion compactCell(
+            String id, String text, int x, int y, int width, int height) {
+        List<OcrPoint> polygon = rectangle(x, y, width, height);
+        return new OcrRegion(id, text, polygon,
+                List.of(new OcrWord(text, polygon, .99f, true)),
+                .99f, true, OcrBlockType.TEXT, List.of(), 0, id, true);
+    }
+
     private static BufferedImage whiteImage(int width, int height) {
         BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
         var graphics = image.createGraphics();

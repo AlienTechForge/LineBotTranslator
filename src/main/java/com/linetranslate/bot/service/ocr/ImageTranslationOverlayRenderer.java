@@ -173,7 +173,7 @@ public class ImageTranslationOverlayRenderer {
             FontMetrics metrics = graphics.getFontMetrics();
             List<String> lines = wrap(item.overlay().replacement(), metrics,
                     Math.max(1, item.localBounds().width() - 2));
-            if ((long) lines.size() * metrics.getHeight() > item.localBounds().height()) {
+            if (textHeight(metrics, lines.size()) > item.localBounds().height()) {
                 result.add(item);
                 continue;
             }
@@ -229,8 +229,11 @@ public class ImageTranslationOverlayRenderer {
             int maximumFontSize,
             boolean compactLabel) {
         int maximum = Math.max(MIN_FONT_SIZE, Math.min(maximumFontSize, bounds.height() - 2));
+        // sourceFontSize measures the OCR glyph box, which is consistently ~1.3x the cell height, so
+        // deriving the compact floor from it alone lifts the floor above every size that can fit.
+        int compactBasis = Math.min(maximumFontSize, bounds.height());
         int minimum = compactLabel
-                ? Math.min(maximum, Math.max(MIN_FONT_SIZE, (int) Math.ceil(maximumFontSize * .55)))
+                ? Math.min(maximum, Math.max(MIN_FONT_SIZE, (int) Math.ceil(compactBasis * .55)))
                 : MIN_FONT_SIZE;
         // A fixed-width cell is limited by width, not height, and a translation usually needs more
         // characters than its source. Shrinking type uniformly spends readable height to buy width,
@@ -241,7 +244,7 @@ public class ImageTranslationOverlayRenderer {
                 graphics.setFont(font);
                 FontMetrics metrics = graphics.getFontMetrics();
                 List<String> lines = wrap(text, metrics, Math.max(1, bounds.width() - 2));
-                if ((long) lines.size() * metrics.getHeight() <= bounds.height()) {
+                if (textHeight(metrics, lines.size()) <= bounds.height()) {
                     return new Layout(font, lines, true);
                 }
             }
@@ -250,6 +253,16 @@ public class ImageTranslationOverlayRenderer {
         graphics.setFont(font);
         List<String> lines = wrap(text, graphics.getFontMetrics(), Math.max(1, bounds.width() - 2));
         return new Layout(font, lines, false);
+    }
+
+    /**
+     * Ink height of a wrapped block. Leading separates one line from the next, so it belongs between
+     * lines and never after the last one. Charging every line a full {@code getHeight()} overstates
+     * a single line by the whole leading, which for CJK faces is a large fraction of the type size.
+     */
+    private static int textHeight(FontMetrics metrics, int lineCount) {
+        int lines = Math.max(1, lineCount);
+        return (lines - 1) * metrics.getHeight() + metrics.getAscent() + metrics.getDescent();
     }
 
     /** Narrows glyphs without touching their height, which is what a narrow cell actually lacks. */
