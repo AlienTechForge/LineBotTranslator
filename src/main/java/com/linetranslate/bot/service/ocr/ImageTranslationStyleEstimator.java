@@ -33,11 +33,22 @@ final class ImageTranslationStyleEstimator {
         return new ImageTranslationTextStyle(background, text, fontStyle, sourceFontSize(region, bounds));
     }
 
-    static Color localBackground(BufferedImage image, Area cleanupArea, Color fallback) {
+    /**
+     * Background colour for one glyph cleanup area. In dense text a glyph's perimeter is mostly the
+     * ink of neighbouring glyphs rather than background, so the local sample is only trusted when it
+     * sits closer to the region background than to the region text colour. Without that guard the
+     * cleanup fill becomes a solid ink-coloured block painted over the source content.
+     */
+    static Color localBackground(
+            BufferedImage image, Area cleanupArea, Color background, Color foreground) {
         Rectangle bounds = cleanupArea.getBounds();
         int adaptiveMargin = Math.max(SAMPLE_MARGIN,
                 Math.min(16, Math.max(bounds.width, bounds.height) / 3));
-        return dominant(perimeterPixels(image, bounds, adaptiveMargin), fallback);
+        Color sampled = dominant(perimeterPixels(image, bounds, adaptiveMargin), background);
+        if (foreground == null) return sampled;
+        return colourDistanceSquared(sampled, foreground) < colourDistanceSquared(sampled, background)
+                ? background
+                : sampled;
     }
 
     private static List<Color> perimeterPixels(BufferedImage image, Rectangle bounds, int margin) {

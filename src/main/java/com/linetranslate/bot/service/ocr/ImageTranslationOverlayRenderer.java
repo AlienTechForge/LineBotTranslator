@@ -104,12 +104,14 @@ public class ImageTranslationOverlayRenderer {
                         origin, angle, localBounds, layout));
             }
 
+            prepared = normalizeGroupFontSizes(graphics, prepared);
+
             Area combinedMask = new Area();
             for (PreparedOverlay item : prepared) combinedMask.add(new Area(item.modifiedMask()));
             for (PreparedOverlay item : prepared) {
                 for (Area cleanupArea : item.cleanupAreas()) {
                     graphics.setColor(ImageTranslationStyleEstimator.localBackground(
-                            pristine, cleanupArea, item.style().background()));
+                            pristine, cleanupArea, item.style().background(), item.style().foreground()));
                     graphics.fill(cleanupArea);
                 }
                 restoreOutsideMask(output, pristine, combinedMask, item.modifiedMask().getBounds());
@@ -136,6 +138,41 @@ public class ImageTranslationOverlayRenderer {
             graphics.dispose();
         }
         return new RenderedImage(encode(output), rendered, plan.skipped() + fontSkipped, decisions);
+    }
+
+    /**
+     * One visual group must read as one table. Each region independently maximises its own font
+     * size, so equal-width cells end up with jumping type whenever their translations differ in
+     * length. The group therefore adopts the smallest size that any of its members already fits at.
+     */
+    private static List<PreparedOverlay> normalizeGroupFontSizes(
+            Graphics2D graphics, List<PreparedOverlay> prepared) {
+        java.util.Map<String, Integer> smallest = new java.util.HashMap<>();
+        for (PreparedOverlay item : prepared) {
+            smallest.merge(item.overlay().region().groupId(), item.layout().font().getSize(), Math::min);
+        }
+        List<PreparedOverlay> result = new ArrayList<>(prepared.size());
+        for (PreparedOverlay item : prepared) {
+            int target = smallest.getOrDefault(
+                    item.overlay().region().groupId(), item.layout().font().getSize());
+            if (target >= item.layout().font().getSize()) {
+                result.add(item);
+                continue;
+            }
+            Font font = item.layout().font().deriveFont((float) target);
+            graphics.setFont(font);
+            FontMetrics metrics = graphics.getFontMetrics();
+            List<String> lines = wrap(item.overlay().replacement(), metrics,
+                    Math.max(1, item.localBounds().width() - 2));
+            if ((long) lines.size() * metrics.getHeight() > item.localBounds().height()) {
+                result.add(item);
+                continue;
+            }
+            result.add(new PreparedOverlay(item.overlay(), item.style(), item.layoutMask(),
+                    item.modifiedMask(), item.cleanupAreas(), item.origin(), item.angle(),
+                    item.localBounds(), new Layout(font, lines, true)));
+        }
+        return result;
     }
 
     /** Restores the one-pixel rasterization fringe outside the approved overlay geometry. */
