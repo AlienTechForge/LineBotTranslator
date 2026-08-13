@@ -37,6 +37,8 @@ public class ImageTranslationOverlayRenderer {
     private static final int READABLE_LABEL_FLOOR = 12;
     /** Relative opposite-edge mismatch above which placement error is worth reporting. */
     private static final double SKEW_REPORT_THRESHOLD = .02;
+    /** Share of a cleanup area still holding source ink above which the erase is worth reporting. */
+    private static final double RESIDUAL_INK_THRESHOLD = .05;
     private final ImageTranslationFontProvider fontProvider;
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -133,6 +135,7 @@ public class ImageTranslationOverlayRenderer {
                     graphics.fill(cleanupArea);
                 }
                 restoreOutsideMask(output, pristine, combinedMask, item.modifiedMask().getBounds());
+                logResidualInk(output, item);
             }
 
             for (PreparedOverlay item : prepared) {
@@ -258,6 +261,59 @@ public class ImageTranslationOverlayRenderer {
         graphics.setFont(font);
         List<String> lines = wrap(text, graphics.getFontMetrics(), Math.max(1, bounds.width() - 2));
         return new Layout(font, lines, false);
+    }
+
+    /**
+     * Share of a cleanup area still holding source-coloured pixels after the background fill. A
+     * complete erase leaves this near zero; a high value means the glyph mask did not cover the
+     * real ink, which is what would leave the source showing through the translation.
+     */
+    static double residualInkRatio(
+            BufferedImage output, List<Area> cleanupAreas, Color foreground, Color background) {
+        long inside = 0;
+        long residual = 0;
+        int foregroundToBackground = colourDistanceSquared(foreground, background);
+        if (foregroundToBackground <= 0) return 0d;
+        for (Area area : cleanupAreas) {
+            java.awt.Rectangle bounds = area.getBounds();
+            int left = Math.max(0, bounds.x);
+            int top = Math.max(0, bounds.y);
+            int right = Math.min(output.getWidth(), bounds.x + bounds.width);
+            int bottom = Math.min(output.getHeight(), bounds.y + bounds.height);
+            for (int y = top; y < bottom; y++) {
+                for (int x = left; x < right; x++) {
+                    if (!area.contains(x + .5, y + .5)) continue;
+                    inside++;
+                    Color pixel = new Color(output.getRGB(x, y), true);
+                    // Closer to the source text colour than to the background means ink survived.
+                    if (colourDistanceSquared(pixel, foreground)
+                            < colourDistanceSquared(pixel, background)) {
+                        residual++;
+                    }
+                }
+            }
+        }
+        return inside == 0 ? 0d : (double) residual / inside;
+    }
+
+    private static int colourDistanceSquared(Color left, Color right) {
+        int red = left.getRed() - right.getRed();
+        int green = left.getGreen() - right.getGreen();
+        int blue = left.getBlue() - right.getBlue();
+        return red * red + green * green + blue * blue;
+    }
+
+    private static void logResidualInk(BufferedImage output, PreparedOverlay item) {
+        double residual = residualInkRatio(output, item.cleanupAreas(),
+                item.style().foreground(), item.style().background());
+        if (residual < RESIDUAL_INK_THRESHOLD) return;
+        java.awt.Rectangle bounds = item.modifiedMask().getBounds();
+        log.info("Overlay cleanup left source ink: residual={}, cleanupAreas={}, "
+                        + "cellWidth={}, cellHeight={}, skew={}",
+                String.format(java.util.Locale.ROOT, "%.3f", residual),
+                item.cleanupAreas().size(), bounds.width, bounds.height,
+                String.format(java.util.Locale.ROOT, "%.3f",
+                        polygonSkew(item.overlay().region().polygon())));
     }
 
     /**
