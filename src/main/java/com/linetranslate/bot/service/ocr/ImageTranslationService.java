@@ -96,41 +96,12 @@ public class ImageTranslationService {
                         .append(url)
                         .append("\n\n"));
         if (result.overlayDisposition() == ImageOverlayDisposition.SAFETY_DEGRADED) {
-            display.append("⚠️ 為避免錯誤覆寫，本次只提供文字翻譯；原圖未被修改。\n\n");
+            display.append("⚠️ 本次未能覆寫原圖，僅提供文字翻譯。\n\n");
         }
         display.append("【圖片文字辨識結果】\n\n")
                 .append("識別的文字：\n").append(recognizedText).append("\n\n")
                 .append("翻譯結果：\n").append(translation.translatedText()).append("\n\n");
-        if (result.lowConfidenceBlockCount() > 0) {
-            display.append("⚠️ ").append(result.lowConfidenceBlockCount())
-                    .append(renderedImageUrl.isPresent()
-                            ? " 個低信心區塊已保留原文並以橘框標示。\n\n"
-                            : " 個低信心區塊未覆寫，已保留原文。\n\n");
-        }
-        appendDegradation(display, result.degradation(), OverlayDegradationReason.COVERAGE,
-                " 個文字區域因覆蓋範圍過大而保留原文。");
-        appendDegradation(display, result.degradation(), OverlayDegradationReason.GEOMETRY,
-                " 個文字區域因位置資訊不安全而保留原文。");
-        appendDegradation(display, result.degradation(), OverlayDegradationReason.OVERLAP,
-                " 個文字區域因位置重疊而保留原文。");
-        appendDegradation(display, result.degradation(), OverlayDegradationReason.FONT,
-                " 個文字區域因找不到完整字形而保留原文。");
-        appendDegradation(display, result.degradation(), OverlayDegradationReason.TEXT_FIT,
-                " 個文字區域因譯文無法以可讀大小完整放入而保留原文。");
-        appendDegradation(display, result.degradation(), OverlayDegradationReason.MAPPING,
-                " 個文字區域未取得可靠的對應譯文而保留原文。");
-        appendDegradation(display, result.degradation(), OverlayDegradationReason.DISABLED,
-                " 個文字區域因圖片覆寫功能已停用而保留原文。");
-        appendDegradation(display, result.degradation(), OverlayDegradationReason.OTHER,
-                " 個文字區域因未預期的處理錯誤而保留原文。");
-        if (result.degradation().count(OverlayDegradationReason.STORAGE) > 0) {
-            display.append("⚠️ 譯圖已產生，但上傳儲存失敗，暫時無法提供圖片連結。\n\n");
-        }
-        if (result.overlayDisposition() == ImageOverlayDisposition.SAFETY_DEGRADED
-                && result.degradation().total() == 0
-                && result.lowConfidenceBlockCount() == 0) {
-            display.append("⚠️ 本次未取得可安全覆寫的文字區域，因此保留原圖。\n\n");
-        }
+        logOverlayOutcome(result);
         display.append("[偵測到: ").append(LanguageUtils.toChineseName(translation.sourceLanguage()))
                 .append(" | 翻譯成: ").append(LanguageUtils.toChineseName(translation.targetLanguage()))
                 .append("]");
@@ -139,10 +110,29 @@ public class ImageTranslationService {
                 renderedImageUrl);
     }
 
-    private static void appendDegradation(StringBuilder display, OverlayDegradationSummary summary,
-            OverlayDegradationReason reason, String message) {
-        int count = summary.count(reason);
-        if (count > 0) display.append("⚠️ ").append(count).append(message).append("\n\n");
+    /**
+     * Overlay degradation is operator diagnostics, not user-facing copy. The per-reason breakdown
+     * goes to the log; the reply only states whether the image could be overwritten.
+     */
+    private static void logOverlayOutcome(ImageTranslationPipelineResult pipeline) {
+        OverlayDegradationSummary degradation = pipeline.degradation();
+        ImageOverlayDisposition disposition = pipeline.overlayDisposition();
+        int preservedTotal = degradation.total();
+        int lowConfidence = pipeline.lowConfidenceBlockCount();
+        int coverage = degradation.count(OverlayDegradationReason.COVERAGE);
+        int geometry = degradation.count(OverlayDegradationReason.GEOMETRY);
+        int overlap = degradation.count(OverlayDegradationReason.OVERLAP);
+        int font = degradation.count(OverlayDegradationReason.FONT);
+        int textFit = degradation.count(OverlayDegradationReason.TEXT_FIT);
+        int mapping = degradation.count(OverlayDegradationReason.MAPPING);
+        int disabled = degradation.count(OverlayDegradationReason.DISABLED);
+        int storage = degradation.count(OverlayDegradationReason.STORAGE);
+        int other = degradation.count(OverlayDegradationReason.OTHER);
+        log.info("Image overlay outcome: disposition={}, preservedTotal={}, lowConfidence={}, "
+                        + "coverage={}, geometry={}, overlap={}, font={}, textFit={}, "
+                        + "mapping={}, disabled={}, storage={}, other={}",
+                disposition, preservedTotal, lowConfidence, coverage, geometry, overlap,
+                font, textFit, mapping, disabled, storage, other);
     }
 
     private static boolean isSafeRenderedImageUrl(String value) {

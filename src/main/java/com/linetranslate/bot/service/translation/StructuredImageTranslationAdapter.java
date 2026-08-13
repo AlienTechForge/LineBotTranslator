@@ -46,7 +46,12 @@ public class StructuredImageTranslationAdapter {
         // discarding the whole overlay; unanswered regions keep their source pixels.
         Attempt best = repaired.translations().size() > first.translations().size() ? repaired : first;
         if (best.translations().isEmpty()) {
-            throw new StructuredTranslationException("Structured response and repair are invalid");
+            boolean providerFailed = first.raw() == null && repaired.raw() == null;
+            throw new StructuredTranslationException(
+                    providerFailed
+                            ? StructuredTranslationException.PROVIDER_FAILED
+                            : StructuredTranslationException.NO_USABLE_REGION,
+                    "Structured response and repair are invalid");
         }
         return best.result(regions);
     }

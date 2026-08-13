@@ -54,8 +54,8 @@ class ImageTranslationResultRenderingTests {
         assertThat(response.displayText())
                 .contains("https://s3.example/result.png?signature=safe")
                 .contains("1 小時內有效")
-                .contains("低信心區塊已保留原文")
-                .contains("翻譯結果：\n你好");
+                .contains("翻譯結果：\n你好")
+                .doesNotContain("低信心區塊");
     }
 
     @Test
@@ -110,8 +110,8 @@ class ImageTranslationResultRenderingTests {
                 .processImageTranslationResponse("U-safe", "message");
 
         assertThat(response.displayText())
-                .contains("為避免錯誤覆寫")
-                .contains("只提供文字翻譯")
+                .contains("未能覆寫原圖")
+                .contains("僅提供文字翻譯")
                 .contains("翻譯結果：\n你好");
         assertThat(response.translatedText()).isEqualTo("你好");
     }
@@ -136,38 +136,26 @@ class ImageTranslationResultRenderingTests {
         String display = new ImageTranslationService(pipeline, repository)
                 .processImageTranslationResponse("U-coverage", "message").displayText();
 
-        assertThat(display).contains("3 個文字區域因覆蓋範圍過大而保留原文")
-                .doesNotContain("低信心區塊");
+        assertThat(display).doesNotContain("個文字區域", "低信心區塊", "覆蓋範圍");
     }
 
     @Test
-    void mappingDegradationTellsTheUserWhyTheImageWasNotOverwritten() {
-        String display = degradedDisplay("U-mapping",
-                OverlayDegradationSummary.single(OverlayDegradationReason.MAPPING, 2));
+    void overlayDiagnosticsNeverLeakIntoTheUserReply() {
+        for (OverlayDegradationReason reason : OverlayDegradationReason.values()) {
+            String display = degradedDisplay("U-" + reason, OverlayDegradationSummary.single(reason, 7));
 
-        assertThat(display).contains("2 個文字區域未取得可靠的對應譯文");
+            assertThat(display)
+                    .as("reply for %s", reason)
+                    .doesNotContain("7", "個文字區域", "低信心區塊");
+        }
     }
 
     @Test
-    void disabledAndUnexpectedFailuresAreAlsoExplained() {
-        assertThat(degradedDisplay("U-disabled",
-                OverlayDegradationSummary.single(OverlayDegradationReason.DISABLED, 4)))
-                .contains("圖片覆寫功能已停用");
-        assertThat(degradedDisplay("U-other",
-                OverlayDegradationSummary.single(OverlayDegradationReason.OTHER, 1)))
-                .contains("未預期的處理錯誤");
-        assertThat(degradedDisplay("U-storage",
-                OverlayDegradationSummary.single(OverlayDegradationReason.STORAGE, 1)))
-                .contains("上傳儲存失敗");
-    }
-
-    @Test
-    void degradationWarningIsNeverSentWithoutAnyReason() {
+    void degradedReplyStatesTheOutcomeExactlyOnceWithoutDiagnostics() {
         String display = degradedDisplay("U-bare", OverlayDegradationSummary.none());
 
-        assertThat(display).contains("為避免錯誤覆寫");
-        assertThat(display.lines().filter(line -> line.startsWith("⚠️")).count())
-                .isGreaterThanOrEqualTo(2L);
+        assertThat(display).contains("未能覆寫原圖");
+        assertThat(display.lines().filter(line -> line.startsWith("⚠️")).count()).isEqualTo(1L);
     }
 
     private static String degradedDisplay(String userId, OverlayDegradationSummary degradation) {

@@ -9,7 +9,7 @@ import org.springframework.stereotype.Component;
 @Component
 public class TranslationPromptFactory {
     public static final String TEXT_PROMPT_VERSION = "text-translation-v2";
-    public static final String IMAGE_PROMPT_VERSION = "image-translation-v4";
+    public static final String IMAGE_PROMPT_VERSION = "image-translation-v5";
     public static final String OCR_PROMPT_VERSION = "image-ocr-v2";
     public static final String DETECTION_PROMPT_VERSION = "language-detection-v2";
 
@@ -53,7 +53,19 @@ public class TranslationPromptFactory {
             - For menus, tables, forms, and UI, use concise conventional target-language terminology.
             - When layout.compactLabel is true, use the shortest conventional label that preserves meaning;
               omit redundant category words only when the surrounding visual group makes them unambiguous.
-            - Do not pad text or add explanations. Return only JSON matching the response schema.
+            - Do not pad text or add explanations.
+
+            Response contract (the request envelope is input only; never echo its fields):
+            - Return one JSON object and nothing else. No prose, no markdown, no code fence.
+            - The object has exactly two keys: "schemaVersion" and "regions".
+            - "schemaVersion" is the string "{{SCHEMA_VERSION}}".
+            - "regions" is an array; each element has exactly two keys: "regionId" and "translatedText".
+            - "regionId" repeats a supplied regionId verbatim. "translatedText" is the translation only.
+            - Never include sourceText, sourceLanguage, action, readingOrder, layout, protectedTokens,
+              targetLocale, repair, documentContext, or any other key anywhere in the response.
+
+            Response example for two supplied regions:
+            {"schemaVersion":"{{SCHEMA_VERSION}}","regions":[{"regionId":"r-1","translatedText":"..."},{"regionId":"r-2","translatedText":"..."}]}
 
             Style preset: {{STYLE_ID}} ({{STYLE_VERSION}})
             Style rule: {{STYLE_RULE}}
@@ -122,6 +134,7 @@ public class TranslationPromptFactory {
         values.put("STYLE_ID", style.id());
         values.put("STYLE_VERSION", style.promptVersion());
         values.put("STYLE_RULE", style.promptRule());
+        values.put("SCHEMA_VERSION", StructuredImageTranslationCodec.SCHEMA_VERSION);
         String result = template;
         for (Map.Entry<String, String> value : values.entrySet()) {
             result = result.replace("{{" + value.getKey() + "}}", value.getValue());
