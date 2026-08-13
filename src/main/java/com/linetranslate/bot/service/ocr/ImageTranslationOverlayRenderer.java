@@ -29,6 +29,12 @@ public class ImageTranslationOverlayRenderer {
     private static final int MIN_FONT_SIZE = 8;
     /** Glyph width scales tried in order; 0.8 is the narrowest that stays comfortably readable. */
     private static final double[] CONDENSE_STEPS = {1d, .9d, .8d};
+    /**
+     * Floor for a compact label that cannot fit above its proportional floor. Prose may go down to
+     * MIN_FONT_SIZE, but a table cell rendered that small reads as noise, so a label either lands
+     * at or above this size or keeps its source text.
+     */
+    private static final int READABLE_LABEL_FLOOR = 12;
     private final ImageTranslationFontProvider fontProvider;
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -232,14 +238,40 @@ public class ImageTranslationOverlayRenderer {
         // sourceFontSize measures the OCR glyph box, which is consistently ~1.3x the cell height, so
         // deriving the compact floor from it alone lifts the floor above every size that can fit.
         int compactBasis = Math.min(maximumFontSize, bounds.height());
-        int minimum = compactLabel
+        int compactFloor = compactLabel
                 ? Math.min(maximum, Math.max(MIN_FONT_SIZE, (int) Math.ceil(compactBasis * .55)))
                 : MIN_FONT_SIZE;
-        // A fixed-width cell is limited by width, not height, and a translation usually needs more
-        // characters than its source. Shrinking type uniformly spends readable height to buy width,
-        // so try the full size range at each condensing step before giving the whole cell up.
+        // The compact floor keeps short labels from shrinking far below their source. A long
+        // translation in the same cell is not a short label, so when nothing fits above the floor
+        // the search continues down to the readability minimum rather than abandoning the cell.
+        Layout preferred = fitBetween(graphics, text, bounds, baseFont, maximum, compactFloor);
+        if (preferred != null) return preferred;
+        if (compactFloor > READABLE_LABEL_FLOOR) {
+            Layout smaller = fitBetween(
+                    graphics, text, bounds, baseFont, compactFloor - 1, READABLE_LABEL_FLOOR);
+            if (smaller != null) return smaller;
+        }
+        Font font = condensed(baseFont, MIN_FONT_SIZE, CONDENSE_STEPS[CONDENSE_STEPS.length - 1]);
+        graphics.setFont(font);
+        List<String> lines = wrap(text, graphics.getFontMetrics(), Math.max(1, bounds.width() - 2));
+        return new Layout(font, lines, false);
+    }
+
+    /**
+     * Largest layout that fits within a closed size range, or null when nothing in the range fits.
+     * A fixed-width cell is limited by width, not height, and a translation usually needs more
+     * characters than its source, so every size is retried at each condensing step.
+     */
+    private static Layout fitBetween(
+            Graphics2D graphics,
+            String text,
+            Bounds bounds,
+            Font baseFont,
+            int highest,
+            int lowest) {
+        if (highest < lowest) return null;
         for (double widthScale : CONDENSE_STEPS) {
-            for (int size = maximum; size >= minimum; size--) {
+            for (int size = highest; size >= lowest; size--) {
                 Font font = condensed(baseFont, size, widthScale);
                 graphics.setFont(font);
                 FontMetrics metrics = graphics.getFontMetrics();
@@ -249,10 +281,7 @@ public class ImageTranslationOverlayRenderer {
                 }
             }
         }
-        Font font = condensed(baseFont, minimum, CONDENSE_STEPS[CONDENSE_STEPS.length - 1]);
-        graphics.setFont(font);
-        List<String> lines = wrap(text, graphics.getFontMetrics(), Math.max(1, bounds.width() - 2));
-        return new Layout(font, lines, false);
+        return null;
     }
 
     /**

@@ -349,6 +349,52 @@ class PolygonOverlayRendererTests {
                 .isZero();
     }
 
+    @Test
+    void longTranslationInARoomyCompactCellMayGoBelowTheCompactFloor() throws Exception {
+        // Production geometry: 341x44 with a 43px glyph box. The compact floor lands at 24, where
+        // forty characters need two lines and 61px of height, but size 17 fits on one line.
+        BufferedImage original = whiteImage(400, 80);
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        ImageIO.write(original, "png", bytes);
+        ValidatedImage source = new ImageInputValidator(ImageTranslationProperties.defaults())
+                .validate(bytes.toByteArray(), "image/png");
+        OcrRegion cell = compactCell("roomy-row", "洗髮剪髮頭皮隔離染髮日本三劑式結構護髮", 20, 18, 341, 44);
+        OverlaySafetyPlan plan = new OverlaySafetyPolicy().evaluate(
+                List.of(new ImageRegionOverlay(cell,
+                        "Shampoo, Haircut, Scalp Care, Dye and Care")), 400, 80,
+                new ImageTranslationProperties(1000, 400, 100000, .6f, true, .8, .9));
+
+        RenderedImage rendered = new ImageTranslationOverlayRenderer(
+                new ImageTranslationFontProvider(Set.of("dejavu sans"))).render(source, plan);
+
+        assertThat(rendered.decisions())
+                .extracting(OverlayRenderDecision::reason)
+                .doesNotContain("text-fit");
+        assertThat(rendered.renderedBlockCount()).isEqualTo(1);
+    }
+
+    @Test
+    void shortCompactLabelStillPrefersTypeAboveTheCompactFloor() throws Exception {
+        BufferedImage original = whiteImage(300, 80);
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        ImageIO.write(original, "png", bytes);
+        ValidatedImage source = new ImageInputValidator(ImageTranslationProperties.defaults())
+                .validate(bytes.toByteArray(), "image/png");
+        OcrRegion cell = compactCell("short-row", "染髮", 20, 18, 240, 44);
+        OverlaySafetyPlan plan = new OverlaySafetyPolicy().evaluate(
+                List.of(new ImageRegionOverlay(cell, "Dye")), 300, 80,
+                new ImageTranslationProperties(1000, 400, 100000, .6f, true, .8, .9));
+
+        RenderedImage rendered = new ImageTranslationOverlayRenderer(
+                new ImageTranslationFontProvider(Set.of("dejavu sans"))).render(source, plan);
+        BufferedImage output = ImageIO.read(new ByteArrayInputStream(rendered.pngBytes()));
+
+        assertThat(rendered.renderedBlockCount()).isEqualTo(1);
+        assertThat(inkHeight(output, 20, 18, 240, 44))
+                .as("a short label must not be shrunk to the readability minimum")
+                .isGreaterThanOrEqualTo(14);
+    }
+
     private static OcrRegion compactCell(
             String id, String text, int x, int y, int width, int height) {
         List<OcrPoint> polygon = rectangle(x, y, width, height);
@@ -663,7 +709,7 @@ class PolygonOverlayRendererTests {
     }
 
     @Test
-    void compactLabelIsNotShrunkFarBelowItsSourceTextSize() throws Exception {
+    void compactLabelDropsToTheReadableFloorInsteadOfKeepingItsSource() throws Exception {
         BufferedImage original = new BufferedImage(150, 55, BufferedImage.TYPE_INT_RGB);
         var graphics = original.createGraphics();
         try {
@@ -689,9 +735,13 @@ class PolygonOverlayRendererTests {
         RenderedImage result = new ImageTranslationOverlayRenderer(
                 new ImageTranslationFontProvider(Set.of("dejavu sans"))).render(source, plan);
 
-        assertThat(result.renderedBlockCount()).isZero();
-        assertThat(result.decisions()).containsExactly(
-                new OverlayRenderDecision("readable", OverlayRenderStatus.PRESERVED, "text-fit"));
+        // Superseded decision: a compact label used to be preserved whenever it needed to shrink at
+        // all. It now drops to READABLE_LABEL_FLOOR rather than leaving the cell untranslated.
+        assertThat(result.renderedBlockCount()).isEqualTo(1);
+        BufferedImage output = ImageIO.read(new ByteArrayInputStream(result.pngBytes()));
+        assertThat(inkHeight(output, 8, 6, 125, 38))
+                .as("label must land on the readable floor, not shrink into noise")
+                .isGreaterThanOrEqualTo(7);
     }
 
     @Test
@@ -742,7 +792,7 @@ class PolygonOverlayRendererTests {
         ImageIO.write(original, "png", bytes);
         ValidatedImage source = new ImageInputValidator(ImageTranslationProperties.defaults())
                 .validate(bytes.toByteArray(), "image/png");
-        OcrRegion longCell = new OcrRegion("long", "染髮", rectangle(8, 5, 125, 38),
+        OcrRegion longCell = new OcrRegion("long", "染髮", rectangle(8, 5, 34, 38),
                 List.of(new OcrWord("染髮", rectangle(10, 8, 50, 30), .99f, true)),
                 .99f, true, OcrBlockType.TEXT, List.of(), 0, "menu", true);
         OcrRegion shortCell = new OcrRegion("short", "剪髮", rectangle(8, 52, 125, 38),
