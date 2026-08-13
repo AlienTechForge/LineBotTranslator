@@ -124,11 +124,38 @@ class OpenRouterServiceContractTests {
         assertThat(schema.path("schema").path("properties").path("regions").path("type").asText())
                 .isEqualTo("array");
         assertThat(body.path("temperature").asDouble()).isZero();
-        assertThat(body.path("max_tokens").asInt()).isEqualTo(4096);
+        assertThat(body.path("max_tokens").asInt()).isEqualTo(8192);
         assertThat(body.path("reasoning").path("effort").asText()).isEqualTo("minimal");
         assertThat(body.path("reasoning").path("exclude").asBoolean()).isTrue();
         assertThat(body.path("messages").get(0).path("content").asText())
                 .contains("Image Translation Contract", "zh-TW", "Traditional Chinese", "regionId", "protectedTokens");
+    }
+
+    @Test
+    void structuredRepairDropsJsonSchemaSoPromptOnlyModelsCanStillAnswer() throws Exception {
+        OpenRouterConfig config = config();
+        OkHttpClient httpClient = mock(OkHttpClient.class);
+        Call call = mock(Call.class);
+        AtomicReference<Request> captured = new AtomicReference<>();
+        when(httpClient.newCall(any(Request.class))).thenAnswer(invocation -> {
+            captured.set(invocation.getArgument(0));
+            return call;
+        });
+        when(call.execute()).thenReturn(response(200, """
+                {"model":"openai/gpt-4o-mini","choices":[{"message":{"content":"{\\\"schemaVersion\\\":\\\"image-regions-v3\\\",\\\"regions\\\":[]}"}}]}
+                """));
+        OpenRouterService adapter = new OpenRouterService(
+                config, httpClient, objectMapper, catalog("openai/gpt-5.5", Set.of("text")));
+        String wire = "{\"schemaVersion\":\"image-regions-v3\",\"targetLocale\":\"zh-TW\","
+                + "\"repair\":true,\"regions\":[]}";
+
+        adapter.execute(AiProviderRequest.translate("openai/gpt-5.5", wire, "zh-TW"));
+
+        JsonNode body = objectMapper.readTree(requestBody(captured.get()));
+        assertThat(body.has("response_format")).isFalse();
+        assertThat(body.path("max_tokens").asInt()).isEqualTo(8192);
+        assertThat(body.path("messages").get(0).path("content").asText())
+                .contains("exactly two keys", "image-regions-v3");
     }
 
     @Test

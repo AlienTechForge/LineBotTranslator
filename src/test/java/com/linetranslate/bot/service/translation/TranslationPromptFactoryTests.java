@@ -35,6 +35,19 @@ class TranslationPromptFactoryTests {
     }
 
     @Test
+    void imagePromptCarriesTheWholeResponseSchemaWithoutRelyingOnResponseFormat() {
+        String prompt = prompts.image("zh-TW", TranslationStylePreset.FAITHFUL);
+
+        assertThat(prompt)
+                .contains(StructuredImageTranslationCodec.SCHEMA_VERSION)
+                .contains("exactly two keys", "\"schemaVersion\"", "\"regions\"")
+                .contains("\"regionId\"", "\"translatedText\"")
+                .contains("No prose, no markdown, no code fence")
+                .contains("never echo its fields")
+                .doesNotContain("{{");
+    }
+
+    @Test
     void ocrAndLanguageDetectionPromptsAreVersionedAndBoundTheirOutputs() {
         assertThat(prompts.ocr())
                 .contains("OCR Extraction Contract", TranslationPromptFactory.OCR_PROMPT_VERSION)

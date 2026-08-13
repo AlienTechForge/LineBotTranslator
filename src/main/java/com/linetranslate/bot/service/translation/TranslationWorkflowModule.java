@@ -101,7 +101,8 @@ public class TranslationWorkflowModule {
                     return new TranslationWorkflowOutcome.Failure(failure.failure());
                 }
                 execution = ((AiExecutionOutcome.Success) degraded).result();
-                log.warn("Structured image mapping degraded");
+                log.warn("Structured image mapping degraded: reason={}, requestedRegions={}, target={}",
+                        unsafeMapping.reason(), request.imageRegions().size(), targetLanguage);
             }
         } else {
             AiExecutionOutcome providerOutcome = translateWithLocaleValidation(

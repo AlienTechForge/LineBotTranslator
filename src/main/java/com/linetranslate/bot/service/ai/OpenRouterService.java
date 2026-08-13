@@ -141,9 +141,13 @@ public class OpenRouterService implements AiProviderAdapter {
             user.put("content", request.input());
             body.put("temperature", request.operation() == AiProviderOperation.TRANSLATE_TEXT ? 0.2 : 0.7);
             if (isStructuredImageTranslation(request)) {
-                body.set("response_format", structuredResponseFormat());
+                // The repair attempt drops json_schema on purpose: a model or route that rejects or
+                // ignores response_format still has the full schema in the system prompt.
+                if (!isStructuredRepair(request)) {
+                    body.set("response_format", structuredResponseFormat());
+                }
                 body.put("temperature", 0);
-                body.put("max_tokens", 4096);
+                body.put("max_tokens", 8192);
                 if (supportsReasoningEffort(request.model())) {
                     body.putObject("reasoning")
                             .put("effort", "minimal")
@@ -180,6 +184,10 @@ public class OpenRouterService implements AiProviderAdapter {
     private static boolean isStructuredImageTranslation(AiProviderRequest request) {
         return request.operation() == AiProviderOperation.TRANSLATE_TEXT
                 && request.input().contains("\"schemaVersion\":\"" + StructuredImageTranslationCodec.SCHEMA_VERSION + "\"");
+    }
+
+    private static boolean isStructuredRepair(AiProviderRequest request) {
+        return request.input().contains("\"repair\":true");
     }
 
     private static boolean supportsReasoningEffort(String model) {
