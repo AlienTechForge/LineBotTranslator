@@ -123,6 +123,16 @@ public class OcrRegionSegmenter {
                         || word.polygon().size() < 4)) {
             return List.of();
         }
+        List<WordBox> readingOrder = region.words().stream()
+                .map(word -> new WordBox(word, frame.bounds(word.polygon()))).toList();
+        if (isVerticalReadingOrder(readingOrder)) {
+            List<OcrRegion> columnChildren = splitVerticalColumns(region, frame, readingOrder);
+            if (!columnChildren.isEmpty()) {
+                reportDecision(region, columnChildren.size(), 0, 0, false, columnChildren.size(),
+                        "split-vertical-columns");
+                return columnChildren;
+            }
+        }
         List<VisualLine> lines = visualLines(region.words(), frame);
         if (lines.isEmpty()) return List.of();
 
@@ -211,6 +221,122 @@ public class OcrRegionSegmenter {
                         + "regionWidth={}, regionHeight={}, sourceChars={}",
                 verdict, wordCount, lineCount, columnarLines, structuredRows,
                 repeatedColumns, childCount, bounds.width, bounds.height, sourceChars);
+    }
+
+
+    /**
+     * Whether the paragraph reads top-to-bottom. Vision returns words already in reading order, so
+     * the direction of travel between consecutive words identifies the axis directly, which is far
+     * more reliable than inferring it from glyph shape. Deliberately conservative: vertical steps
+     * must clearly dominate, otherwise a horizontal paragraph could be split along the wrong axis.
+     */
+    private static boolean isVerticalReadingOrder(List<WordBox> readingOrder) {
+        if (readingOrder.size() < 6) return false;
+        int vertical = 0;
+        int horizontal = 0;
+        for (int index = 1; index < readingOrder.size(); index++) {
+            WordBox previous = readingOrder.get(index - 1);
+            WordBox current = readingOrder.get(index);
+            int dx = Math.abs(current.centerX() - previous.centerX());
+            int dy = Math.abs(current.centerY() - previous.centerY());
+            if (dy > dx) {
+                vertical++;
+            } else if (dx > dy) {
+                horizontal++;
+            }
+        }
+        return vertical >= 4 && vertical > horizontal * 2;
+    }
+
+    /** Column-wise counterpart of visualLines, for paragraphs that read top-to-bottom. */
+    private static List<VisualColumn> visualColumns(List<WordBox> boxes) {
+        List<WordBox> sorted = boxes.stream()
+                .sorted(Comparator.comparingInt(WordBox::centerX).thenComparingInt(WordBox::top))
+                .toList();
+        int medianWidth = median(sorted.stream().map(box -> box.bounds().width).toList());
+        int centerTolerance = Math.max(3, (int) Math.round(medianWidth * .60));
+        List<MutableColumn> columns = new ArrayList<>();
+        for (WordBox box : sorted) {
+            MutableColumn best = null;
+            int bestDistance = Integer.MAX_VALUE;
+            for (MutableColumn column : columns) {
+                int distance = Math.abs(box.centerX() - column.centerX());
+                if ((horizontalOverlap(box.bounds(), column.bounds()) >= .45
+                        || distance <= centerTolerance) && distance < bestDistance) {
+                    best = column;
+                    bestDistance = distance;
+                }
+            }
+            if (best == null) {
+                columns.add(new MutableColumn(box));
+            } else {
+                best.add(box);
+            }
+        }
+        return columns.stream().map(MutableColumn::freeze)
+                .sorted(Comparator.comparingInt(VisualColumn::left)).toList();
+    }
+
+    /**
+     * Splits a top-to-bottom paragraph into one region per item. Columns come first, then each
+     * column is cut at its vertical gaps so a run of characters forming one label stays together.
+     */
+    private static List<OcrRegion> splitVerticalColumns(
+            OcrRegion region, LocalFrame frame, List<WordBox> readingOrder) {
+        List<VisualColumn> columns = visualColumns(readingOrder);
+        if (columns.size() < 2) return List.of();
+        Rectangle paragraph = frame.bounds();
+        List<OcrRegion> children = new ArrayList<>();
+        for (int columnIndex = 0; columnIndex < columns.size(); columnIndex++) {
+            VisualColumn column = columns.get(columnIndex);
+            int left = columnIndex == 0
+                    ? paragraph.x
+                    : midpoint(columns.get(columnIndex - 1).right(), column.left());
+            int right = columnIndex == columns.size() - 1
+                    ? paragraph.x + paragraph.width
+                    : midpoint(column.right(), columns.get(columnIndex + 1).left());
+            List<WordSegment> items = verticalSegments(column);
+            for (int itemIndex = 0; itemIndex < items.size(); itemIndex++) {
+                WordSegment item = items.get(itemIndex);
+                int top = itemIndex == 0
+                        ? paragraph.y
+                        : midpoint(items.get(itemIndex - 1).bottom(), item.top());
+                int bottom = itemIndex == items.size() - 1
+                        ? paragraph.y + paragraph.height
+                        : midpoint(item.bottom(), items.get(itemIndex + 1).top());
+                children.add(child(region, frame, ".v" + (columnIndex + 1) + "." + (itemIndex + 1),
+                        item.words(), left, top, right, bottom, false));
+            }
+        }
+        return children.size() < 2 || children.size() > MAX_DENSE_CHILDREN
+                ? List.of() : List.copyOf(children);
+    }
+
+    private static List<WordSegment> verticalSegments(VisualColumn column) {
+        List<WordBox> words = column.words().stream()
+                .sorted(Comparator.comparingInt(WordBox::top)).toList();
+        int medianHeight = median(words.stream().map(WordBox::height).toList());
+        int splitGap = Math.max(6, (int) Math.ceil(medianHeight * .75));
+        List<WordSegment> segments = new ArrayList<>();
+        List<WordBox> current = new ArrayList<>();
+        for (WordBox word : words) {
+            if (!current.isEmpty()) {
+                WordBox previous = current.get(current.size() - 1);
+                if (word.top() - previous.bottom() >= splitGap) {
+                    segments.add(new WordSegment(List.copyOf(current)));
+                    current.clear();
+                }
+            }
+            current.add(word);
+        }
+        if (!current.isEmpty()) segments.add(new WordSegment(List.copyOf(current)));
+        return List.copyOf(segments);
+    }
+
+    private static double horizontalOverlap(Rectangle left, Rectangle right) {
+        int overlap = Math.max(0, Math.min(left.x + left.width, right.x + right.width)
+                - Math.max(left.x, right.x));
+        return (double) overlap / Math.max(1, Math.min(left.width, right.width));
     }
 
     private static boolean isCompactSingleColumn(List<VisualLine> lines) {
@@ -524,6 +650,7 @@ public class OcrRegionSegmenter {
         int bottom() { return bounds.y + bounds.height; }
         int height() { return bounds.height; }
         int centerY() { return bounds.y + bounds.height / 2; }
+        int centerX() { return bounds.x + bounds.width / 2; }
     }
 
     private record VisualLine(List<WordBox> words, Rectangle bounds) {
@@ -535,6 +662,33 @@ public class OcrRegionSegmenter {
         List<WordBox> words() { return boxes; }
         int left() { return boxes.stream().mapToInt(WordBox::left).min().orElse(0); }
         int right() { return boxes.stream().mapToInt(WordBox::right).max().orElse(left() + 1); }
+        int top() { return boxes.stream().mapToInt(WordBox::top).min().orElse(0); }
+        int bottom() { return boxes.stream().mapToInt(WordBox::bottom).max().orElse(top() + 1); }
+    }
+
+    private record VisualColumn(List<WordBox> words, Rectangle bounds) {
+        int left() { return bounds.x; }
+        int right() { return bounds.x + bounds.width; }
+    }
+
+    private static final class MutableColumn {
+        private final List<WordBox> words = new ArrayList<>();
+        private Rectangle bounds;
+
+        private MutableColumn(WordBox first) {
+            add(first);
+        }
+
+        private void add(WordBox word) {
+            words.add(word);
+            bounds = bounds == null ? new Rectangle(word.bounds()) : bounds.union(word.bounds());
+        }
+
+        private int centerX() { return bounds.x + bounds.width / 2; }
+        private Rectangle bounds() { return bounds; }
+        private VisualColumn freeze() {
+            return new VisualColumn(List.copyOf(words), new Rectangle(bounds));
+        }
     }
 
     private static final class MutableLine {
