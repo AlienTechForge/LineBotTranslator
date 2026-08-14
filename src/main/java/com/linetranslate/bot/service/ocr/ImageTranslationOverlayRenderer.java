@@ -35,6 +35,8 @@ public class ImageTranslationOverlayRenderer {
      * at or above this size or keeps its source text.
      */
     private static final int READABLE_LABEL_FLOOR = 12;
+    /** Height-to-width ratio above which a region is treated as a column rather than a line. */
+    private static final double NARROW_COLUMN_RATIO = 1.8;
     /** Relative opposite-edge mismatch above which placement error is worth reporting. */
     private static final double SKEW_REPORT_THRESHOLD = .02;
     /** Share of a cleanup area still holding source ink above which the erase is worth reporting. */
@@ -99,6 +101,19 @@ public class ImageTranslationOverlayRenderer {
                 double localHeight = Math.hypot(side.x() - origin.x(), side.y() - origin.y());
                 int localWidthPixels = Math.max(2, (int) Math.round(localWidth));
                 int localHeightPixels = Math.max(2, (int) Math.round(localHeight));
+                // A vertical CJK column is far taller than it is wide, and Latin text laid out
+                // across that width breaks down to one or two characters per line. Turning the
+                // drawing frame a quarter turn swaps the axes, so the translation runs along the
+                // column instead of across it. Start from the top-right corner: after the extra
+                // quarter turn the local x axis points down the column and y points back across it.
+                if (localHeightPixels > localWidthPixels * NARROW_COLUMN_RATIO
+                        && isMostlyLatin(overlay.replacement())) {
+                    origin = polygon.get(1);
+                    angle += Math.PI / 2;
+                    int rotated = localWidthPixels;
+                    localWidthPixels = localHeightPixels;
+                    localHeightPixels = rotated;
+                }
                 int inset = Math.min(2, Math.max(0,
                         (Math.min(localWidthPixels, localHeightPixels) - 2) / 2));
                 Bounds localBounds = new Bounds(
@@ -389,6 +404,18 @@ public class ImageTranslationOverlayRenderer {
     private static int textHeight(FontMetrics metrics, int lineCount) {
         int lines = Math.max(1, lineCount);
         return (lines - 1) * metrics.getHeight() + metrics.getAscent() + metrics.getDescent();
+    }
+
+    /**
+     * Whether a replacement is written in a script that cannot be set vertically glyph by glyph.
+     * CJK reads fine down a column, Latin does not, so only the latter needs the frame turned.
+     */
+    private static boolean isMostlyLatin(String value) {
+        long latin = value.codePoints().filter(Character::isLetter)
+                .filter(code -> Character.UnicodeScript.of(code) == Character.UnicodeScript.LATIN)
+                .count();
+        long letters = value.codePoints().filter(Character::isLetter).count();
+        return letters > 0 && latin * 2 > letters;
     }
 
     /** Narrows glyphs without touching their height, which is what a narrow cell actually lacks. */

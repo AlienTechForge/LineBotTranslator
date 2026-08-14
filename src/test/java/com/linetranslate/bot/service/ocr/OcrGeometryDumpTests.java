@@ -91,6 +91,7 @@ class OcrGeometryDumpTests {
 
         assertThat(output).exists();
         assertThat(regions).isNotEmpty();
+
     }
 
     private ArrayNode points(List<OcrPoint> polygon) {

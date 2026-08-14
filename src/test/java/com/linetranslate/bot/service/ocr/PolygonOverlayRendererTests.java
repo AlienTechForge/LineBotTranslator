@@ -443,6 +443,85 @@ class PolygonOverlayRendererTests {
                 .isBetween(.45, .55);
     }
 
+    @Test
+    void narrowColumnRunsLatinTextAlongTheColumnAndStaysInsideIt() throws Exception {
+        // Production geometry: a vertical CJK dish name is about 30px wide and 163px tall. Laid
+        // out across 30px the translation collapses to one or two characters per line.
+        BufferedImage original = whiteImage(140, 220);
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        ImageIO.write(original, "png", bytes);
+        ValidatedImage source = new ImageInputValidator(ImageTranslationProperties.defaults())
+                .validate(bytes.toByteArray(), "image/png");
+        OcrRegion column = groupedRegion("column", "糖醋排骨飯", 40, 25, 30, 163);
+        OverlaySafetyPlan plan = new OverlaySafetyPolicy().evaluate(
+                List.of(new ImageRegionOverlay(column, "Sweet and Sour Pork Ribs Rice")),
+                140, 220, new ImageTranslationProperties(1000, 400, 100000, .6f, true, .8, .9));
+
+        RenderedImage rendered = new ImageTranslationOverlayRenderer(
+                new ImageTranslationFontProvider(Set.of("dejavu sans"))).render(source, plan);
+
+        assertThat(rendered.decisions())
+                .extracting(OverlayRenderDecision::reason)
+                .doesNotContain("text-fit");
+        assertThat(rendered.renderedBlockCount()).isEqualTo(1);
+
+        BufferedImage output = ImageIO.read(new ByteArrayInputStream(rendered.pngBytes()));
+        for (int y = 0; y < 220; y++) {
+            for (int x = 0; x < 140; x++) {
+                boolean inside = x >= 38 && x <= 72 && y >= 23 && y <= 190;
+                if (inside) continue;
+                assertThat(new Color(output.getRGB(x, y)))
+                        .as("pixel outside the column at %s,%s", x, y)
+                        .isEqualTo(Color.WHITE);
+            }
+        }
+        int[] ink = inkBounds(output, 38, 23, 36, 170);
+        assertThat(ink[3])
+                .as("ink must run down the column (%sx%s), not across it", ink[2], ink[3])
+                .isGreaterThan(ink[2] * 2);
+    }
+
+    /** Width and height of the ink bounding box inside a cell, as {x, y, width, height}. */
+    private static int[] inkBounds(BufferedImage image, int x, int y, int width, int height) {
+        int left = Integer.MAX_VALUE, top = Integer.MAX_VALUE;
+        int right = Integer.MIN_VALUE, bottom = Integer.MIN_VALUE;
+        for (int row = y; row < y + height; row++) {
+            for (int column = x; column < x + width; column++) {
+                Color colour = new Color(image.getRGB(column, row));
+                if (colour.getRed() < 128 && colour.getGreen() < 128 && colour.getBlue() < 128) {
+                    left = Math.min(left, column);
+                    right = Math.max(right, column);
+                    top = Math.min(top, row);
+                    bottom = Math.max(bottom, row);
+                }
+            }
+        }
+        return right < left
+                ? new int[] {0, 0, 0, 0}
+                : new int[] {left, top, right - left + 1, bottom - top + 1};
+    }
+
+    @Test
+    void aWideCellIsNeverTurnedOnItsSide() throws Exception {
+        BufferedImage original = whiteImage(300, 90);
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        ImageIO.write(original, "png", bytes);
+        ValidatedImage source = new ImageInputValidator(ImageTranslationProperties.defaults())
+                .validate(bytes.toByteArray(), "image/png");
+        OcrRegion row = groupedRegion("row", "糖醋排骨飯", 20, 25, 240, 34);
+        OverlaySafetyPlan plan = new OverlaySafetyPolicy().evaluate(
+                List.of(new ImageRegionOverlay(row, "Sweet and Sour Pork Ribs Rice")),
+                300, 90, new ImageTranslationProperties(1000, 400, 100000, .6f, true, .8, .9));
+
+        RenderedImage rendered = new ImageTranslationOverlayRenderer(
+                new ImageTranslationFontProvider(Set.of("dejavu sans"))).render(source, plan);
+        BufferedImage output = ImageIO.read(new ByteArrayInputStream(rendered.pngBytes()));
+
+        assertThat(rendered.renderedBlockCount()).isEqualTo(1);
+        // Upright text in a wide cell keeps its ink within one line height.
+        assertThat(inkHeight(output, 20, 25, 240, 34)).isLessThan(34);
+    }
+
     private static OcrRegion compactCell(
             String id, String text, int x, int y, int width, int height) {
         List<OcrPoint> polygon = rectangle(x, y, width, height);
