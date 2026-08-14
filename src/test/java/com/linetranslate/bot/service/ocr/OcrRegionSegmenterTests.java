@@ -308,6 +308,45 @@ class OcrRegionSegmenterTests {
                 .extracting(OcrRegion::readingOrder).containsExactly(0, 1, 2, 3, 4);
     }
 
+    @Test
+    void splitsTopToBottomColumnsIntoOneRegionPerItem() {
+        // Two columns of vertical CJK, two dish names each, in Vision's reading order:
+        // top to bottom within a column, then on to the next column.
+        List<OcrWord> words = List.of(
+                word("澎", 10, 10, 22, 22), word("湃", 10, 34, 22, 22), word("飯", 10, 58, 22, 22),
+                word("風", 10, 110, 22, 22), word("味", 10, 134, 22, 22), word("飯", 10, 158, 22, 22),
+                word("香", 60, 10, 22, 22), word("酥", 60, 34, 22, 22), word("飯", 60, 58, 22, 22),
+                word("經", 60, 110, 22, 22), word("典", 60, 134, 22, 22), word("飯", 60, 158, 22, 22));
+        OcrRegion card = new OcrRegion("card", "澎湃飯 風味飯 香酥飯 經典飯",
+                rectangle(5, 5, 90, 185), words,
+                .98f, true, OcrBlockType.TEXT, List.of(new OcrDetectedLanguage("zh", .98f)), 0);
+
+        List<OcrRegion> result = new OcrRegionSegmenter().segment(List.of(card));
+
+        assertThat(result).hasSize(4).extracting(OcrRegion::text)
+                .containsExactly("澎湃飯", "風味飯", "香酥飯", "經典飯");
+        assertThat(result).allSatisfy(region -> assertThat(region.id()).startsWith("card.v"));
+        // Each item keeps its own column, so the two columns stay horizontally separated.
+        assertThat(result.get(0).polygon().get(0).x()).isLessThan(result.get(2).polygon().get(0).x());
+    }
+
+    @Test
+    void horizontalParagraphIsNeverSplitAlongTheVerticalAxis() {
+        List<OcrWord> words = List.of(
+                word("The", 10, 10, 40, 20), word("quick", 60, 10, 60, 20),
+                word("brown", 130, 10, 70, 20), word("fox", 210, 10, 40, 20),
+                word("jumps", 10, 40, 60, 20), word("over", 80, 40, 50, 20),
+                word("the", 140, 40, 40, 20), word("lazy", 190, 40, 45, 20));
+        OcrRegion paragraph = new OcrRegion("prose", "The quick brown fox jumps over the lazy",
+                rectangle(5, 5, 250, 60), words,
+                .99f, true, OcrBlockType.TEXT, List.of(new OcrDetectedLanguage("en", .99f)), 0);
+
+        List<OcrRegion> result = new OcrRegionSegmenter().segment(List.of(paragraph));
+
+        assertThat(result).allSatisfy(region ->
+                assertThat(region.id()).doesNotContain(".v"));
+    }
+
     private static OcrWord word(String text, int x) {
         return new OcrWord(text, rectangle(x, 10, 20, 30), .98f, true);
     }
