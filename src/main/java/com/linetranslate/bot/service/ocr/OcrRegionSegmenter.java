@@ -327,15 +327,18 @@ public class OcrRegionSegmenter {
                 .sorted(Comparator.comparingInt(WordBox::centerX).thenComparingInt(WordBox::top))
                 .toList();
         int medianWidth = median(sorted.stream().map(box -> box.bounds().width).toList());
-        int centerTolerance = Math.max(3, (int) Math.round(medianWidth * .60));
+        // Match against the column's first glyph rather than its growing bounds. Bounds widen with
+        // every glyph added, so one mistaken match lets the column swallow its neighbour and then
+        // the one after that. A column of vertical text holds its horizontal centre, so the anchor
+        // stays valid, and half a glyph width keeps adjacent columns apart.
+        int centerTolerance = Math.max(3, medianWidth / 2);
         List<MutableColumn> columns = new ArrayList<>();
         for (WordBox box : sorted) {
             MutableColumn best = null;
             int bestDistance = Integer.MAX_VALUE;
             for (MutableColumn column : columns) {
-                int distance = Math.abs(box.centerX() - column.centerX());
-                if ((horizontalOverlap(box.bounds(), column.bounds()) >= .45
-                        || distance <= centerTolerance) && distance < bestDistance) {
+                int distance = Math.abs(box.centerX() - column.anchorX());
+                if (distance <= centerTolerance && distance < bestDistance) {
                     best = column;
                     bestDistance = distance;
                 }
@@ -746,9 +749,11 @@ public class OcrRegionSegmenter {
 
     private static final class MutableColumn {
         private final List<WordBox> words = new ArrayList<>();
+        private final int anchorX;
         private Rectangle bounds;
 
         private MutableColumn(WordBox first) {
+            this.anchorX = first.centerX();
             add(first);
         }
 
@@ -757,8 +762,7 @@ public class OcrRegionSegmenter {
             bounds = bounds == null ? new Rectangle(word.bounds()) : bounds.union(word.bounds());
         }
 
-        private int centerX() { return bounds.x + bounds.width / 2; }
-        private Rectangle bounds() { return bounds; }
+        private int anchorX() { return anchorX; }
         private VisualColumn freeze() {
             return new VisualColumn(List.copyOf(words), new Rectangle(bounds));
         }
