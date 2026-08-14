@@ -331,6 +331,23 @@ class OcrRegionSegmenterTests {
     }
 
     @Test
+    void singleGlyphHorizontalTextIsNotMistakenForColumns() {
+        // Real proportions from a Japanese article page: every word is one glyph, but the nearest
+        // neighbour below is the next line (31px away) while the neighbour beside is 6px away.
+        List<OcrWord> words = new java.util.ArrayList<>();
+        for (int line = 0; line < 3; line++) {
+            for (int column = 0; column < 5; column++) {
+                words.add(word("字", 10 + column * 30, 10 + line * 55, 24, 24));
+            }
+        }
+        OcrRegion prose = new OcrRegion("prose", "字字字字字", rectangle(5, 5, 170, 175), words,
+                .99f, true, OcrBlockType.TEXT, List.of(new OcrDetectedLanguage("ja", .99f)), 0);
+
+        assertThat(new OcrRegionSegmenter().segment(List.of(prose)))
+                .allSatisfy(region -> assertThat(region.id()).doesNotContain(".v"));
+    }
+
+    @Test
     void horizontalParagraphIsNeverSplitAlongTheVerticalAxis() {
         List<OcrWord> words = List.of(
                 word("The", 10, 10, 40, 20), word("quick", 60, 10, 60, 20),

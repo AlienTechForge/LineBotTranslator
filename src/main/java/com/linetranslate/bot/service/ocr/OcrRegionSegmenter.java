@@ -15,6 +15,8 @@ public class OcrRegionSegmenter {
             org.slf4j.LoggerFactory.getLogger(OcrRegionSegmenter.class);
     /** Only paragraphs this dense are worth reporting; smaller ones are not the layout problem. */
     private static final int DECISION_REPORT_MIN_WORDS = 8;
+    /** Fewer glyphs than this cannot establish a column layout with any confidence. */
+    private static final int MIN_VERTICAL_LAYOUT_WORDS = 6;
     private static final int MAX_COMPACT_CODEPOINTS = 3;
     private static final int MAX_DENSE_CHILDREN = 100;
     private static final Pattern PRICE_TOKEN = Pattern.compile(
@@ -125,7 +127,7 @@ public class OcrRegionSegmenter {
         }
         List<WordBox> readingOrder = region.words().stream()
                 .map(word -> new WordBox(word, frame.bounds(word.polygon()))).toList();
-        if (isVerticalReadingOrder(readingOrder)) {
+        if (isVerticalColumnLayout(readingOrder)) {
             List<OcrRegion> columnChildren = splitVerticalColumns(region, frame, readingOrder);
             if (!columnChildren.isEmpty()) {
                 reportDecision(region, columnChildren.size(), 0, 0, false, columnChildren.size(),
@@ -268,27 +270,55 @@ public class OcrRegionSegmenter {
 
 
     /**
-     * Whether the paragraph reads top-to-bottom. Vision returns words already in reading order, so
-     * the direction of travel between consecutive words identifies the axis directly, which is far
-     * more reliable than inferring it from glyph shape. Deliberately conservative: vertical steps
-     * must clearly dominate, otherwise a horizontal paragraph could be split along the wrong axis.
+     * Whether the paragraph is laid out in top-to-bottom columns.
+     *
+     * <p>Reading order cannot answer this: Vision scans some vertical layouts horizontally, so
+     * consecutive words step sideways across unrelated columns. Geometry can. In a vertical column
+     * the nearest neighbour below a glyph is the next glyph of the same label and sits flush
+     * against it, while in horizontal text the nearest neighbour below is the next line, a whole
+     * line gap away. Measured on real pages: a vertical menu gives 2px below against 4px beside,
+     * horizontal prose gives 31px below against 6px beside.
+     *
+     * <p>Vertical CJK also arrives one glyph per word, so a high single-glyph share is required as
+     * a second, independent signal before splitting along the vertical axis.
      */
-    private static boolean isVerticalReadingOrder(List<WordBox> readingOrder) {
-        if (readingOrder.size() < 6) return false;
-        int vertical = 0;
-        int horizontal = 0;
-        for (int index = 1; index < readingOrder.size(); index++) {
-            WordBox previous = readingOrder.get(index - 1);
-            WordBox current = readingOrder.get(index);
-            int dx = Math.abs(current.centerX() - previous.centerX());
-            int dy = Math.abs(current.centerY() - previous.centerY());
-            if (dy > dx) {
-                vertical++;
-            } else if (dx > dy) {
-                horizontal++;
+    private static boolean isVerticalColumnLayout(List<WordBox> boxes) {
+        if (boxes.size() < MIN_VERTICAL_LAYOUT_WORDS) return false;
+        long singleGlyph = boxes.stream()
+                .map(box -> box.word().text())
+                .filter(text -> text.codePointCount(0, text.length()) == 1)
+                .count();
+        if (singleGlyph * 5 < (long) boxes.size() * 4) return false;
+
+        List<Integer> beside = new ArrayList<>();
+        List<Integer> below = new ArrayList<>();
+        for (WordBox box : boxes) {
+            Integer nearestBeside = null;
+            Integer nearestBelow = null;
+            for (WordBox other : boxes) {
+                if (other == box) continue;
+                if (other.left() >= box.right()
+                        && verticalOverlap(box.bounds(), other.bounds()) >= .5) {
+                    int gap = other.left() - box.right();
+                    nearestBeside = nearestBeside == null ? gap : Math.min(nearestBeside, gap);
+                }
+                if (other.top() >= box.bottom()
+                        && horizontalOverlap(box.bounds(), other.bounds()) >= .5) {
+                    int gap = other.top() - box.bottom();
+                    nearestBelow = nearestBelow == null ? gap : Math.min(nearestBelow, gap);
+                }
             }
+            if (nearestBeside != null) beside.add(nearestBeside);
+            if (nearestBelow != null) below.add(nearestBelow);
         }
-        return vertical >= 4 && vertical > horizontal * 2;
+        if (below.size() < 4 || beside.isEmpty()) return false;
+        return medianAllowingZero(below) < medianAllowingZero(beside);
+    }
+
+    /** Gaps of zero are meaningful here, so unlike {@link #median} nothing is filtered out. */
+    private static int medianAllowingZero(List<Integer> values) {
+        List<Integer> sorted = values.stream().sorted().toList();
+        return sorted.isEmpty() ? 0 : sorted.get(sorted.size() / 2);
     }
 
     /** Column-wise counterpart of visualLines, for paragraphs that read top-to-bottom. */
