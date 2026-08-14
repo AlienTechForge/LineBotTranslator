@@ -216,11 +216,54 @@ public class OcrRegionSegmenter {
         Rectangle bounds = OverlaySafetyPolicy.polygon(region.polygon()).getBounds();
         String source = region.text();
         int sourceChars = source.codePointCount(0, source.length());
+        int[] axis = axisNeighbourCounts(region.words());
         log.info("Dense paragraph split decision: verdict={}, words={}, lines={}, columnarLines={}, "
                         + "structuredRows={}, repeatedColumns={}, children={}, "
-                        + "regionWidth={}, regionHeight={}, sourceChars={}",
+                        + "regionWidth={}, regionHeight={}, sourceChars={}, "
+                        + "verticalNeighbours={}, horizontalNeighbours={}",
                 verdict, wordCount, lineCount, columnarLines, structuredRows,
-                repeatedColumns, childCount, bounds.width, bounds.height, sourceChars);
+                repeatedColumns, childCount, bounds.width, bounds.height, sourceChars,
+                axis[0], axis[1]);
+    }
+
+    /**
+     * How many words sit closer to a vertical neighbour than to a horizontal one. Reading order
+     * proved unreliable for deciding the axis, because Vision scans some vertical layouts
+     * horizontally, so the answer has to come from geometry: a word in a top-to-bottom column has
+     * its nearest neighbour above or below, not beside it.
+     */
+    private static int[] axisNeighbourCounts(List<OcrWord> words) {
+        List<Rectangle> boxes = words.stream()
+                .map(word -> OverlaySafetyPolicy.polygon(word.polygon()).getBounds()).toList();
+        int vertical = 0;
+        int horizontal = 0;
+        for (int index = 0; index < boxes.size(); index++) {
+            Rectangle box = boxes.get(index);
+            int nearestVertical = Integer.MAX_VALUE;
+            int nearestHorizontal = Integer.MAX_VALUE;
+            for (int other = 0; other < boxes.size(); other++) {
+                if (other == index) continue;
+                Rectangle candidate = boxes.get(other);
+                if (horizontalOverlap(box, candidate) >= .5) {
+                    int gap = candidate.y >= box.y + box.height
+                            ? candidate.y - (box.y + box.height)
+                            : box.y - (candidate.y + candidate.height);
+                    if (gap >= 0) nearestVertical = Math.min(nearestVertical, gap);
+                }
+                if (verticalOverlap(box, candidate) >= .5) {
+                    int gap = candidate.x >= box.x + box.width
+                            ? candidate.x - (box.x + box.width)
+                            : box.x - (candidate.x + candidate.width);
+                    if (gap >= 0) nearestHorizontal = Math.min(nearestHorizontal, gap);
+                }
+            }
+            if (nearestVertical < nearestHorizontal) {
+                vertical++;
+            } else if (nearestHorizontal < nearestVertical) {
+                horizontal++;
+            }
+        }
+        return new int[] {vertical, horizontal};
     }
 
 
