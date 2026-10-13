@@ -2,7 +2,10 @@ package com.linetranslate.bot.service.ocr;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyFloat;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -15,7 +18,9 @@ import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.time.Instant;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import javax.imageio.ImageIO;
@@ -28,14 +33,24 @@ import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.dao.DataAccessResourceFailureException;
 
+import com.google.api.gax.grpc.GrpcStatusCode;
+import com.google.api.gax.rpc.UnavailableException;
+import com.google.cloud.vision.v1.ImageAnnotatorClient;
+
 import com.linecorp.bot.client.base.BlobContent;
 import com.linecorp.bot.client.base.Result;
 import com.linecorp.bot.messaging.client.MessagingApiBlobClient;
 import com.linetranslate.bot.model.UserProfile;
 import com.linetranslate.bot.service.ai.AiExecutionResult;
+import com.linetranslate.bot.service.ai.AiExecutionOutcome;
+import com.linetranslate.bot.service.ai.AiProviderAdapter;
 import com.linetranslate.bot.service.ai.AiProviderException;
+import com.linetranslate.bot.service.ai.AiProviderOperation;
+import com.linetranslate.bot.service.ai.AiProviderRequest;
+import com.linetranslate.bot.service.ai.AiProviderResponse;
 import com.linetranslate.bot.service.ai.AiProviderExecutionModule;
 import com.linetranslate.bot.service.preference.UserPreferencesModule;
+import com.linetranslate.bot.service.settings.RuntimeSettings;
 import com.linetranslate.bot.service.storage.ImageStorageResult;
 import com.linetranslate.bot.service.storage.MinioStorageService;
 import com.linetranslate.bot.service.translation.ImageRegionTranslation;
@@ -53,6 +68,7 @@ import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.classic.spi.ThrowableProxyUtil;
 import ch.qos.logback.core.read.ListAppender;
+import io.grpc.Status;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 
 /**
@@ -75,6 +91,8 @@ class ImageTranslationPipelineUnexpectedFailureTests {
     private MinioStorageService minioStorageService;
     private MessagingApiBlobClient messagingApiBlobClient;
     private ImageTranslationOverlayRenderer renderer;
+    private UserPreferencesModule userPreferencesModule;
+    private ImageTranslationProperties limits;
     private ImageTranslationPipeline pipeline;
     private UserProfile userProfile;
 
@@ -82,24 +100,18 @@ class ImageTranslationPipelineUnexpectedFailureTests {
     void setUp() throws Exception {
         logs.start();
         logger.addAppender(logs);
-        ObjectProvider<OcrService> ocrServiceProvider = mock(ObjectProvider.class);
         ocrService = mock(OcrService.class);
         workflowModule = mock(TranslationWorkflowModule.class);
         aiProviderExecutionModule = mock(AiProviderExecutionModule.class);
-        UserPreferencesModule userPreferencesModule = mock(UserPreferencesModule.class);
+        userPreferencesModule = mock(UserPreferencesModule.class);
         messagingApiBlobClient = mock(MessagingApiBlobClient.class);
         minioStorageService = mock(MinioStorageService.class);
         renderer = mock(ImageTranslationOverlayRenderer.class);
-        when(ocrServiceProvider.getIfAvailable()).thenReturn(ocrService);
         userProfile = UserProfile.builder().userId("U-unexpected").preferredModel("gpt-test").build();
         when(userPreferencesModule.resolve(userProfile)).thenReturn(
                 com.linetranslate.bot.testing.UserPreferencesFixtures.preferences(userProfile));
-        ImageTranslationProperties limits = ImageTranslationProperties.defaults();
-        pipeline = new ImageTranslationPipeline(
-                ocrServiceProvider, workflowModule, aiProviderExecutionModule, userPreferencesModule,
-                messagingApiBlobClient, minioStorageService, new ImageInputValidator(limits), renderer,
-                limits, new OcrRegionQualificationPolicy(), new OcrSourceLanguageResolver(),
-                new OverlaySafetyPolicy(), new TranslationPromptFactory(), meters);
+        limits = ImageTranslationProperties.defaults();
+        pipeline = pipeline(ocrService, aiProviderExecutionModule, new OcrRegionQualificationPolicy());
         when(minioStorageService.uploadImage(any(byte[].class), anyString()))
                 .thenReturn(ImageStorageResult.notStored());
         when(workflowModule.execute(any())).thenAnswer(invocation -> translated(invocation.getArgument(0)));
@@ -179,6 +191,133 @@ class ImageTranslationPipelineUnexpectedFailureTests {
         assertThat(error.getFormattedMessage() + trace).doesNotContain("seeded");
     }
 
+    @Test
+    void aBugInTheVisionAdapterIsReportedAsADefectWhileAiRecognitionStillServesTheImage() {
+        // The client stub answers with null, so the adapter's own parsing throws a NullPointerException.
+        ImageAnnotatorClient client = mock(ImageAnnotatorClient.class);
+        when(client.batchAnnotateImages(anyList())).thenReturn(null);
+        when(aiProviderExecutionModule.processImage(any(), anyString(), anyString()))
+                .thenReturn(new AiExecutionResult("fallback text", "openai", "gpt-image"));
+        pipeline = pipeline(new GoogleVisionOcrService(providerOf(client)), aiProviderExecutionModule,
+                new OcrRegionQualificationPolicy());
+
+        ImageTranslationOutcome outcome = pipeline.execute(request());
+
+        assertThat(outcome).isInstanceOfSatisfying(ImageTranslationOutcome.Success.class,
+                success -> assertThat(success.result().context().recognizedText()).isEqualTo("fallback text"));
+        assertReportedAsDefect("recognition", OcrDefectException.class, NullPointerException.class);
+        assertThat(ThrowableProxyUtil.asString(only(Level.ERROR).getThrowableProxy()))
+                .contains(GoogleVisionOcrService.class.getName());
+    }
+
+    @Test
+    void aVisionProviderFailureStillFallsBackToAiRecognitionWithoutBeingReportedAsADefect() {
+        ImageAnnotatorClient client = mock(ImageAnnotatorClient.class);
+        when(client.batchAnnotateImages(anyList())).thenThrow(new UnavailableException(
+                new RuntimeException("provider down"), GrpcStatusCode.of(Status.Code.UNAVAILABLE), true));
+        when(aiProviderExecutionModule.processImage(any(), anyString(), anyString()))
+                .thenReturn(new AiExecutionResult("fallback text", "openai", "gpt-image"));
+        pipeline = pipeline(new GoogleVisionOcrService(providerOf(client)), aiProviderExecutionModule,
+                new OcrRegionQualificationPolicy());
+
+        ImageTranslationOutcome outcome = pipeline.execute(request());
+
+        assertThat(outcome).isInstanceOf(ImageTranslationOutcome.Success.class);
+        assertThat(logs.list).filteredOn(event -> event.getLevel().isGreaterOrEqual(Level.WARN)).isEmpty();
+        assertNothingCounted();
+    }
+
+    @Test
+    void aBugInProviderExecutionDuringRecognitionIsReportedWithItsRealStack() {
+        when(ocrService.recognize(any(InputStream.class))).thenThrow(new OcrProcessingException("vision down"));
+        pipeline = pipeline(ocrService, providerModuleWhoseAdapterThrows(new NullPointerException(SEEDED)),
+                new OcrRegionQualificationPolicy());
+
+        ImageTranslationOutcome outcome = pipeline.execute(request());
+
+        assertThat(outcome).isEqualTo(new ImageTranslationOutcome.Failure(
+                ImageTranslationFailureStage.RECOGNITION));
+        assertReportedAsDefect("recognition", AiProviderException.class, NullPointerException.class);
+        assertThat(ThrowableProxyUtil.asString(only(Level.ERROR).getThrowableProxy()))
+                .contains(ImageTranslationPipelineUnexpectedFailureTests.class.getName());
+    }
+
+    @Test
+    void aBugInProviderExecutionDuringTranslationIsReportedWithItsRealStack() {
+        when(ocrService.recognize(any(InputStream.class))).thenReturn(OcrRecognition.plain("hello"));
+        AiExecutionOutcome failed = providerModuleWhoseAdapterThrows(new NullPointerException(SEEDED))
+                .translateTextOutcome(
+                        com.linetranslate.bot.testing.UserPreferencesFixtures.preferences(userProfile),
+                        "hello", "zh-TW");
+        var executionFailure = ((AiExecutionOutcome.Failure) failed).failure();
+        doReturn(new TranslationWorkflowOutcome.Failure(executionFailure))
+                .when(workflowModule).execute(any());
+
+        ImageTranslationOutcome outcome = pipeline.execute(request());
+
+        assertThat(outcome).isEqualTo(new ImageTranslationOutcome.Failure(
+                ImageTranslationFailureStage.TRANSLATION, executionFailure));
+        assertReportedAsDefect("translation", AiProviderException.class, NullPointerException.class);
+    }
+
+    @Test
+    void aProviderOutageDuringTranslationIsNotReportedAsADefect() {
+        when(ocrService.recognize(any(InputStream.class))).thenReturn(OcrRecognition.plain("hello"));
+        AiExecutionOutcome failed = providerModuleWhoseAdapterThrows(new AiProviderException(
+                AiProviderException.Outcome.RATE_LIMITED, "openrouter", "test-model", "HTTP_429",
+                "correlation-1", 429, null))
+                .translateTextOutcome(
+                        com.linetranslate.bot.testing.UserPreferencesFixtures.preferences(userProfile),
+                        "hello", "zh-TW");
+        doReturn(new TranslationWorkflowOutcome.Failure(((AiExecutionOutcome.Failure) failed).failure()))
+                .when(workflowModule).execute(any());
+
+        ImageTranslationOutcome outcome = pipeline.execute(request());
+
+        assertThat(outcome).isInstanceOf(ImageTranslationOutcome.Failure.class);
+        assertThat(logs.list).filteredOn(event -> event.getLevel().isGreaterOrEqual(Level.WARN)).isEmpty();
+        assertNothingCounted();
+    }
+
+    @Test
+    void anOcrServiceThatReturnsNothingIsAnUnexpectedRecognitionFailure() {
+        when(ocrService.recognize(any(InputStream.class))).thenReturn(null);
+
+        ImageTranslationOutcome outcome = pipeline.execute(request());
+
+        assertThat(outcome).isEqualTo(new ImageTranslationOutcome.Failure(
+                ImageTranslationFailureStage.RECOGNITION));
+        assertReportedAsDefect("recognition", NullPointerException.class);
+    }
+
+    @Test
+    void aDefectWhileQualifyingTheRecognizedRegionsIsAnUnexpectedRecognitionFailure() {
+        when(ocrService.recognize(any(InputStream.class))).thenReturn(OcrRecognition.structured(List.of(region())));
+        OcrRegionQualificationPolicy policy = mock(OcrRegionQualificationPolicy.class);
+        when(policy.decide(any(), anyFloat())).thenThrow(new IllegalStateException(SEEDED));
+        pipeline = pipeline(ocrService, aiProviderExecutionModule, policy);
+
+        ImageTranslationOutcome outcome = pipeline.execute(request());
+
+        assertThat(outcome).isEqualTo(new ImageTranslationOutcome.Failure(
+                ImageTranslationFailureStage.RECOGNITION));
+        assertReportedAsDefect("recognition", IllegalStateException.class);
+    }
+
+    @Test
+    void aNullQualificationDecisionIsAnUnexpectedRecognitionFailure() {
+        when(ocrService.recognize(any(InputStream.class))).thenReturn(OcrRecognition.structured(List.of(region())));
+        OcrRegionQualificationPolicy policy = mock(OcrRegionQualificationPolicy.class);
+        when(policy.decide(any(), anyFloat())).thenReturn(null);
+        pipeline = pipeline(ocrService, aiProviderExecutionModule, policy);
+
+        ImageTranslationOutcome outcome = pipeline.execute(request());
+
+        assertThat(outcome).isEqualTo(new ImageTranslationOutcome.Failure(
+                ImageTranslationFailureStage.RECOGNITION));
+        assertReportedAsDefect("recognition", NullPointerException.class);
+    }
+
     @ParameterizedTest
     @MethodSource("expectedRecognitionFailures")
     void aKnownRecognitionFailureKeepsItsWarnLineAndIsNotCounted(RuntimeException expected) {
@@ -235,18 +374,48 @@ class ImageTranslationPipelineUnexpectedFailureTests {
                 new DataAccessResourceFailureException("mongo down"));
     }
 
-    private void assertReportedAsDefect(String stage, Class<? extends Throwable> type) {
+    private ImageTranslationPipeline pipeline(
+            OcrService ocr, AiProviderExecutionModule providerModule, OcrRegionQualificationPolicy policy) {
+        ObjectProvider<OcrService> ocrServiceProvider = mock(ObjectProvider.class);
+        when(ocrServiceProvider.getIfAvailable()).thenReturn(ocr);
+        return new ImageTranslationPipeline(
+                ocrServiceProvider, workflowModule, providerModule, userPreferencesModule,
+                messagingApiBlobClient, minioStorageService, new ImageInputValidator(limits), renderer,
+                limits, policy, new OcrSourceLanguageResolver(),
+                new OverlaySafetyPolicy(), new TranslationPromptFactory(), meters);
+    }
+
+    private static AiProviderExecutionModule providerModuleWhoseAdapterThrows(RuntimeException failure) {
+        AiProviderAdapter adapter = new AiProviderAdapter() {
+            public String providerName() { return "openrouter"; }
+            public String defaultModel() { return "test-model"; }
+            public Set<String> availableModels() { return Set.of("test-model"); }
+            public Set<AiProviderOperation> capabilities() { return Set.of(AiProviderOperation.values()); }
+            public AiProviderResponse execute(AiProviderRequest request) { throw failure; }
+        };
+        return new AiProviderExecutionModule(List.of(adapter),
+                () -> new RuntimeSettings("en", "zh-TW", "test-model", true, 2, 1, null, "U-admin",
+                        RuntimeSettings.Source.PERSISTED),
+                (operation, outcome) -> { });
+    }
+
+    private void assertReportedAsDefect(String stage, Class<? extends Throwable> type, Class<?>... causes) {
         assertThat(logs.list).filteredOn(event -> event.getLevel() == Level.WARN).isEmpty();
         ILoggingEvent error = only(Level.ERROR);
+        String summary = type.getSimpleName()
+                + Stream.of(causes).map(cause -> "<-" + cause.getSimpleName()).collect(Collectors.joining());
         assertThat(error.getFormattedMessage()).isEqualTo(
-                "Image translation stage failed unexpectedly: stage=%s, failure=%s"
-                        .formatted(stage, type.getSimpleName()));
+                "Image translation stage failed unexpectedly: stage=%s, failure=%s".formatted(stage, summary));
         // The stack frames survive so the defect can be located; the message does not.
         assertThat(error.getThrowableProxy()).isNotNull();
         assertThat(error.getThrowableProxy().getMessage()).isEqualTo(type.getName());
         assertThat(error.getThrowableProxy().getStackTraceElementProxyArray()).isNotEmpty();
-        assertThat(error.getFormattedMessage() + ThrowableProxyUtil.asString(error.getThrowableProxy()))
-                .doesNotContain("seeded").doesNotContain("https://");
+        String trace = ThrowableProxyUtil.asString(error.getThrowableProxy());
+        for (Class<?> cause : causes) {
+            assertThat(trace).contains("Caused by: com.linetranslate.bot.logging.SafeLog$RedactedFailure: "
+                    + cause.getName());
+        }
+        assertThat(error.getFormattedMessage() + trace).doesNotContain("seeded").doesNotContain("https://");
         for (String counted : List.of("recognition", "storage", "translation", "rendering")) {
             assertThat(unexpectedCount(counted)).as("unexpected{stage=%s}", counted)
                     .isEqualTo(counted.equals(stage) ? 1d : 0d);
@@ -261,6 +430,16 @@ class ImageTranslationPipelineUnexpectedFailureTests {
                 .contains("failure=" + expected.getClass().getSimpleName());
         // A known failure keeps the type-only line it always had: no stack trace.
         assertThat(logs.list).allSatisfy(event -> assertThat(event.getThrowableProxy()).isNull());
+        assertNothingCounted();
+    }
+
+    private static ObjectProvider<ImageAnnotatorClient> providerOf(ImageAnnotatorClient client) {
+        ObjectProvider<ImageAnnotatorClient> provider = mock(ObjectProvider.class);
+        when(provider.getIfAvailable()).thenReturn(client);
+        return provider;
+    }
+
+    private void assertNothingCounted() {
         for (String stage : List.of("recognition", "storage", "translation", "rendering")) {
             assertThat(unexpectedCount(stage)).isZero();
         }

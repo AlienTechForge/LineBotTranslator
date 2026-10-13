@@ -13,6 +13,7 @@ import lombok.extern.slf4j.Slf4j;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.UncheckedIOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.nio.charset.StandardCharsets;
@@ -99,19 +100,27 @@ public class GoogleVisionOcrService implements OcrService {
      * Keeps an {@link OcrProcessingException} as it is and turns a client deadline into an
      * {@link OcrTimeoutException}, so a slow provider is told apart from a rejected image by
      * type rather than by parsing a message. The gax client raises the deadline as an
-     * {@link ApiException} with status {@code DEADLINE_EXCEEDED}.
+     * {@link ApiException} with status {@code DEADLINE_EXCEEDED}. Only an {@link ApiException}
+     * and a transport {@link UncheckedIOException} are provider failures; any other
+     * {@code RuntimeException} came from this adapter's own code and is wrapped in an
+     * {@link OcrDefectException} so it is not mistaken for an outage.
      */
     private OcrProcessingException classify(RuntimeException failure, String genericMessage) {
         if (failure instanceof OcrProcessingException ocrFailure) {
             return ocrFailure;
         }
-        if (failure instanceof ApiException apiFailure
-                && apiFailure.getStatusCode().getCode() == StatusCode.Code.DEADLINE_EXCEEDED) {
-            log.warn("Google Vision OCR 逾時: timeoutMs={}, failure={}",
-                    configuredTimeoutMs(), SafeLog.failure(failure));
-            return new OcrTimeoutException("Google Vision OCR timed out", failure);
+        if (failure instanceof ApiException apiFailure) {
+            if (apiFailure.getStatusCode().getCode() == StatusCode.Code.DEADLINE_EXCEEDED) {
+                log.warn("Google Vision OCR 逾時: timeoutMs={}, failure={}",
+                        configuredTimeoutMs(), SafeLog.failure(failure));
+                return new OcrTimeoutException("Google Vision OCR timed out", failure);
+            }
+            return new OcrProcessingException(genericMessage, failure);
         }
-        return new OcrProcessingException(genericMessage, failure);
+        if (failure instanceof UncheckedIOException) {
+            return new OcrProcessingException(genericMessage, failure);
+        }
+        return new OcrDefectException(genericMessage, failure);
     }
 
     /** The bound the client was built with, or -1 when its settings are not available. */

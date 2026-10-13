@@ -2,6 +2,12 @@ package com.linetranslate.bot.service.ai;
 
 import java.util.List;
 
+/**
+ * A normalized provider failure. {@code cause} is the exception behind it, kept only so that a
+ * bug the execution module caught ({@link AiProviderException.Outcome#UNEXPECTED_ERROR}) can still
+ * be reported with its real stack; it is never part of {@link #toString()} because exception
+ * messages can carry user content.
+ */
 public record AiExecutionFailure(
         AiProviderException.Outcome outcome,
         String provider,
@@ -10,7 +16,8 @@ public record AiExecutionFailure(
         String correlationId,
         int httpStatus,
         List<AiProviderAttempt> attempts,
-        AiTokenUsage tokenUsage) {
+        AiTokenUsage tokenUsage,
+        Throwable cause) {
 
     public AiExecutionFailure {
         attempts = attempts == null ? List.of() : List.copyOf(attempts);
@@ -25,7 +32,7 @@ public record AiExecutionFailure(
             String correlationId,
             int httpStatus,
             List<AiProviderAttempt> attempts) {
-        this(outcome, provider, model, reason, correlationId, httpStatus, attempts, AiTokenUsage.UNKNOWN);
+        this(outcome, provider, model, reason, correlationId, httpStatus, attempts, AiTokenUsage.UNKNOWN, null);
     }
 
     public static AiExecutionFailure from(
@@ -39,7 +46,9 @@ public record AiExecutionFailure(
                 failure.getCorrelationId(),
                 failure.getHttpStatus(),
                 attempts,
-                failure.getTokenUsage());
+                failure.getTokenUsage(),
+                failure.getOutcome() == AiProviderException.Outcome.UNEXPECTED_ERROR
+                        ? failure.getCause() : null);
     }
 
     public AiProviderException toException() {
@@ -50,7 +59,14 @@ public record AiExecutionFailure(
                 reason,
                 correlationId,
                 httpStatus,
-                null,
+                cause,
                 tokenUsage);
+    }
+
+    @Override
+    public String toString() {
+        return "AiExecutionFailure[outcome=" + outcome + ", provider=" + provider + ", model=" + model
+                + ", reason=" + reason + ", correlationId=" + correlationId + ", httpStatus=" + httpStatus
+                + ", attempts=" + attempts + ", tokenUsage=" + tokenUsage + "]";
     }
 }

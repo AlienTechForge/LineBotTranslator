@@ -199,8 +199,35 @@ public class ImageTranslationPipeline {
         long storageMillis = elapsedMillis(stageStarted);
         stageStarted = System.nanoTime();
         OcrRecognition recognition;
+        long recognitionMillis;
+        List<OcrRegionDecision> workflowDecisions;
+        List<OcrRegionDecision> translatedDecisions;
+        int omittedRegions;
+        String translatableText;
+        // The whole recognition stage is guarded: the OCR call and everything computed from its
+        // result before the translation request is built.
         try {
             recognition = recognize(request, image);
+            recognitionMillis = elapsedMillis(stageStarted);
+            List<OcrRegionDecision> decisions = recognition.regions().stream()
+                    .map(region -> qualificationPolicy.decide(region, properties.lowConfidenceThreshold()))
+                    .toList();
+            List<OcrRegionDecision> eligibleDecisions = decisions.stream()
+                    .filter(value -> value.qualification() != OcrQualification.REJECT).toList();
+            workflowDecisions = withinModelLimits(eligibleDecisions);
+            omittedRegions = eligibleDecisions.size() - workflowDecisions.size();
+            if (omittedRegions > 0) {
+                log.info("Image OCR output exceeds processing limits; leading regions kept: "
+                                + "eligible={}, kept={}, omitted={}, maxRegions={}, maxChars={}",
+                        eligibleDecisions.size(), workflowDecisions.size(), omittedRegions,
+                        MAX_OCR_REGIONS, MAX_OCR_TEXT_CHARS);
+            }
+            translatedDecisions = workflowDecisions.stream()
+                    .filter(value -> value.qualification() == OcrQualification.TRANSLATE).toList();
+            translatableText = recognition.regions().isEmpty()
+                    ? recognition.reliableText(properties.lowConfidenceThreshold())
+                    : workflowDecisions.stream().map(value -> value.region().text())
+                            .reduce((left, right) -> left + "\n" + right).orElse("");
         } catch (RuntimeException failure) {
             if (isExpectedFailure(failure)) {
                 log.warn("Image recognition failed: user={}, failure={}",
@@ -210,26 +237,6 @@ public class ImageTranslationPipeline {
             }
             return new ImageTranslationOutcome.Failure(ImageTranslationFailureStage.RECOGNITION);
         }
-        long recognitionMillis = elapsedMillis(stageStarted);
-        List<OcrRegionDecision> decisions = recognition.regions().stream()
-                .map(region -> qualificationPolicy.decide(region, properties.lowConfidenceThreshold()))
-                .toList();
-        List<OcrRegionDecision> eligibleDecisions = decisions.stream()
-                .filter(value -> value.qualification() != OcrQualification.REJECT).toList();
-        List<OcrRegionDecision> workflowDecisions = withinModelLimits(eligibleDecisions);
-        int omittedRegions = eligibleDecisions.size() - workflowDecisions.size();
-        if (omittedRegions > 0) {
-            log.info("Image OCR output exceeds processing limits; leading regions kept: "
-                            + "eligible={}, kept={}, omitted={}, maxRegions={}, maxChars={}",
-                    eligibleDecisions.size(), workflowDecisions.size(), omittedRegions,
-                    MAX_OCR_REGIONS, MAX_OCR_TEXT_CHARS);
-        }
-        List<OcrRegionDecision> translatedDecisions = workflowDecisions.stream()
-                .filter(value -> value.qualification() == OcrQualification.TRANSLATE).toList();
-        String translatableText = recognition.regions().isEmpty()
-                ? recognition.reliableText(properties.lowConfidenceThreshold())
-                : workflowDecisions.stream().map(value -> value.region().text())
-                        .reduce((left, right) -> left + "\n" + right).orElse("");
         if (translatableText.isBlank() || (!recognition.regions().isEmpty() && translatedDecisions.isEmpty())) {
             return new ImageTranslationOutcome.Failure(ImageTranslationFailureStage.NO_TEXT);
         }
@@ -284,6 +291,10 @@ public class ImageTranslationPipeline {
             return new ImageTranslationOutcome.Failure(ImageTranslationFailureStage.TRANSLATION);
         }
         if (workflowOutcome instanceof TranslationWorkflowOutcome.Failure failure) {
+            if (failure.failure().outcome() == AiProviderException.Outcome.UNEXPECTED_ERROR) {
+                // The provider module reports a bug it caught as a failed outcome, with the cause.
+                logUnexpected(UnexpectedStage.TRANSLATION, failure.failure().toException());
+            }
             return new ImageTranslationOutcome.Failure(
                     ImageTranslationFailureStage.TRANSLATION,
                     failure.failure());
@@ -368,11 +379,15 @@ public class ImageTranslationPipeline {
      * and data-store exceptions that report an unavailable or unusable service, not a bug. They
      * degrade the image as they always did. Anything else thrown by a stage is a defect of the
      * pipeline; it degrades the image the same way but is reported by {@link #logUnexpected}.
+     * Two exception types are also used by the adapters to carry a bug they caught, and are not
+     * known failures: {@link OcrDefectException} and an {@link AiProviderException} with
+     * {@link AiProviderException.Outcome#UNEXPECTED_ERROR}.
      */
     private static boolean isExpectedFailure(RuntimeException failure) {
-        return failure instanceof OcrProcessingException
+        return (failure instanceof OcrProcessingException && !(failure instanceof OcrDefectException))
                 || failure instanceof InvalidImageException
-                || failure instanceof AiProviderException
+                || (failure instanceof AiProviderException provider
+                        && provider.getOutcome() != AiProviderException.Outcome.UNEXPECTED_ERROR)
                 || failure instanceof StructuredTranslationException
                 || failure instanceof RenderedImageEncodingException
                 || failure instanceof DataAccessException;
@@ -442,6 +457,11 @@ public class ImageTranslationPipeline {
                 }
                 return recognition;
             } catch (OcrProcessingException failure) {
+                if (failure instanceof OcrDefectException) {
+                    // A bug in the OCR adapter: AI recognition still serves the image, but the
+                    // defect is reported instead of passing for an unavailable provider.
+                    logUnexpected(UnexpectedStage.RECOGNITION, failure);
+                }
                 log.info("Primary OCR unavailable; using AI image recognition: failure={}",
                         SafeLog.failure(failure));
             } catch (java.io.IOException impossibleForByteArray) {
