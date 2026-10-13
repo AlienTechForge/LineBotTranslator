@@ -1,5 +1,7 @@
 package com.linetranslate.bot.service.ocr;
 
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.util.List;
 import java.util.stream.IntStream;
@@ -40,6 +42,25 @@ public interface OcrService {
                     "legacy-%04d".formatted(index + 1), block.text, polygon, List.of(),
                     block.confidence, block.confidence > 0, OcrBlockType.TEXT, List.of(), index);
         }).toList();
+    }
+
+    /**
+     * Regions when any qualify, otherwise the page text as plain recognition. A provider that
+     * returns both in one response overrides this so an image without regions costs one request;
+     * the default serves services that cannot, by asking for regions and then for the text.
+     */
+    default OcrRecognition recognize(InputStream imageStream) {
+        byte[] bytes;
+        try {
+            bytes = imageStream.readAllBytes();
+        } catch (IOException failure) {
+            throw new OcrProcessingException("Unable to read OCR image stream", failure);
+        }
+        List<OcrRegion> regions = recognizeRegions(new ByteArrayInputStream(bytes));
+        if (regions != null && !regions.isEmpty()) {
+            return OcrRecognition.structured(regions);
+        }
+        return OcrRecognition.plain(recognizeText(new ByteArrayInputStream(bytes)));
     }
 
     /**

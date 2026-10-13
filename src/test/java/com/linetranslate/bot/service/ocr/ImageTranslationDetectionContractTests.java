@@ -112,7 +112,7 @@ class ImageTranslationDetectionContractTests {
         when(blobContent.byteStream()).thenReturn(new ByteArrayInputStream(new byte[] {1, 2, 3}));
         lenient().when(minioStorageService.uploadImage(any(byte[].class), anyString()))
                 .thenReturn(ImageStorageResult.stored("https://storage.example/image.jpg"));
-        when(ocrService.recognizeText(any(ByteArrayInputStream.class))).thenReturn("hello");
+        when(ocrService.recognize(any(ByteArrayInputStream.class))).thenReturn(OcrRecognition.plain("hello"));
         when(languageDetectionService.detectLanguage("hello")).thenReturn("en");
         lenient().when(translationAdapter.translate(any(UserPreferences.class), anyString(), anyString()))
                 .thenReturn(new AiExecutionOutcome.Success(
