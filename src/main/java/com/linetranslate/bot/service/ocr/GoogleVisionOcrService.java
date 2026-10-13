@@ -1,5 +1,7 @@
 package com.linetranslate.bot.service.ocr;
 
+import com.google.api.gax.rpc.ApiException;
+import com.google.api.gax.rpc.StatusCode;
 import com.google.cloud.vision.v1.*;
 import com.google.protobuf.ByteString;
 import com.linetranslate.bot.logging.SafeLog;
@@ -65,23 +67,23 @@ public class GoogleVisionOcrService implements OcrService {
             }
 
             // 提取文本
-            StringBuilder textBuilder = new StringBuilder();
+            String result = "";
             if (response.getResponsesCount() > 0) {
-                TextAnnotation textAnnotation = response.getResponses(0).getFullTextAnnotation();
-                if (textAnnotation != null) {
-                    return textAnnotation.getText();
+                AnnotateImageResponse annotationResponse = response.getResponses(0);
+                // Protobuf getters never return null; an absent annotation is the default
+                // instance, whose text is empty.
+                String fullText = annotationResponse.getFullTextAnnotation().getText();
+                if (!fullText.isEmpty()) {
+                    return fullText;
                 }
 
-                // 如果沒有完整文本註釋，則嘗試獲取單獨的文本註釋
-                for (EntityAnnotation annotation : response.getResponses(0).getTextAnnotationsList()) {
-                    if (textBuilder.length() > 0) {
-                        textBuilder.append("\n");
-                    }
-                    textBuilder.append(annotation.getDescription());
+                // 如果沒有完整文本註釋，則改用文本註釋；第一筆已涵蓋整段文字，
+                // 其餘為逐字詞項目，全部串接會讓文字重複
+                if (annotationResponse.getTextAnnotationsCount() > 0) {
+                    result = annotationResponse.getTextAnnotations(0).getDescription();
                 }
             }
 
-            String result = textBuilder.toString();
             log.info("OCR 識別完成: content={}", SafeLog.content(result));
             return result;
 
@@ -89,11 +91,36 @@ public class GoogleVisionOcrService implements OcrService {
             log.error("OCR 識別失敗: failure={}", SafeLog.failure(e));
             throw new OcrProcessingException("Google Vision could not read image bytes", e);
         } catch (RuntimeException failure) {
-            if (failure instanceof OcrProcessingException ocrFailure) {
-                throw ocrFailure;
-            }
-            throw new OcrProcessingException("Google Vision OCR failed", failure);
+            throw classify(failure, "Google Vision OCR failed");
         }
+    }
+
+    /**
+     * Keeps an {@link OcrProcessingException} as it is and turns a client deadline into an
+     * {@link OcrTimeoutException}, so a slow provider is told apart from a rejected image by
+     * type rather than by parsing a message. The gax client raises the deadline as an
+     * {@link ApiException} with status {@code DEADLINE_EXCEEDED}.
+     */
+    private OcrProcessingException classify(RuntimeException failure, String genericMessage) {
+        if (failure instanceof OcrProcessingException ocrFailure) {
+            return ocrFailure;
+        }
+        if (failure instanceof ApiException apiFailure
+                && apiFailure.getStatusCode().getCode() == StatusCode.Code.DEADLINE_EXCEEDED) {
+            log.warn("Google Vision OCR 逾時: timeoutMs={}, failure={}",
+                    configuredTimeoutMs(), SafeLog.failure(failure));
+            return new OcrTimeoutException("Google Vision OCR timed out", failure);
+        }
+        return new OcrProcessingException(genericMessage, failure);
+    }
+
+    /** The bound the client was built with, or -1 when its settings are not available. */
+    private long configuredTimeoutMs() {
+        ImageAnnotatorSettings settings = visionClient.getSettings();
+        return settings == null
+                ? -1
+                : settings.batchAnnotateImagesSettings().getRetrySettings()
+                        .getTotalTimeoutDuration().toMillis();
     }
 
     @Override
@@ -184,10 +211,7 @@ public class GoogleVisionOcrService implements OcrService {
             log.error("OCR 識別失敗: failure={}", SafeLog.failure(e));
             throw new OcrProcessingException("Google Vision could not read image bytes", e);
         } catch (RuntimeException failure) {
-            if (failure instanceof OcrProcessingException ocrFailure) {
-                throw ocrFailure;
-            }
-            throw new OcrProcessingException("Google Vision located OCR failed", failure);
+            throw classify(failure, "Google Vision located OCR failed");
         }
     }
 

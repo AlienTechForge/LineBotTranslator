@@ -1,6 +1,7 @@
 package com.linetranslate.bot.service.ocr;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -8,17 +9,26 @@ import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.time.Duration;
 import java.util.List;
 
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.ObjectProvider;
 
+import com.google.api.gax.grpc.GrpcStatusCode;
+import com.google.api.gax.rpc.DeadlineExceededException;
+import com.google.api.gax.rpc.UnavailableException;
 import com.google.cloud.vision.v1.AnnotateImageResponse;
 import com.google.cloud.vision.v1.BatchAnnotateImagesResponse;
 import com.google.cloud.vision.v1.Block;
 import com.google.cloud.vision.v1.BoundingPoly;
+import com.google.cloud.vision.v1.EntityAnnotation;
 import com.google.cloud.vision.v1.Feature;
 import com.google.cloud.vision.v1.ImageAnnotatorClient;
+import com.google.cloud.vision.v1.ImageAnnotatorSettings;
 import com.google.cloud.vision.v1.Page;
 import com.google.cloud.vision.v1.Paragraph;
 import com.google.cloud.vision.v1.Symbol;
@@ -27,7 +37,27 @@ import com.google.cloud.vision.v1.TextAnnotation.DetectedBreak.BreakType;
 import com.google.cloud.vision.v1.Vertex;
 import com.google.cloud.vision.v1.Word;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+import io.grpc.Status;
+
 class GoogleVisionOcrServiceTests {
+
+    private final Logger logger = (Logger) org.slf4j.LoggerFactory.getLogger(GoogleVisionOcrService.class);
+    private final ListAppender<ILoggingEvent> logs = new ListAppender<>();
+
+    @BeforeEach
+    void captureLogs() {
+        logs.start();
+        logger.addAppender(logs);
+    }
+
+    @AfterEach
+    void releaseLogs() {
+        logger.detachAppender(logs);
+    }
 
     @Test
     @SuppressWarnings("unchecked")
@@ -177,6 +207,120 @@ class GoogleVisionOcrServiceTests {
         assertThat(recognition.text()).isEqualTo("SALE 50%");
         assertThat(recognition.regions()).isEmpty();
         assertSingleDocumentRequest(client);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void plainTextFallsBackToTextAnnotationsWhenThereIsNoFullTextAnnotation() {
+        ImageAnnotatorClient client = mock(ImageAnnotatorClient.class);
+        ObjectProvider<ImageAnnotatorClient> provider = mock(ObjectProvider.class);
+        when(provider.getIfAvailable()).thenReturn(client);
+        // The first entry is the whole text and the rest repeat it word by word.
+        AnnotateImageResponse annotations = AnnotateImageResponse.newBuilder()
+                .addTextAnnotations(EntityAnnotation.newBuilder().setDescription("SALE 50%\nToday only"))
+                .addTextAnnotations(EntityAnnotation.newBuilder().setDescription("SALE"))
+                .addTextAnnotations(EntityAnnotation.newBuilder().setDescription("50%"))
+                .build();
+        assertThat(annotations.hasFullTextAnnotation()).isFalse();
+        when(client.batchAnnotateImages(anyList())).thenReturn(
+                BatchAnnotateImagesResponse.newBuilder().addResponses(annotations).build());
+
+        String text = new GoogleVisionOcrService(provider).recognizeText(new ByteArrayInputStream(new byte[] {1}));
+
+        assertThat(text).isEqualTo("SALE 50%\nToday only");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void plainTextPrefersTheFullTextAnnotationOverTextAnnotations() {
+        ImageAnnotatorClient client = mock(ImageAnnotatorClient.class);
+        ObjectProvider<ImageAnnotatorClient> provider = mock(ObjectProvider.class);
+        when(provider.getIfAvailable()).thenReturn(client);
+        when(client.batchAnnotateImages(anyList())).thenReturn(BatchAnnotateImagesResponse.newBuilder()
+                .addResponses(AnnotateImageResponse.newBuilder()
+                        .setFullTextAnnotation(TextAnnotation.newBuilder().setText("full page text"))
+                        .addTextAnnotations(EntityAnnotation.newBuilder().setDescription("loose entry")))
+                .build());
+
+        String text = new GoogleVisionOcrService(provider).recognizeText(new ByteArrayInputStream(new byte[] {1}));
+
+        assertThat(text).isEqualTo("full page text");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void plainTextOfAnImageWithoutAnyAnnotationIsEmpty() {
+        ImageAnnotatorClient client = mock(ImageAnnotatorClient.class);
+        ObjectProvider<ImageAnnotatorClient> provider = mock(ObjectProvider.class);
+        when(provider.getIfAvailable()).thenReturn(client);
+        when(client.batchAnnotateImages(anyList())).thenReturn(BatchAnnotateImagesResponse.newBuilder()
+                .addResponses(AnnotateImageResponse.getDefaultInstance()).build());
+
+        String text = new GoogleVisionOcrService(provider).recognizeText(new ByteArrayInputStream(new byte[] {1}));
+
+        assertThat(text).isEmpty();
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void clientDeadlineIsAnOcrTimeoutThatReportsTheConfiguredBound() {
+        ImageAnnotatorClient client = mock(ImageAnnotatorClient.class);
+        ObjectProvider<ImageAnnotatorClient> provider = mock(ObjectProvider.class);
+        when(provider.getIfAvailable()).thenReturn(client);
+        when(client.getSettings()).thenReturn(settingsWithTimeout(Duration.ofSeconds(45)));
+        DeadlineExceededException deadline = new DeadlineExceededException(
+                new RuntimeException("private-provider-detail"),
+                GrpcStatusCode.of(Status.Code.DEADLINE_EXCEEDED), false);
+        when(client.batchAnnotateImages(anyList())).thenThrow(deadline);
+        GoogleVisionOcrService service = new GoogleVisionOcrService(provider);
+
+        assertThatThrownBy(() -> service.recognize(new ByteArrayInputStream(new byte[] {1})))
+                .isInstanceOf(OcrTimeoutException.class)
+                .isInstanceOf(OcrProcessingException.class)
+                .hasCause(deadline);
+        assertThatThrownBy(() -> service.recognizeText(new ByteArrayInputStream(new byte[] {1})))
+                .isInstanceOf(OcrTimeoutException.class)
+                .hasCause(deadline);
+
+        assertThat(logs.list).filteredOn(event -> event.getLevel() == Level.WARN).hasSize(2)
+                .allSatisfy(event -> assertThat(event.getFormattedMessage())
+                        .contains("timeoutMs=45000")
+                        .contains("DeadlineExceededException")
+                        .doesNotContain("private-provider-detail"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void otherProviderFailuresAreNotReportedAsTimeouts() {
+        ImageAnnotatorClient client = mock(ImageAnnotatorClient.class);
+        ObjectProvider<ImageAnnotatorClient> provider = mock(ObjectProvider.class);
+        when(provider.getIfAvailable()).thenReturn(client);
+        UnavailableException unavailable = new UnavailableException(
+                new RuntimeException("provider down"), GrpcStatusCode.of(Status.Code.UNAVAILABLE), true);
+        when(client.batchAnnotateImages(anyList())).thenThrow(unavailable);
+        GoogleVisionOcrService service = new GoogleVisionOcrService(provider);
+
+        assertThatThrownBy(() -> service.recognize(new ByteArrayInputStream(new byte[] {1})))
+                .isExactlyInstanceOf(OcrProcessingException.class)
+                .hasCause(unavailable);
+        assertThatThrownBy(() -> service.recognizeText(new ByteArrayInputStream(new byte[] {1})))
+                .isExactlyInstanceOf(OcrProcessingException.class)
+                .hasCause(unavailable);
+
+        assertThat(logs.list).filteredOn(event -> event.getLevel() == Level.WARN).isEmpty();
+    }
+
+    private static ImageAnnotatorSettings settingsWithTimeout(Duration timeout) {
+        try {
+            ImageAnnotatorSettings.Builder builder = ImageAnnotatorSettings.newBuilder();
+            builder.batchAnnotateImagesSettings().setRetrySettings(
+                    builder.batchAnnotateImagesSettings().getRetrySettings().toBuilder()
+                            .setTotalTimeoutDuration(timeout)
+                            .build());
+            return builder.build();
+        } catch (IOException failure) {
+            throw new IllegalStateException(failure);
+        }
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})
