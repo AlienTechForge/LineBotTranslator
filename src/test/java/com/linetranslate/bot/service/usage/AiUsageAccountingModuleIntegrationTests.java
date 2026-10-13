@@ -135,6 +135,24 @@ class AiUsageAccountingModuleIntegrationTests {
         });
     }
 
+    @Test
+    void failedAttemptKeepsTheTokenUsageTheProviderReported() {
+        AiProviderException truncated = new AiProviderException(
+                AiProviderException.Outcome.MALFORMED_RESPONSE, "openrouter", "openai/gpt-4o-mini",
+                "TRUNCATED_OUTPUT", "correlation-ignored", 200, null, new AiTokenUsage(1_000, 500, 1_500));
+        module.record(AiProviderOperation.PROCESS_IMAGE, new AiExecutionOutcome.Failure(
+                AiExecutionFailure.from(truncated, List.of(AiProviderAttempt.failure(truncated, 40)))));
+
+        UsageReport report = module.report(UsageQuery.all());
+
+        assertThat(report.totalExecutions()).isEqualTo(1);
+        assertThat(report.failedExecutions()).isEqualTo(1);
+        assertThat(report.inputTokens()).isEqualTo(1_000);
+        assertThat(report.outputTokens()).isEqualTo(500);
+        assertThat(report.totalTokens()).isEqualTo(1_500);
+        assertThat(report.totalCost()).isEqualByComparingTo("0.01050000");
+    }
+
     private static AiProviderException failure(
             AiProviderException.Outcome outcome,
             String provider,

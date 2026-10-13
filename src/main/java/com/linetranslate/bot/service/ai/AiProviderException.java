@@ -27,6 +27,7 @@ public final class AiProviderException extends RuntimeException {
     private final String reason;
     private final String correlationId;
     private final int httpStatus;
+    private final AiTokenUsage tokenUsage;
 
     public AiProviderException(
             Outcome outcome,
@@ -36,6 +37,19 @@ public final class AiProviderException extends RuntimeException {
             String correlationId,
             int httpStatus,
             Throwable cause) {
+        this(outcome, provider, model, reason, correlationId, httpStatus, cause, AiTokenUsage.UNKNOWN);
+    }
+
+    /** A failure the provider may still bill, such as a completion cut off by max_tokens. */
+    public AiProviderException(
+            Outcome outcome,
+            String provider,
+            String model,
+            String reason,
+            String correlationId,
+            int httpStatus,
+            Throwable cause,
+            AiTokenUsage tokenUsage) {
         super("AI provider request failed: " + outcome, cause);
         this.outcome = outcome;
         this.provider = normalizeMetadata(provider);
@@ -43,6 +57,7 @@ public final class AiProviderException extends RuntimeException {
         this.reason = normalizeMetadata(reason);
         this.correlationId = normalizeMetadata(correlationId);
         this.httpStatus = httpStatus;
+        this.tokenUsage = tokenUsage == null ? AiTokenUsage.UNKNOWN : tokenUsage;
     }
 
     public Outcome getOutcome() {
@@ -67,6 +82,10 @@ public final class AiProviderException extends RuntimeException {
 
     public int getHttpStatus() {
         return httpStatus;
+    }
+
+    public AiTokenUsage getTokenUsage() {
+        return tokenUsage;
     }
 
     private static String normalizeMetadata(String value) {

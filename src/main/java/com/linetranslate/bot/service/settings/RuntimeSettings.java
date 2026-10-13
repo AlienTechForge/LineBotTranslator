@@ -9,6 +9,7 @@ public record RuntimeSettings(
         String openRouterDefaultModel,
         boolean ocrEnabled,
         boolean shortUrlEnabled,
+        boolean imageTextReplyEnabled,
         int schemaVersion,
         long revision,
         Instant updatedAt,
@@ -27,8 +28,25 @@ public record RuntimeSettings(
             String updatedBy,
             Source source) {
         this(defaultTargetLanguageForChinese, defaultTargetLanguageForOthers,
-                openRouterDefaultModel, ocrEnabled, false, schemaVersion, revision,
+                openRouterDefaultModel, ocrEnabled, false, true, schemaVersion, revision,
                 updatedAt, updatedBy, source);
+    }
+
+    /** Compatibility constructor for callers that predate the image text reply switch. */
+    public RuntimeSettings(
+            String defaultTargetLanguageForChinese,
+            String defaultTargetLanguageForOthers,
+            String openRouterDefaultModel,
+            boolean ocrEnabled,
+            boolean shortUrlEnabled,
+            int schemaVersion,
+            long revision,
+            Instant updatedAt,
+            String updatedBy,
+            Source source) {
+        this(defaultTargetLanguageForChinese, defaultTargetLanguageForOthers,
+                openRouterDefaultModel, ocrEnabled, shortUrlEnabled, true, schemaVersion,
+                revision, updatedAt, updatedBy, source);
     }
 
     public enum Source {

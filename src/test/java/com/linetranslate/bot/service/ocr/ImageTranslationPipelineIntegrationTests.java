@@ -3,8 +3,10 @@ package com.linetranslate.bot.service.ocr;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -23,6 +25,8 @@ import java.util.concurrent.Executors;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.ObjectProvider;
 
@@ -31,13 +35,19 @@ import javax.imageio.ImageIO;
 import com.linecorp.bot.client.base.BlobContent;
 import com.linecorp.bot.client.base.Result;
 import com.linecorp.bot.messaging.client.MessagingApiBlobClient;
+import com.linetranslate.bot.model.TranslationRecord;
 import com.linetranslate.bot.model.UserProfile;
+import com.linetranslate.bot.repository.TranslationRecordRepository;
+import com.linetranslate.bot.service.ai.AiExecutionOutcome;
 import com.linetranslate.bot.service.ai.AiExecutionResult;
 import com.linetranslate.bot.service.ai.AiProviderException;
 import com.linetranslate.bot.service.ai.AiProviderExecutionModule;
+import com.linetranslate.bot.service.preference.UserPreferences;
 import com.linetranslate.bot.service.preference.UserPreferencesModule;
 import com.linetranslate.bot.service.storage.ImageStorageResult;
 import com.linetranslate.bot.service.storage.MinioStorageService;
+import com.linetranslate.bot.service.translation.CachedTranslationAdapter;
+import com.linetranslate.bot.service.translation.LanguageDetectionService;
 import com.linetranslate.bot.service.translation.TranslationRequestKind;
 import com.linetranslate.bot.service.translation.TranslationWorkflowModule;
 import com.linetranslate.bot.service.translation.TranslationWorkflowOutcome;
@@ -68,6 +78,8 @@ class ImageTranslationPipelineIntegrationTests {
         messagingApiBlobClient = mock(MessagingApiBlobClient.class);
         minioStorageService = mock(MinioStorageService.class);
         when(ocrServiceProvider.getIfAvailable()).thenReturn(ocrService);
+        // A service without a single-request override: the default composes the region and text stubs.
+        when(ocrService.recognize(any(InputStream.class))).thenCallRealMethod();
         pipeline = new ImageTranslationPipeline(
                 ocrServiceProvider,
                 workflowModule,
@@ -205,6 +217,41 @@ class ImageTranslationPipelineIntegrationTests {
     }
 
     @Test
+    void imageWithoutTextMakesOneOcrRequestAndStopsAtNoText() throws Exception {
+        image("message-no-text", new byte[] {11});
+        when(minioStorageService.uploadImage(any(byte[].class), anyString()))
+                .thenReturn(ImageStorageResult.notStored());
+        doReturn(OcrRecognition.plain("")).when(ocrService).recognize(any(InputStream.class));
+
+        ImageTranslationOutcome outcome = pipeline.execute(request("message-no-text"));
+
+        assertThat(outcome).isEqualTo(new ImageTranslationOutcome.Failure(
+                ImageTranslationFailureStage.NO_TEXT));
+        verify(ocrService, times(1)).recognize(any(InputStream.class));
+        verify(ocrService, never()).recognizeRegions(any());
+        verify(ocrService, never()).recognizeText(any());
+        verify(aiProviderExecutionModule, never()).processImage(any(), anyString(), anyString());
+        verify(workflowModule, never()).execute(any());
+    }
+
+    @Test
+    void textWithoutRegionsTranslatesFromTheSameOcrRequest() throws Exception {
+        image("message-plain-text", new byte[] {12});
+        when(minioStorageService.uploadImage(any(byte[].class), anyString()))
+                .thenReturn(ImageStorageResult.notStored());
+        doReturn(OcrRecognition.plain("hello")).when(ocrService).recognize(any(InputStream.class));
+        when(workflowModule.execute(any())).thenReturn(success("hello", "你好"));
+
+        ImageTranslationOutcome outcome = pipeline.execute(request("message-plain-text"));
+
+        assertThat(successResult(outcome).context().recognizedText()).isEqualTo("hello");
+        verify(ocrService, times(1)).recognize(any(InputStream.class));
+        verify(ocrService, never()).recognizeRegions(any());
+        verify(ocrService, never()).recognizeText(any());
+        verify(aiProviderExecutionModule, never()).processImage(any(), anyString(), anyString());
+    }
+
+    @Test
     void workflowFailureKeepsExplicitTranslationStage() throws Exception {
         image("message-translation-failed", new byte[] {9});
         when(minioStorageService.uploadImage(any(byte[].class), anyString()))
@@ -334,7 +381,7 @@ class ImageTranslationPipelineIntegrationTests {
                 "hello\nworld", "greetings\nplanet",
                 List.of(new ImageRegionTranslation("r-hello", "greetings"),
                         new ImageRegionTranslation("r-world", "planet"))));
-        when(minioStorageService.uploadTranslatedImage(any(byte[].class)))
+        when(minioStorageService.uploadTranslatedImage(any(byte[].class), anyString()))
                 .thenReturn(ImageStorageResult.stored("https://storage.example/translated.png"));
 
         ImageTranslationPipelineResult result = successResult(pipeline.execute(request("message-overlay")));
@@ -350,7 +397,7 @@ class ImageTranslationPipelineIntegrationTests {
         assertThat(workflow.getValue().imageRegions()).extracting(
                 com.linetranslate.bot.service.translation.ImageRegionTranslationInput::regionId)
                 .containsExactly("r-hello", "r-world");
-        verify(minioStorageService).uploadTranslatedImage(any(byte[].class));
+        verify(minioStorageService).uploadTranslatedImage(any(byte[].class), anyString());
     }
 
     @Test
@@ -374,7 +421,7 @@ class ImageTranslationPipelineIntegrationTests {
                 List.of(new ImageRegionTranslation("p1", "first"),
                         new ImageRegionTranslation("p2", "second"),
                         new ImageRegionTranslation("p3", "third"))));
-        when(minioStorageService.uploadTranslatedImage(any(byte[].class)))
+        when(minioStorageService.uploadTranslatedImage(any(byte[].class), anyString()))
                 .thenReturn(ImageStorageResult.stored("https://storage.example/document-translated.png"));
 
         ImageTranslationPipelineResult result = successResult(
@@ -383,7 +430,7 @@ class ImageTranslationPipelineIntegrationTests {
         assertThat(result.overlayDisposition()).isEqualTo(ImageOverlayDisposition.GENERATED);
         assertThat(result.renderedImage().url())
                 .contains("https://storage.example/document-translated.png");
-        verify(minioStorageService).uploadTranslatedImage(any(byte[].class));
+        verify(minioStorageService).uploadTranslatedImage(any(byte[].class), anyString());
     }
 
     @Test
@@ -408,7 +455,7 @@ class ImageTranslationPipelineIntegrationTests {
         assertThat(result.translation().translatedText()).isEqualTo("greetings");
         assertThat(result.renderedImage().stored()).isFalse();
         assertThat(result.overlayDisposition()).isEqualTo(ImageOverlayDisposition.SAFETY_DEGRADED);
-        verify(minioStorageService, never()).uploadTranslatedImage(any(byte[].class));
+        verify(minioStorageService, never()).uploadTranslatedImage(any(byte[].class), anyString());
     }
 
     @Test
@@ -425,7 +472,7 @@ class ImageTranslationPipelineIntegrationTests {
 
         assertThat(result.translation().translatedText()).isEqualTo("greetings");
         assertThat(result.overlayDisposition()).isEqualTo(ImageOverlayDisposition.SAFETY_DEGRADED);
-        verify(minioStorageService, never()).uploadTranslatedImage(any(byte[].class));
+        verify(minioStorageService, never()).uploadTranslatedImage(any(byte[].class), anyString());
     }
 
     @Test
@@ -451,7 +498,7 @@ class ImageTranslationPipelineIntegrationTests {
         when(workflowModule.execute(any())).thenReturn(successStructured(
                 "hello\nworld", "greetings\nworld",
                 List.of(new ImageRegionTranslation("r-hello", "greetings"))));
-        when(minioStorageService.uploadTranslatedImage(any(byte[].class)))
+        when(minioStorageService.uploadTranslatedImage(any(byte[].class), anyString()))
                 .thenReturn(ImageStorageResult.stored("https://storage.example/partial.png"));
 
         ImageTranslationPipelineResult result =
@@ -460,7 +507,7 @@ class ImageTranslationPipelineIntegrationTests {
         assertThat(result.overlayDisposition()).isEqualTo(ImageOverlayDisposition.GENERATED);
         assertThat(result.renderedImage().url()).contains("https://storage.example/partial.png");
         assertThat(result.degradation().count(OverlayDegradationReason.MAPPING)).isEqualTo(1);
-        verify(minioStorageService).uploadTranslatedImage(any(byte[].class));
+        verify(minioStorageService).uploadTranslatedImage(any(byte[].class), anyString());
     }
 
     @Test
@@ -498,6 +545,135 @@ class ImageTranslationPipelineIntegrationTests {
                 com.linetranslate.bot.service.translation.ImageRegionTranslationInput::translatable)
                 .containsExactly(org.assertj.core.groups.Tuple.tuple("product", true),
                         org.assertj.core.groups.Tuple.tuple("date", false));
+    }
+
+    @Test
+    void verticalCjkColumnsReachTheCodecAndTheWorkflowRightToLeft() throws Exception {
+        image("message-vertical", png(120, 210), "image/png");
+        when(minioStorageService.uploadImage(any(byte[].class), anyString()))
+                .thenReturn(ImageStorageResult.notStored());
+        // Vision lists the left column first; the segmenter has to turn that into reading order.
+        List<OcrWord> words = List.of(
+                glyph("澎", 10, 10), glyph("湃", 10, 34), glyph("飯", 10, 58),
+                glyph("風", 10, 110), glyph("味", 10, 134), glyph("飯", 10, 158),
+                glyph("香", 60, 10), glyph("酥", 60, 34), glyph("飯", 60, 58),
+                glyph("經", 60, 110), glyph("典", 60, 134), glyph("飯", 60, 158));
+        OcrRegion card = new OcrRegion("card", "澎湃飯 風味飯 香酥飯 經典飯", List.of(
+                new OcrPoint(5, 5), new OcrPoint(95, 5), new OcrPoint(95, 190), new OcrPoint(5, 190)),
+                words, .98f, true, OcrBlockType.TEXT, List.of(new OcrDetectedLanguage("zh", .98f)), 0);
+        when(ocrService.recognizeRegions(any(InputStream.class)))
+                .thenReturn(new OcrRegionSegmenter().segment(List.of(card)));
+        when(workflowModule.execute(any())).thenReturn(success("香酥飯", "stub"));
+
+        pipeline.execute(request("message-vertical"));
+
+        ArgumentCaptor<TranslationWorkflowRequest> workflow =
+                ArgumentCaptor.forClass(TranslationWorkflowRequest.class);
+        verify(workflowModule).execute(workflow.capture());
+        assertThat(workflow.getValue().sourceText()).isEqualTo("香酥飯\n經典飯\n澎湃飯\n風味飯");
+        var regions = workflow.getValue().imageRegions();
+        assertThat(regions).extracting(
+                com.linetranslate.bot.service.translation.ImageRegionTranslationInput::regionId)
+                .containsExactly("card.v1.1", "card.v1.2", "card.v2.1", "card.v2.2");
+        assertThat(regions).extracting(
+                com.linetranslate.bot.service.translation.ImageRegionTranslationInput::readingOrder)
+                .containsExactly(0, 1, 2, 3);
+        // The request the model receives lists the regions in the same order.
+        var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        var wire = mapper.readTree(
+                new com.linetranslate.bot.service.translation.StructuredImageTranslationCodec(mapper)
+                        .encode(regions, "en", false));
+        assertThat(wire.get("regions")).extracting(node -> node.get("sourceText").asText())
+                .containsExactly("香酥飯", "經典飯", "澎湃飯", "風味飯");
+    }
+
+    private static OcrWord glyph(String text, int x, int y) {
+        return new OcrWord(text, List.of(
+                new OcrPoint(x, y), new OcrPoint(x + 22, y),
+                new OcrPoint(x + 22, y + 22), new OcrPoint(x, y + 22)), .98f, true);
+    }
+
+    @Test
+    void longPreservedRegionAndDenseTokenRegionStillReachTheTranslationWorkflow() throws Exception {
+        image("message-dense-tokens", png(300, 150), "image/png");
+        when(minioStorageService.uploadImage(any(byte[].class), anyString()))
+                .thenReturn(ImageStorageResult.notStored());
+        List<String> prices = java.util.stream.IntStream.rangeClosed(1, 80)
+                .mapToObj(value -> "$" + value).toList();
+        String menu = "Menu $" + "9".repeat(200) + " " + String.join(" ", prices);
+        String account = "1234567890".repeat(30);
+        when(ocrService.recognizeRegions(any(InputStream.class))).thenReturn(List.of(
+                region("menu", menu, 10, 10, 280, 60, .98f),
+                region("account", account, 10, 90, 280, 40, .98f)));
+        when(workflowModule.execute(any())).thenReturn(success(menu + "\n" + account, "菜單"));
+
+        ImageTranslationOutcome outcome = pipeline.execute(request("message-dense-tokens"));
+
+        assertThat(outcome).isInstanceOf(ImageTranslationOutcome.Success.class);
+        ArgumentCaptor<TranslationWorkflowRequest> request = ArgumentCaptor.forClass(TranslationWorkflowRequest.class);
+        verify(workflowModule).execute(request.capture());
+        var regions = request.getValue().imageRegions().stream().collect(java.util.stream.Collectors.toMap(
+                com.linetranslate.bot.service.translation.ImageRegionTranslationInput::regionId, value -> value));
+        assertThat(regions).containsOnlyKeys("menu", "account");
+        assertThat(regions.get("menu").translatable()).isTrue();
+        assertThat(regions.get("menu").protectedTokens()).containsExactlyElementsOf(prices.subList(0, 64));
+        assertThat(regions.get("account").translatable()).isFalse();
+        assertThat(regions.get("account").protectedTokens()).isEmpty();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"本書已翻譯成多國語言", "本菜單可翻譯成英文", "翻譯成ja 你好"})
+    void recognizedTextNeverRequestsItsOwnTargetLanguage(String recognizedText) throws Exception {
+        image("message-embedded-command", new byte[] {11});
+        when(minioStorageService.uploadImage(any(byte[].class), anyString()))
+                .thenReturn(ImageStorageResult.notStored());
+        when(ocrService.recognizeText(any(InputStream.class))).thenReturn(recognizedText);
+        when(workflowModule.execute(any())).thenReturn(success(recognizedText, "translated"));
+
+        ImageTranslationPipelineResult result =
+                successResult(pipeline.execute(request("message-embedded-command")));
+
+        assertThat(result.context().requestedTargetLanguage()).isNull();
+        ArgumentCaptor<TranslationWorkflowRequest> workflow =
+                ArgumentCaptor.forClass(TranslationWorkflowRequest.class);
+        verify(workflowModule).execute(workflow.capture());
+        assertThat(workflow.getValue().requestedTargetLanguage()).isNull();
+        assertThat(workflow.getValue().sourceText()).isEqualTo(recognizedText);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"本書已翻譯成多國語言", "本菜單可翻譯成英文"})
+    void embeddedTranslationPhraseKeepsThePreferenceTargetAndIsTranslatedVerbatim(
+            String recognizedText) throws Exception {
+        LanguageDetectionService detection = mock(LanguageDetectionService.class);
+        CachedTranslationAdapter adapter = mock(CachedTranslationAdapter.class);
+        TranslationRecordRepository records = mock(TranslationRecordRepository.class);
+        UserPreferences preferences = new UserPreferences("ko", "ja", "en", "gpt-test", List.of());
+        when(userPreferencesModule.resolve(userProfile)).thenReturn(preferences);
+        when(detection.detectLanguage(recognizedText)).thenReturn("zh-TW");
+        when(adapter.translate(preferences, recognizedText, "ja")).thenReturn(
+                new AiExecutionOutcome.Success(new AiExecutionResult("翻訳", "openrouter", "gpt-test")));
+        pipeline = new ImageTranslationPipeline(
+                ocrServiceProvider,
+                new TranslationWorkflowModule(detection, adapter, records, userPreferencesModule),
+                aiProviderExecutionModule,
+                userPreferencesModule,
+                messagingApiBlobClient,
+                minioStorageService);
+        image("message-embedded-phrase", new byte[] {12});
+        when(minioStorageService.uploadImage(any(byte[].class), anyString()))
+                .thenReturn(ImageStorageResult.notStored());
+        when(ocrService.recognizeText(any(InputStream.class))).thenReturn(recognizedText);
+
+        ImageTranslationPipelineResult result =
+                successResult(pipeline.execute(request("message-embedded-phrase")));
+
+        assertThat(result.translation().targetLanguage()).isEqualTo("ja");
+        verify(adapter).translate(preferences, recognizedText, "ja");
+        ArgumentCaptor<TranslationRecord> record = ArgumentCaptor.forClass(TranslationRecord.class);
+        verify(records).save(record.capture());
+        assertThat(record.getValue().getSourceText()).isEqualTo(recognizedText);
+        assertThat(record.getValue().getTargetLanguage()).isEqualTo("ja");
     }
 
     private TrackingInputStream image(String messageId, byte[] bytes) throws Exception {

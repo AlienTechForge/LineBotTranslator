@@ -5,6 +5,8 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.util.List;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -13,6 +15,7 @@ import com.linecorp.bot.messaging.model.TextMessage;
 import com.linetranslate.bot.service.line.intent.AdminIntent;
 import com.linetranslate.bot.service.line.intent.AdminIntentParser;
 import com.linetranslate.bot.service.line.intent.LineIntent;
+import com.linetranslate.bot.service.ocr.ImageTranslationReply;
 import com.linetranslate.bot.service.ocr.ImageTranslationService;
 import com.linetranslate.bot.service.translation.TranslationActionModule;
 import com.linetranslate.bot.service.translation.TranslationResponse;
@@ -25,6 +28,7 @@ class LineInteractionModuleTests {
     private LineUserProfileService profileService;
     private AdminIntentParser adminIntentParser;
     private AdminInteractionModule adminInteractionModule;
+    private ImageTranslationService imageTranslationService;
     private LineMessageRenderer renderer;
     private LineInteractionModule module;
 
@@ -35,15 +39,38 @@ class LineInteractionModuleTests {
         profileService = mock(LineUserProfileService.class);
         adminIntentParser = mock(AdminIntentParser.class);
         adminInteractionModule = mock(AdminInteractionModule.class);
+        imageTranslationService = mock(ImageTranslationService.class);
         renderer = mock(LineMessageRenderer.class);
         module = new LineInteractionModule(
                 translationService,
                 translationActionModule,
                 profileService,
-                mock(ImageTranslationService.class),
+                imageTranslationService,
                 adminIntentParser,
                 adminInteractionModule,
                 renderer);
+    }
+
+    @Test
+    void imageResultCarriesEveryRenderedMessageInOrder() {
+        ImageTranslationReply reply = ImageTranslationReply.text(TranslationResponse.plain("done"));
+        TextMessage image = new TextMessage("image");
+        TextMessage text = new TextMessage("text");
+        when(imageTranslationService.processImageTranslationReply("U-user", "message-1"))
+                .thenReturn(reply);
+        when(renderer.imageResultMessages(reply)).thenReturn(List.of(image, text));
+
+        assertThat(module.executeImage("U-user", "message-1")).containsExactly(image, text);
+    }
+
+    @Test
+    void imageProcessingFailureIsOneFailureMessage() {
+        TextMessage failure = new TextMessage("failed");
+        when(imageTranslationService.processImageTranslationReply("U-user", "message-1"))
+                .thenThrow(new IllegalStateException("boom"));
+        when(renderer.imageFailure()).thenReturn(failure);
+
+        assertThat(module.executeImage("U-user", "message-1")).containsExactly(failure);
     }
 
     @Test

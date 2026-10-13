@@ -26,20 +26,20 @@ public class LineWebhookEventProcessor implements WebhookEventProcessor {
 
     @Override
     public Optional<WebhookReply> process(Event event) {
-        Message response = route(event);
-        if (response == null || !(event instanceof ReplyEvent replyEvent)) {
+        List<Message> response = route(event);
+        if (response == null || response.isEmpty() || !(event instanceof ReplyEvent replyEvent)) {
             return Optional.empty();
         }
-        return Optional.of(new WebhookReply(replyEvent.replyToken(), List.of(response)));
+        return Optional.of(new WebhookReply(replyEvent.replyToken(), response));
     }
 
-    private Message route(Event event) {
+    private List<Message> route(Event event) {
         if (event instanceof PostbackEvent postbackEvent) {
-            return lineBotController.handlePostbackEvent(postbackEvent);
+            return single(lineBotController.handlePostbackEvent(postbackEvent));
         }
         if (event instanceof MessageEvent messageEvent) {
             if (messageEvent.message() instanceof TextMessageContent text) {
-                return lineBotController.handleTextMessageEvent(messageEvent, text);
+                return single(lineBotController.handleTextMessageEvent(messageEvent, text));
             }
             if (messageEvent.message() instanceof ImageMessageContent image) {
                 return lineBotController.handleImageMessageEvent(messageEvent, image);
@@ -47,5 +47,9 @@ public class LineWebhookEventProcessor implements WebhookEventProcessor {
         }
         lineBotController.handleDefaultMessageEvent(event);
         return null;
+    }
+
+    private static List<Message> single(Message message) {
+        return message == null ? null : List.of(message);
     }
 }

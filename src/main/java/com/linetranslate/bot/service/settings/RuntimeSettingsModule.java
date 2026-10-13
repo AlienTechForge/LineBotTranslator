@@ -23,14 +23,15 @@ import lombok.extern.slf4j.Slf4j;
 
 /**
  * Deep Module for validated, versioned administrator settings. Schema v3 adds
- * administrator-controlled 木雷 short-URL output.
+ * administrator-controlled 木雷 short-URL output; v4 adds the switch that sends the
+ * recognised text and translation after a translated image.
  */
 @Service
 @Slf4j
 public class RuntimeSettingsModule implements RuntimeSettingsSource {
 
     public static final String DOCUMENT_ID = "global";
-    public static final int SCHEMA_VERSION = 3;
+    public static final int SCHEMA_VERSION = 4;
 
     private final MongoTemplate mongoTemplate;
     private final AppConfig appConfig;
@@ -128,7 +129,7 @@ public class RuntimeSettingsModule implements RuntimeSettingsSource {
         return switch (key) {
             case DEFAULT_CHINESE_TARGET_LANGUAGE, DEFAULT_OTHER_TARGET_LANGUAGE -> requireLanguage(rawValue);
             case OPENROUTER_DEFAULT_MODEL -> requireModel(rawValue);
-            case OCR_ENABLED, SHORT_URL_ENABLED -> requireBoolean(rawValue);
+            case OCR_ENABLED, SHORT_URL_ENABLED, IMAGE_TEXT_REPLY_ENABLED -> requireBoolean(rawValue);
         };
     }
 
@@ -147,6 +148,7 @@ public class RuntimeSettingsModule implements RuntimeSettingsSource {
                 openRouterConfig.getModelName(),
                 appConfig.isOcrEnabled(),
                 appConfig.isShortUrlEnabled(),
+                appConfig.isImageTextReplyEnabled(),
                 SCHEMA_VERSION,
                 0,
                 null,
@@ -164,6 +166,8 @@ public class RuntimeSettingsModule implements RuntimeSettingsSource {
                 stored.getOcrEnabled() == null ? defaults.ocrEnabled() : stored.getOcrEnabled(),
                 stored.getShortUrlEnabled() == null
                         ? defaults.shortUrlEnabled() : stored.getShortUrlEnabled(),
+                stored.getImageTextReplyEnabled() == null
+                        ? defaults.imageTextReplyEnabled() : stored.getImageTextReplyEnabled(),
                 SCHEMA_VERSION,
                 stored.getRevision() == null ? 0 : stored.getRevision(),
                 stored.getUpdatedAt(),
@@ -182,6 +186,7 @@ public class RuntimeSettingsModule implements RuntimeSettingsSource {
             case OPENROUTER_DEFAULT_MODEL -> effective.openRouterDefaultModel();
             case OCR_ENABLED -> effective.ocrEnabled();
             case SHORT_URL_ENABLED -> effective.shortUrlEnabled();
+            case IMAGE_TEXT_REPLY_ENABLED -> effective.imageTextReplyEnabled();
         };
     }
 
@@ -218,7 +223,7 @@ public class RuntimeSettingsModule implements RuntimeSettingsSource {
 
     private static void requireSupportedSchema(RuntimeSettingsDocument document) {
         Integer schema = document.getSchemaVersion();
-        if (schema == null || (schema != 1 && schema != 2 && schema != SCHEMA_VERSION)) {
+        if (schema == null || (schema != 1 && schema != 2 && schema != 3 && schema != SCHEMA_VERSION)) {
             throw new RuntimeSettingsPersistenceException("Unsupported runtime settings schema");
         }
     }

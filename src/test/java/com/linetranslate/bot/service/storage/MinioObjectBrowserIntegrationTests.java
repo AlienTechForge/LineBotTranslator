@@ -50,7 +50,7 @@ class MinioObjectBrowserIntegrationTests {
         try {
             assertThat(storage.uploadImage(new byte[] {1, 2, 3}, "image/jpeg").stored()).isTrue();
             assertThat(storage.uploadImage(new byte[] {4, 5}, "image/png").stored()).isTrue();
-            assertThat(storage.uploadTranslatedImage(new byte[] {6}).stored()).isTrue();
+            assertThat(storage.uploadTranslatedImage(new byte[] {6}, "image/png").stored()).isTrue();
             put(client, bucket, "other/keep.txt");
 
             Page everything = browser.list(new Query(null, null, null, 50, null));

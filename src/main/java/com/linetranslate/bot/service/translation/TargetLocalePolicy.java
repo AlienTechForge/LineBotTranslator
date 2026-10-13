@@ -8,10 +8,12 @@ import org.springframework.stereotype.Component;
 /** Canonical target-locale metadata and conservative output-script validation. */
 @Component
 public class TargetLocalePolicy {
+    // Each table lists only characters absent from the other script's standard text.
+    // Shared characters (台 只 面 里 后 几 把 祇) must stay out, or short correct output is rejected.
     private static final String SIMPLIFIED_ONLY =
-            "这为个们来时说对会还国发后里经从过样应间开关无实进学长现点动产种把当与义气几电车书见观东门风叶体台万网历广术号龙马鸟鱼爱听话语头面边达办厂医药优严伤热护续绩觉让带给该将只并区块显线简译误识";
+            "这为个们来时说对会还国发经从过样应间开关无实进学长现点动产种当与义气电车书见观东门风叶体万网历广术号龙马鸟鱼爱听话语头边达办厂医药优严伤热护续绩觉让带给该将并区块显线简译误识";
     private static final String TRADITIONAL_ONLY =
-            "這為個們來時說對會還國發後裡經從過樣應間開關無實進學長現點動產種把當與義氣幾電車書見觀東門風葉體臺萬網歷廣術號龍馬鳥魚愛聽話語頭麵邊達辦廠醫藥優嚴傷熱護續績覺讓帶給該將祇並區塊顯線簡譯誤識";
+            "這為個們來時說對會還國發後裡經從過樣應間開關無實進學長現點動產種當與義氣幾電車書見觀東門風葉體臺萬網歷廣術號龍馬鳥魚愛聽話語頭麵邊達辦廠醫藥優嚴傷熱護續績覺讓帶給該將並區塊顯線簡譯誤識";
 
     private static final Map<String, TargetLocale> LOCALES = Map.ofEntries(
             Map.entry("zh-tw", new TargetLocale("zh-TW", "Traditional Chinese", "Traditional Han script",

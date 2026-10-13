@@ -53,6 +53,45 @@ class PolygonOverlayRendererTests {
     }
 
     @Test
+    void denseTableOfSmallCellsRendersWithoutQuadraticMaskCost() {
+        // A dense menu or price board. Testing every pixel against the union of all cell masks took
+        // about 22 s here; rasterising only the masks near each cell keeps it under one second.
+        BufferedImage original = new BufferedImage(1620, 620, BufferedImage.TYPE_INT_RGB);
+        List<ImageRegionOverlay> overlays = new java.util.ArrayList<>();
+        var graphics = original.createGraphics();
+        try {
+            graphics.setColor(new Color(244, 240, 232));
+            graphics.fillRect(0, 0, original.getWidth(), original.getHeight());
+            graphics.setColor(new Color(30, 30, 30));
+            graphics.setFont(graphics.getFont().deriveFont(24f));
+            for (int index = 0; index < 120; index++) {
+                int x = 10 + index % 10 * 160;
+                int y = 10 + index / 10 * 50;
+                graphics.drawString("ITEM " + index, x + 6, y + 30);
+                List<OcrPoint> polygon = rectangle(x, y, 150, 40);
+                OcrRegion region = new OcrRegion("cell-" + index, "ITEM " + index, polygon,
+                        List.of(new OcrWord("ITEM", polygon, .99f, true)),
+                        .99f, true, OcrBlockType.TEXT, List.of(), index);
+                overlays.add(new ImageRegionOverlay(region, "Item"));
+            }
+        } finally {
+            graphics.dispose();
+        }
+        ImageTranslationOverlayRenderer renderer = new ImageTranslationOverlayRenderer(
+                new ImageTranslationFontProvider(Set.of("dejavu sans")));
+        ValidatedImage source = new ValidatedImage(new byte[] {1}, "image/png", original);
+        renderer.render(source, new OverlaySafetyPlan(true, "safe", overlays.subList(0, 1), 0));
+
+        long started = System.nanoTime();
+        RenderedImage rendered = renderer.render(source, new OverlaySafetyPlan(true, "safe", overlays, 0));
+        long elapsedMillis = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(
+                System.nanoTime() - started);
+
+        assertThat(rendered.renderedBlockCount()).isEqualTo(120);
+        assertThat(elapsedMillis).as("120 table cells on 1620x620 image").isLessThan(5_000);
+    }
+
+    @Test
     void replacementClearsOnlySourceGlyphAreaAndPreservesTableGrid() throws Exception {
         BufferedImage original = new BufferedImage(170, 90, BufferedImage.TYPE_INT_RGB);
         var graphics = original.createGraphics();

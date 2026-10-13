@@ -44,6 +44,7 @@ MONGODB_DATABASE=linebot_translator
 TRANSLATION_CACHE_TTL=PT30M
 TRANSLATION_CACHE_MAX_ENTRIES=1000
 TRANSLATION_GLOSSARY_VERSION=none
+TRANSLATION_ACTION_CLAIM_LEASE=PT5M
 
 # Webhook 非同步處理、去重與 LINE 回覆重試
 WEBHOOK_CORE_THREADS=2
@@ -60,10 +61,14 @@ OPEN_ROUTE_MODEL_NAME=openai/gpt-4o-mini
 OPEN_ROUTE_API_URL=https://openrouter.ai/api/v1
 
 # Google Cloud Vision API 配置 (OCR)
-GOOGLE_CLOUD_VISION_API_KEY=your_google_cloud_vision_api_key
+# 指向 Google service account JSON；正式環境改由 GOOGLE_CREDENTIALS_JSON secret 傳入（見 deployment-guide.md）
+GOOGLE_APPLICATION_CREDENTIALS=./linebot.json
+GOOGLE_VISION_TIMEOUT_MS=60000
 
 # 應用程式配置
 OCR_ENABLED=true
+# 翻譯圖片後是否再附上辨識文字、譯文與快速操作（管理員可用 /admin config image-text 動態切換）
+IMAGE_TEXT_REPLY_ENABLED=true
 
 # 可選 MinIO 圖片儲存；停用或不可用時圖片翻譯仍可繼續
 MINIO_ENABLED=true
@@ -157,6 +162,7 @@ java -jar target/linebot-translator-0.0.1-SNAPSHOT.jar
 - `/admin config` - 查看或變更非敏感 runtime settings
 - `/admin usage` - 查看 provider attempt 使用量與成本報表
 - `/admin config model [完整模型 slug]` - 設置全域 OpenRouter 默認模型
+- `/admin config image-text [on|off]` - 切換翻譯圖片後是否附上辨識文字、譯文與快速操作（預設 on，部署預設值 `IMAGE_TEXT_REPLY_ENABLED`）
 
 ## 貢獻與支持
 

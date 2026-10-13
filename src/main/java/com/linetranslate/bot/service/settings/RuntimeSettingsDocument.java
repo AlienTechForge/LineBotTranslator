@@ -24,6 +24,7 @@ public class RuntimeSettingsDocument {
     private String openRouterDefaultModel;
     private Boolean ocrEnabled;
     private Boolean shortUrlEnabled;
+    private Boolean imageTextReplyEnabled;
     private Long revision;
     private Instant updatedAt;
     private String updatedBy;

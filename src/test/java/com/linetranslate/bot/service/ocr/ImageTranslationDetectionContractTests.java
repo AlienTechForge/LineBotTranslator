@@ -10,7 +10,6 @@ import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.lenient;
 
 import java.io.ByteArrayInputStream;
-import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -91,13 +90,14 @@ class ImageTranslationDetectionContractTests {
                 userPreferencesModule,
                 messagingApiBlobClient,
                 minioStorageService);
-        imageTranslationService = new ImageTranslationService(pipeline, userProfileRepository);
+        imageTranslationService = new ImageTranslationService(
+                pipeline, userProfileRepository, userPreferencesModule);
 
         userProfile = UserProfile.builder()
                 .userId("U-test")
                 .preferredModel("gpt-test")
                 .build();
-        when(userProfileRepository.findByUserId("U-test")).thenReturn(Optional.of(userProfile));
+        when(userPreferencesModule.profile("U-test")).thenReturn(userProfile);
         when(userProfileRepository.save(any(UserProfile.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
         lenient().when(translationRecordRepository.save(any(TranslationRecord.class)))
@@ -112,7 +112,7 @@ class ImageTranslationDetectionContractTests {
         when(blobContent.byteStream()).thenReturn(new ByteArrayInputStream(new byte[] {1, 2, 3}));
         lenient().when(minioStorageService.uploadImage(any(byte[].class), anyString()))
                 .thenReturn(ImageStorageResult.stored("https://storage.example/image.jpg"));
-        when(ocrService.recognizeText(any(ByteArrayInputStream.class))).thenReturn("hello");
+        when(ocrService.recognize(any(ByteArrayInputStream.class))).thenReturn(OcrRecognition.plain("hello"));
         when(languageDetectionService.detectLanguage("hello")).thenReturn("en");
         lenient().when(translationAdapter.translate(any(UserPreferences.class), anyString(), anyString()))
                 .thenReturn(new AiExecutionOutcome.Success(

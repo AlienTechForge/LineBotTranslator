@@ -204,6 +204,87 @@ class OpenRouterServiceContractTests {
                                 .isEqualTo(AiProviderException.Outcome.MALFORMED_RESPONSE));
     }
 
+    @Test
+    void truncatedImageRecognitionIsAFailureThatKeepsTheBilledUsage() throws IOException {
+        OpenRouterService adapter = adapterReturning("""
+                {"model":"openai/gpt-4o-mini",
+                 "choices":[{"message":{"content":"partial-ocr-text"},
+                             "finish_reason":"length","native_finish_reason":"length"}],
+                 "usage":{"prompt_tokens":900,"completion_tokens":1024,"total_tokens":1924}}
+                """, Set.of("text", "image"));
+
+        assertThatThrownBy(() -> adapter.execute(AiProviderRequest.image(
+                "openai/gpt-4o-mini", "讀取圖片", "data:image/jpeg;base64,AA==")))
+                .isInstanceOfSatisfying(AiProviderException.class, failure -> {
+                    assertThat(failure.getOutcome())
+                            .isEqualTo(AiProviderException.Outcome.MALFORMED_RESPONSE);
+                    assertThat(failure.getReason()).isEqualTo("TRUNCATED_OUTPUT");
+                    assertThat(failure.getModel()).isEqualTo("openai/gpt-4o-mini");
+                    assertThat(failure.getTokenUsage()).isEqualTo(new AiTokenUsage(900, 1024, 1924));
+                    assertThat(failure.getMessage()).doesNotContain("partial-ocr-text");
+                });
+    }
+
+    @Test
+    void contentFilterFinishReasonIsSafetyBlocked() throws IOException {
+        OpenRouterService adapter = adapterReturning("""
+                {"model":"openai/gpt-4o-mini",
+                 "choices":[{"message":{"content":"partial-filtered-text"},
+                             "finish_reason":"content_filter"}]}
+                """, Set.of("text"));
+
+        assertThatThrownBy(() -> adapter.execute(AiProviderRequest.translate(
+                "openai/gpt-4o-mini", "hello", "zh-TW")))
+                .isInstanceOfSatisfying(AiProviderException.class, failure -> {
+                    assertThat(failure.getOutcome()).isEqualTo(AiProviderException.Outcome.SAFETY_BLOCKED);
+                    assertThat(failure.getReason()).isEqualTo("CONTENT_FILTER");
+                    assertThat(failure.getTokenUsage()).isEqualTo(AiTokenUsage.UNKNOWN);
+                    assertThat(failure.getMessage()).doesNotContain("partial-filtered-text");
+                });
+    }
+
+    @Test
+    void nativeFinishReasonIsUsedWhenTheNormalizedOneIsMissing() throws IOException {
+        OpenRouterService adapter = adapterReturning("""
+                {"model":"openai/gpt-4o-mini",
+                 "choices":[{"message":{"content":""},"finish_reason":null,
+                             "native_finish_reason":"MAX_TOKENS"}]}
+                """, Set.of("text"));
+
+        assertThatThrownBy(() -> adapter.execute(AiProviderRequest.translate(
+                "openai/gpt-4o-mini", "hello", "zh-TW")))
+                .isInstanceOfSatisfying(AiProviderException.class, failure -> {
+                    assertThat(failure.getOutcome())
+                            .isEqualTo(AiProviderException.Outcome.MALFORMED_RESPONSE);
+                    assertThat(failure.getReason()).isEqualTo("TRUNCATED_OUTPUT");
+                });
+    }
+
+    @Test
+    void stopAndMissingFinishReasonsRemainSuccessful() throws IOException {
+        OpenRouterService stopped = adapterReturning("""
+                {"model":"openai/gpt-4o-mini",
+                 "choices":[{"message":{"content":"你好"},"finish_reason":"stop","native_finish_reason":"stop"}]}
+                """, Set.of("text"));
+        OpenRouterService unreported = adapterReturning("""
+                {"model":"openai/gpt-4o-mini","choices":[{"message":{"content":"你好"}}]}
+                """, Set.of("text"));
+
+        assertThat(stopped.execute(AiProviderRequest.translate("openai/gpt-4o-mini", "hello", "zh-TW")).text())
+                .isEqualTo("你好");
+        assertThat(unreported.execute(AiProviderRequest.translate("openai/gpt-4o-mini", "hello", "zh-TW")).text())
+                .isEqualTo("你好");
+    }
+
+    private OpenRouterService adapterReturning(String body, Set<String> inputModalities) throws IOException {
+        OkHttpClient httpClient = mock(OkHttpClient.class);
+        Call call = mock(Call.class);
+        when(httpClient.newCall(any(Request.class))).thenReturn(call);
+        when(call.execute()).thenReturn(response(200, body));
+        return new OpenRouterService(
+                config(), httpClient, objectMapper, catalog("openai/gpt-4o-mini", inputModalities));
+    }
+
     private void assertFailure(
             int status,
             String errorType,
