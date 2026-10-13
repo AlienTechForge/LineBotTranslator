@@ -17,6 +17,7 @@ public record AdminIntent(Action action, String value, String secondary, Problem
         BROADCAST,
         STATS,
         TODAY,
+        QUOTA,
         USERS,
         USER,
         NICKNAME,

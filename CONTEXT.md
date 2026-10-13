@@ -87,7 +87,7 @@
 3. `LineIntentParser` 將一般文字、快速翻譯、命令或 postback 轉成 LINE Intent。
 4. `LineInteractionModule` 執行 intent；一般翻譯進入 `TranslationService` 與 `TranslationWorkflowModule`，管理命令進入 `AdminInteractionModule`。
 5. `LineMessageRenderer` 或 `AdminCardRenderer` 將結果轉成 LINE message。
-6. reply Adapter 傳送結果；成功或 poison 狀態寫回 Webhook Receipt。
+6. reply Adapter 傳送結果；成功或 poison 狀態寫回 Webhook Receipt。reply token 過期（LINE 回 `Invalid reply token`）時，Adapter 改以 push 傳送同一則結果，受每日上限與 `LINE_PUSH_FALLBACK_ENABLED` 約束，因為 push 會消耗官方帳號每月訊息額度。
 
 ### Translation Workflow
 

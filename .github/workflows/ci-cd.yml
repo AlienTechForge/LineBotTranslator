@@ -172,6 +172,8 @@ jobs:
           WEBHOOK_PROCESSING_LEASE: ${{ vars.WEBHOOK_PROCESSING_LEASE || 'PT5M' }}
           WEBHOOK_REPLY_MAX_ATTEMPTS: ${{ vars.WEBHOOK_REPLY_MAX_ATTEMPTS || '3' }}
           WEBHOOK_REPLY_RETRY_BACKOFF: ${{ vars.WEBHOOK_REPLY_RETRY_BACKOFF || 'PT1S' }}
+          LINE_PUSH_FALLBACK_ENABLED: ${{ vars.LINE_PUSH_FALLBACK_ENABLED || 'true' }}
+          LINE_PUSH_FALLBACK_DAILY_LIMIT: ${{ vars.LINE_PUSH_FALLBACK_DAILY_LIMIT || '100' }}
           OPEN_ROUTE_API_KEY: ${{ secrets.OPEN_ROUTE_API_KEY }}
           OPEN_ROUTE_MODEL_NAME: ${{ vars.OPEN_ROUTE_MODEL_NAME || 'openai/gpt-4o-mini' }}
           OPEN_ROUTE_API_URL: ${{ vars.OPEN_ROUTE_API_URL || 'https://openrouter.ai/api/v1' }}

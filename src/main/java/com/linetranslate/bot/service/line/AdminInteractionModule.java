@@ -3,6 +3,7 @@ package com.linetranslate.bot.service.line;
 import java.util.List;
 import java.util.Map;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import com.linecorp.bot.messaging.model.Message;
@@ -10,6 +11,7 @@ import com.linetranslate.bot.logging.SafeLog;
 import com.linetranslate.bot.service.AdminService;
 import com.linetranslate.bot.service.ai.AiModelPage;
 import com.linetranslate.bot.service.line.intent.AdminIntent;
+import com.linetranslate.bot.service.webhook.PushFallbackModule;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -23,10 +25,21 @@ public class AdminInteractionModule {
 
     private final AdminService adminService;
     private final AdminCardRenderer renderer;
+    private final PushFallbackModule pushFallback;
 
-    public AdminInteractionModule(AdminService adminService, AdminCardRenderer renderer) {
+    @Autowired
+    public AdminInteractionModule(
+            AdminService adminService,
+            AdminCardRenderer renderer,
+            PushFallbackModule pushFallback) {
         this.adminService = adminService;
         this.renderer = renderer;
+        this.pushFallback = pushFallback;
+    }
+
+    /** Compatibility seam for focused tests that do not exercise the push quota command. */
+    public AdminInteractionModule(AdminService adminService, AdminCardRenderer renderer) {
+        this(adminService, renderer, null);
     }
 
     public Message execute(String userId, AdminIntent intent) {
@@ -43,6 +56,7 @@ public class AdminInteractionModule {
             case BROADCAST -> broadcast(userId, intent.value());
             case STATS -> renderer.info("系統統計", adminService.getSystemStats());
             case TODAY -> renderer.info("今日狀態", adminService.getTodayStats());
+            case QUOTA -> pushQuota();
             case USERS -> users(userId);
             case USER -> user(userId, intent.value());
             case NICKNAME -> renderer.info(
@@ -98,6 +112,18 @@ public class AdminInteractionModule {
         } catch (Exception exception) {
             log.error("廣播訊息失敗: failure={}", SafeLog.failure(exception));
             return renderer.error("廣播失敗", "廣播訊息未能送出，請稍後再試。");
+        }
+    }
+
+    private Message pushQuota() {
+        if (pushFallback == null) {
+            return renderer.error("推播額度", "此環境未提供推播額度監控。");
+        }
+        try {
+            return renderer.info("推播額度", PushQuotaReport.render(pushFallback.quotaStatus()));
+        } catch (RuntimeException exception) {
+            log.error("取得推播額度失敗: failure={}", SafeLog.failure(exception));
+            return renderer.error("推播額度失敗", "無法取得 LINE 推播額度，請稍後再試。");
         }
     }
 

@@ -98,6 +98,8 @@ Secrets 只作為容器環境變數傳入，不會寫入 image、Repository 或 
 | `MINIO_CONNECT_TIMEOUT_MS` | `3000` | MinIO 連線 timeout |
 | `MINIO_WRITE_TIMEOUT_MS` | `5000` | MinIO 上傳 timeout |
 | `MINIO_READ_TIMEOUT_MS` | `5000` | MinIO API 讀取 timeout |
+| `LINE_PUSH_FALLBACK_ENABLED` | `true` | reply token 過期時是否改用 push 傳送答案；push 消耗官方帳號每月訊息額度，reply 不消耗 |
+| `LINE_PUSH_FALLBACK_DAILY_LIMIT` | `100` | 每日（UTC+8）最多備援 push 次數，重啟後歸零；可用 `/admin quota` 查看額度與今日用量 |
 
 ### 同機木雷連線
 

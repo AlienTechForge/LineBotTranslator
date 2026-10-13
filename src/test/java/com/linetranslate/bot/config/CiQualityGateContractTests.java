@@ -94,6 +94,19 @@ class CiQualityGateContractTests {
     }
 
     @Test
+    void deploymentPassesPushFallbackPolicyIntoTheRuntimeContainer() throws IOException {
+        String workflow = Files.readString(Path.of(".github", "workflows", "ci-cd.yml"));
+        String deployScript = Files.readString(Path.of("scripts", "deploy.sh"));
+
+        assertThat(workflow)
+                .contains("LINE_PUSH_FALLBACK_ENABLED: ${{ vars.LINE_PUSH_FALLBACK_ENABLED || 'true' }}")
+                .contains("LINE_PUSH_FALLBACK_DAILY_LIMIT: ${{ vars.LINE_PUSH_FALLBACK_DAILY_LIMIT || '100' }}");
+        assertThat(deployScript)
+                .contains("LINE_PUSH_FALLBACK_ENABLED")
+                .contains("LINE_PUSH_FALLBACK_DAILY_LIMIT");
+    }
+
+    @Test
     void deploymentUsesOnlyTheAuthorizedOpenRouterSecretAndValidatesItBeforeMutation()
             throws IOException {
         String workflow = Files.readString(Path.of(".github", "workflows", "ci-cd.yml"));
