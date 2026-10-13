@@ -71,6 +71,8 @@ GOOGLE_VISION_TIMEOUT_MS=60000
 
 # 應用程式配置
 OCR_ENABLED=true
+# 翻譯圖片後是否再附上辨識文字、譯文與快速操作（管理員可用 /admin config image-text 動態切換）
+IMAGE_TEXT_REPLY_ENABLED=true
 
 # 可選 MinIO 圖片儲存；停用或不可用時圖片翻譯仍可繼續
 MINIO_ENABLED=true
@@ -162,6 +164,7 @@ java -jar target/linebot-translator-0.0.1-SNAPSHOT.jar
 - `/admin config` - 查看或變更非敏感 runtime settings
 - `/admin usage` - 查看 provider attempt 使用量與成本報表
 - `/admin config model [完整模型 slug]` - 設置全域 OpenRouter 默認模型
+- `/admin config image-text [on|off]` - 切換翻譯圖片後是否附上辨識文字、譯文與快速操作（預設 on，部署預設值 `IMAGE_TEXT_REPLY_ENABLED`）
 
 ## 貢獻與支持
 

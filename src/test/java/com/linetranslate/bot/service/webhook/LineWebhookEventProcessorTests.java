@@ -5,6 +5,8 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.net.URI;
+import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
 
@@ -13,6 +15,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
+import com.linecorp.bot.messaging.model.ImageMessage;
 import com.linecorp.bot.messaging.model.TextMessage;
 import com.linecorp.bot.webhook.model.GroupSource;
 import com.linecorp.bot.webhook.model.ImageMessageContent;
@@ -42,6 +45,36 @@ class LineWebhookEventProcessorTests {
         assertThat(reply.messages()).containsExactly(response);
         assertThat(reply.pushTarget()).isNull();
         verify(controller).handlePostbackEvent(event);
+    }
+
+    @Test
+    void imageReplyKeepsEveryMessageInOrderUnderOneReplyToken() {
+        LineBotController controller = mock(LineBotController.class);
+        MessageEvent event = mock(MessageEvent.class);
+        ImageMessageContent content = mock(ImageMessageContent.class);
+        when(event.message()).thenReturn(content);
+        when(event.replyToken()).thenReturn("reply-token");
+        ImageMessage image = new ImageMessage(
+                URI.create("https://img.example/original"), URI.create("https://img.example/preview"));
+        TextMessage text = new TextMessage("recognised and translated");
+        when(controller.handleImageMessageEvent(event, content)).thenReturn(List.of(image, text));
+
+        WebhookReply reply = new LineWebhookEventProcessor(controller).process(event).orElseThrow();
+
+        assertThat(reply.replyToken()).isEqualTo("reply-token");
+        assertThat(reply.messages()).containsExactly(image, text);
+    }
+
+    @Test
+    void emptyImageReplyProducesNoWebhookReply() {
+        LineBotController controller = mock(LineBotController.class);
+        MessageEvent event = mock(MessageEvent.class);
+        ImageMessageContent content = mock(ImageMessageContent.class);
+        when(event.message()).thenReturn(content);
+        when(event.replyToken()).thenReturn("reply-token");
+        when(controller.handleImageMessageEvent(event, content)).thenReturn(List.of());
+
+        assertThat(new LineWebhookEventProcessor(controller).process(event)).isEmpty();
     }
 
     @ParameterizedTest
@@ -82,7 +115,7 @@ class LineWebhookEventProcessorTests {
         ImageMessageContent image = new ImageMessageContent("m-2", null, null, null, null);
         MessageEvent event = new MessageEvent(source, 1L, null, "event-2", null, "reply-token", image);
         TextMessage response = new TextMessage("translated");
-        when(controller.handleImageMessageEvent(event, image)).thenReturn(response);
+        when(controller.handleImageMessageEvent(event, image)).thenReturn(List.of(response));
 
         WebhookReply reply = new LineWebhookEventProcessor(controller).process(event).orElseThrow();
 

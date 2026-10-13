@@ -78,6 +78,8 @@ public class AdminInteractionModule {
             case CONFIG_OCR -> configResult(adminService.setOcrEnabled(intent.value(), userId));
             case CONFIG_SHORT_URL -> configResult(
                     adminService.setShortUrlEnabled(intent.value(), userId));
+            case CONFIG_IMAGE_TEXT_REPLY -> configResult(
+                    adminService.setImageTextReplyEnabled(intent.value(), userId));
             case USAGE_CURRENT_MONTH -> renderer.info("本月 API 用量", adminService.getApiUsageStats());
             case USAGE_DAY -> renderer.info("每日 API 用量", adminService.getApiUsageStatsByDay(intent.value()));
             case USAGE_MONTH -> renderer.info(
@@ -199,7 +201,8 @@ public class AdminInteractionModule {
                 + "/admin config lang [lang]\n"
                 + "/admin config model [OpenRouter slug]\n"
                 + "/admin config ocr [on|off]\n"
-                + "/admin config short-url [on|off]";
+                + "/admin config short-url [on|off]\n"
+                + "/admin config image-text [on|off]";
     }
 
     private Message models(String query) {

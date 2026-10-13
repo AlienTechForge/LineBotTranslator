@@ -6,6 +6,8 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import java.util.List;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -62,9 +64,10 @@ class LineBotControllerSourceGuardTests {
         when(event.source()).thenReturn(new RoomSource(null, "room-1"));
         when(content.id()).thenReturn("message-1");
 
-        Message reply = controller.handleImageMessageEvent(event, content);
+        List<Message> reply = controller.handleImageMessageEvent(event, content);
 
-        assertUnidentifiedSenderReply(reply);
+        assertThat(reply).hasSize(1);
+        assertUnidentifiedSenderReply(reply.get(0));
         verifyNoInteractions(parser, interaction, loading);
     }
 

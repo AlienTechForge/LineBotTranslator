@@ -97,6 +97,51 @@ class AdminInteractionModuleTests {
     }
 
     @Test
+    void authorizedAdminCanToggleImageTextReply() {
+        Message card = new TextMessage("updated");
+        when(adminService.isAdmin("admin")).thenReturn(true);
+        when(adminService.setImageTextReplyEnabled("off", "admin"))
+                .thenReturn("✅ 已禁用圖片翻譯附帶文字譯文");
+        when(renderer.info("設定結果", "✅ 已禁用圖片翻譯附帶文字譯文"))
+                .thenReturn(card);
+
+        assertThat(module.execute("admin", AdminIntent.action(
+                AdminIntent.Action.CONFIG_IMAGE_TEXT_REPLY, "off", "")))
+                .isSameAs(card);
+
+        verify(adminService).setImageTextReplyEnabled("off", "admin");
+    }
+
+    @Test
+    void nonAdminCannotToggleImageTextReply() {
+        Message denied = new TextMessage("denied");
+        when(adminService.isAdmin("user")).thenReturn(false);
+        when(renderer.accessDenied()).thenReturn(denied);
+
+        assertThat(module.execute("user", AdminIntent.action(
+                AdminIntent.Action.CONFIG_IMAGE_TEXT_REPLY, "off", "")))
+                .isSameAs(denied);
+
+        verify(adminService, never()).setImageTextReplyEnabled("off", "user");
+    }
+
+    @Test
+    void configListingAdvertisesTheImageTextSwitch() {
+        Message card = new TextMessage("config");
+        when(adminService.isAdmin("admin")).thenReturn(true);
+        when(adminService.getSystemConfig()).thenReturn("config");
+        when(renderer.card(
+                org.mockito.ArgumentMatchers.eq("系統設定"),
+                org.mockito.ArgumentMatchers.contains("/admin config image-text [on|off]"),
+                org.mockito.ArgumentMatchers.anyList()))
+                .thenReturn(card);
+
+        assertThat(module.execute("admin", AdminIntent.action(
+                AdminIntent.Action.CONFIG_SHOW, "", "")))
+                .isSameAs(card);
+    }
+
+    @Test
     void broadcastWithEveryPushAcceptedReportsSuccess() {
         Message card = new TextMessage("sent");
         when(adminService.isAdmin("admin")).thenReturn(true);
