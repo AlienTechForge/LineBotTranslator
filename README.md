@@ -60,6 +60,10 @@ TRANSLATION_RECORD_RETENTION=P90D
 TRANSLATION_ACTION_CLAIM_RETENTION=P7D
 AI_USAGE_EVENT_RETENTION=P730D
 
+# reply token 過期時改用 push 傳送答案（push 會消耗官方帳號每月訊息額度）
+LINE_PUSH_FALLBACK_ENABLED=true
+LINE_PUSH_FALLBACK_DAILY_LIMIT=100
+
 # OpenRouter 配置（API key 的名稱固定為 OPEN_ROUTE_API_KEY）
 OPEN_ROUTE_API_KEY=your_openrouter_api_key
 OPEN_ROUTE_MODEL_NAME=openai/gpt-4o-mini
@@ -100,6 +104,8 @@ ADMIN_WEB_TOKEN=
 Webhook 先驗證 LINE signature，再以 `webhookEventId` 建立 MongoDB TTL receipt 並交給 bounded executor。重送事件不重複處理；queue 已滿或 receipt store 暫時不可用時回傳 `503`，讓 LINE 稍後 redeliver。receipt 僅保存事件 ID、時間與處理狀態，不保存訊息內容或 reply token。
 
 `translation_records`（預設 90 天）、`translation_action_claims`（7 天）與 `ai_usage_events`（730 天）以 MongoDB TTL index 自動清除舊資料；啟動完成後由 `RetentionIndexInitializer` 建立或更新索引，保留期可用上列 `*_RETENTION` 調整（`user_profiles` 與 `runtime_settings` 不在此範圍）。舊紀錄過期後，翻譯結果的 postback 會回覆「找不到可操作的翻譯結果」，管理員統計的總量只涵蓋仍保留的紀錄。
+
+reply token 約一分鐘後失效，圖片翻譯可能超過這段時間。LINE 以 `Invalid reply token` 拒絕 reply 時，機器人會把同一則答案改用 push 傳給原本的使用者、群組或聊天室，其他 4xx 不受影響。push 會消耗官方帳號的每月訊息額度（reply 免費），因此每日最多備援 `LINE_PUSH_FALLBACK_DAILY_LIMIT` 則（以 UTC+8 計日，重啟後歸零），也可用 `LINE_PUSH_FALLBACK_ENABLED=false` 完全關閉；結果計入 `line.push.fallback{result=sent|skipped_limit|failed}`。群組與聊天室的 push 可能依成員人數計入額度，請依官方帳號方案調整每日上限。管理員可用 `/admin quota` 查看每月額度、已用量、剩餘量與今日備援次數；每日首次發現本月用量達 80% 時會記錄一筆 WARN。
 
 ## 建立與運行
 
@@ -167,6 +173,7 @@ java -jar target/linebot-translator-0.0.1-SNAPSHOT.jar
 
 - `/admin stats` - 顯示系統統計信息
 - `/admin today` - 顯示今日統計信息
+- `/admin quota` - 顯示官方帳號每月訊息額度、已用量與今日 push 備援次數
 - `/admin users` - 顯示最近活躍用戶
 - `/admin config` - 查看或變更非敏感 runtime settings
 - `/admin usage` - 查看 provider attempt 使用量與成本報表

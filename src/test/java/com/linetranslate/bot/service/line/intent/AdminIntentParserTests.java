@@ -16,6 +16,8 @@ class AdminIntentParserTests {
         assertAction("broadcast 系統通知", AdminIntent.Action.BROADCAST, "系統通知", "");
         assertAction("stats", AdminIntent.Action.STATS, "", "");
         assertAction("today", AdminIntent.Action.TODAY, "", "");
+        assertAction("quota", AdminIntent.Action.QUOTA, "", "");
+        assertAction("QUOTA", AdminIntent.Action.QUOTA, "", "");
         assertAction("users", AdminIntent.Action.USERS, "", "");
         assertAction("user U-target", AdminIntent.Action.USER, "U-target", "");
         assertAction("nickname U-target Jason", AdminIntent.Action.NICKNAME, "U-target", "Jason");
