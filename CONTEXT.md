@@ -62,12 +62,20 @@
 
 1. LINE webhook 必須先驗證 signature，才可建立 receipt 或處理 event。
 2. 同一 `webhookEventId` 不可重複執行 business operation；queue 滿或 receipt store 暫時不可用時回 `503`，交由 LINE redelivery。
-3. `LineBotController` 與 webhook controller 是 Adapter；intent grammar、business execution 與 message assembly 不回流 Controller。
+3. Controller 只是協定 Adapter：可以驗證 signature 或 bearer token、檢查傳送者來源、驗證 transport 參數並委派給 Module，再把 Module 結果轉成 HTTP／LINE 回應；intent grammar、business execution 與 message assembly 不回流 Controller。目前的 Adapter：
+   - `LineWebhookIngestionController`：以 LINE SDK `WebhookParser` 驗證 `X-Line-Signature` 並解析 body，確認每個 event 都有合法的 event ID 與時間，才交給 `WebhookIngestionModule`；signature 或 body 無效回 `400`，event 被拒絕或 ingestion 不可用回 `503`；不解析 intent，也不傳送 reply（由 reply Adapter 負責）。
+   - `LineBotController`：LINE SDK event 的 Adapter。傳送者沒有 `userId`（群組或聊天室成員未同意分享）時，只回 `LineMessageRenderer` 產生的引導訊息，不進入 parser、`LineInteractionModule` 或圖片 pipeline；其餘依序呼叫 `LineIntentParser`、`LineLoadingFeedback` 與 `LineInteractionModule`。文字與 postback 回單一 LINE Message，圖片回有順序的 `List<Message>`。`LineControllerArchitectureContractTests` 以原始碼斷言它不含 command `switch`、`/` 前綴判斷、`TextMessage` 組裝或 `StringBuilder`。
+   - `ImageProxyController`（ADR 0016）：`/i/{token}` 與 `/i/{token}/preview` 只檢查 token 格式並委派 `ImageProxyContentService`；格式錯誤或查無 asset 一律回通用 `404`，成功回應固定加上 `nosniff`、`no-referrer` 標頭，不暴露上游 URL。
+   - `AdminImageGalleryController`：營運人員的 web 操作面，不經 LINE Admin Intent；只在 `ADMIN_WEB_TOKEN` 非空白時註冊，否則所有 route 都是 `404`。`AdminImageGalleryWebConfiguration` 的 interceptor 在解析參數前驗證 `Authorization: Bearer`（比對 SHA-256 digest，不接受 URL 中的 token，也不記錄 token）；除了不含資料的靜態頁 `/admin/images` 外，缺少或錯誤的 token 一律回 `401`。list、preview URL 與 delete 全部委派 `MinioObjectBrowser`，Controller 只做參數驗證與錯誤對應。
+   - `TestController`：只在 `dev`／`test` profile 註冊的唯讀診斷，production 不暴露（`ProductionEndpointIsolationTests`）。
 4. Admin Intent 的授權必須發生在任何敏感 `AdminService` 呼叫前；每次 interaction 都重新檢查。
 5. Translation Workflow 只消費 immutable effective User Preferences；其他 Module 不直接推測 `UserProfile` 欄位 fallback。
 6. Provider caller 只依 normalized outcome 決策；成功結果與 Translation Record 必須使用 OpenRouter 實際回傳的 provider/model metadata，不可用 requested/default 值代替。
 7. 只有成功 Translation Workflow 才建立 Translation Record 並增加成功翻譯計數；失敗不可留下假成功紀錄。
-8. Translation Cache 只保存可安全重用且 model identity 一致的成功；failure、safety blocked 與 model mismatch 不寫入。
+8. Translation Cache 只保存可安全重用的成功，且 key 與 metrics 只含原文的 SHA-256 digest，不含原文。目前有三種 cache，各自的寫入規則如下：
+   - 文字翻譯（`CachedTranslationAdapter` 搭配 `CaffeineTranslationCacheStore`）：identity 為 `TranslationCacheKey`，由 source digest、target language、provider、model、Translation Style Preset ID、glossary version 與 prompt version 組成；prompt version 是 preset prompt version 加文字 prompt version（ADR 0013、ADR 0015）。寫入時以 provider 實際回傳的 model 當 key，並以規劃路由的 key 建索引，所以別名 model 讀得到實際版本。只有成功、未使用 fallback、provider 與規劃路由一致且通過 target locale 驗證的結果才寫入；`TranslationCacheSkipReason` 列出不寫入的情況：`FAILURE`（含被 `max_tokens` 截斷的 normalized failure）、`SAFETY_BLOCKED`、`FALLBACK`、`ROUTE_MISMATCH` 與 `INVALID_RESPONSE`。命中時以同一個驗證再檢查，不合格視為 miss。容量與時效有界：`TRANSLATION_CACHE_TTL`（expire-after-write）與 `TRANSLATION_CACHE_MAX_ENTRIES`。
+   - 圖片 structured 翻譯：沒有獨立 store，`StructuredImageTranslationAdapter` 經 `CachedTranslationAdapter.translateValidated` 共用同一個 store 與 TTL／容量；source digest 取自送出的 region payload，prompt version 另加圖片 prompt version 與 structured schema version。只有通過嚴格驗證（schema、每個可翻譯 region 恰好一個答案、protected token 保留、target locale script）的回應才寫入；未通過者，包含最後以部分 region 降級採用的回應，記為 `INVALID_RESPONSE` 而不寫入。
+   - `LanguageDetectionCache`：只記住 AI 語言偵測的語言代碼，不是翻譯結果。key 只有文字的 SHA-256 digest（偵測 model、prompt 與預設中文變體在 process 內固定，不入 key）；它是獨立的 Caffeine 實例，但沿用 Translation Cache 的 TTL 與 maximum entries。`unknown`（偵測失敗）不寫入，下次會重新偵測；本地規則 fallback 的結果不經過這個 cache。命中時不再產生 detection Provider Attempt。
 9. Image Translation pipeline 不在 singleton/thread field 保存 request state；MinIO 是 optional side effect，storage degraded 時仍可繼續 OCR/翻譯。
 10. MinIO 內部 S3 操作使用 `MINIO_ENDPOINT`；外部 presigned URL 由 `MINIO_PUBLIC_ENDPOINT` 獨立簽署，避免流量被迫繞過 reverse proxy。
 11. Runtime Settings 只保存 allowlisted 非敏感欄位，具有 schema version、revision、operator 與 timestamp；Mongo 讀取失敗時回 deployment defaults。

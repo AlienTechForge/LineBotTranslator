@@ -99,7 +99,7 @@ ADMIN_WEB_TOKEN=
 
 設定 `ADMIN_WEB_TOKEN` 後，可開啟 `https://<host>/admin/images`，輸入該 token 檢視、篩選並刪除機器人存入 MinIO 的圖片；使用者原圖不會自動刪除，這個頁面是人工清理的入口。部署細節見 [deployment-guide.md](deployment-guide.md)。
 
-翻譯快取採 `expire-after-write` TTL；超過 `TRANSLATION_CACHE_MAX_ENTRIES` 時，Caffeine 會依使用頻率與近期性淘汰項目。失敗、safety blocked 與 model mismatch 不會寫入；實際使用的 style preset ID、prompt version 與 glossary version 都納入 cache identity。
+翻譯快取採 `expire-after-write` TTL；超過 `TRANSLATION_CACHE_MAX_ENTRIES` 時，Caffeine 會依使用頻率與近期性淘汰項目。失敗、safety blocked、fallback、provider 與規劃路由不符，以及未通過 target locale 或 structured schema 驗證的結果不會寫入；實際使用的 style preset ID、prompt version 與 glossary version 都納入 cache identity。語言偵測結果另由 `LanguageDetectionCache` 記住，沿用相同的 TTL 與容量上限，`unknown` 不寫入。
 
 Webhook 先驗證 LINE signature，再以 `webhookEventId` 建立 MongoDB TTL receipt 並交給 bounded executor。重送事件不重複處理；queue 已滿或 receipt store 暫時不可用時回傳 `503`，讓 LINE 稍後 redeliver。receipt 僅保存事件 ID、時間與處理狀態，不保存訊息內容或 reply token。
 
