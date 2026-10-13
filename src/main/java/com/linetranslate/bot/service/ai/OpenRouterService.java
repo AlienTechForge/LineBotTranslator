@@ -16,10 +16,12 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.linetranslate.bot.config.OpenRouterConfig;
+import com.linetranslate.bot.logging.SafeLog;
 import com.linetranslate.bot.service.translation.StructuredImageTranslationCodec;
 import com.linetranslate.bot.service.translation.TranslationPromptFactory;
 import com.linetranslate.bot.service.translation.TranslationStylePreset;
 
+import lombok.extern.slf4j.Slf4j;
 import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
@@ -29,9 +31,14 @@ import okhttp3.ResponseBody;
 
 /** OpenRouter-only Adapter for text translation, generation and image understanding. */
 @Service
+@Slf4j
 public class OpenRouterService implements AiProviderAdapter {
 
     private static final MediaType JSON = MediaType.get("application/json");
+    // OpenRouter normalizes finish_reason; the native spellings cover routes that only send
+    // native_finish_reason (for example MAX_TOKENS or SAFETY).
+    private static final Set<String> TRUNCATED_FINISH_REASONS = Set.of("length", "max_tokens");
+    private static final Set<String> FILTERED_FINISH_REASONS = Set.of("content_filter", "safety");
     private static final String GENERATION_INSTRUCTIONS =
             "你是專業語言助手。依照使用者提示簡潔回應。";
 
@@ -244,11 +251,6 @@ public class OpenRouterService implements AiProviderAdapter {
             if (!choiceError.isMissingNode() && !choiceError.isNull()) {
                 throw embeddedFailure(choiceError, requestedModel, correlationId);
             }
-            String text = contentText(choice.path("message").path("content")).trim();
-            if (text.isEmpty()) {
-                throw failure(AiProviderException.Outcome.EMPTY_RESPONSE,
-                        "NO_MESSAGE_CONTENT", requestedModel, correlationId, 200, null);
-            }
             JsonNode usage = root.path("usage");
             AiTokenUsage tokenUsage = usage.isMissingNode()
                     ? AiTokenUsage.UNKNOWN
@@ -256,6 +258,12 @@ public class OpenRouterService implements AiProviderAdapter {
                             usage.path("prompt_tokens").asLong(-1),
                             usage.path("completion_tokens").asLong(-1),
                             usage.path("total_tokens").asLong(-1));
+            rejectUnfinishedCompletion(choice, requestedModel, correlationId, tokenUsage);
+            String text = contentText(choice.path("message").path("content")).trim();
+            if (text.isEmpty()) {
+                throw failure(AiProviderException.Outcome.EMPTY_RESPONSE,
+                        "NO_MESSAGE_CONTENT", requestedModel, correlationId, 200, null);
+            }
             return new AiProviderResponse(
                     text,
                     root.path("model").asText(requestedModel),
@@ -266,6 +274,46 @@ public class OpenRouterService implements AiProviderAdapter {
             throw failure(AiProviderException.Outcome.MALFORMED_RESPONSE,
                     "INVALID_JSON", requestedModel, correlationId, 200, failure);
         }
+    }
+
+    /**
+     * A completion cut off by max_tokens or withheld by a content filter is not a usable answer,
+     * so it must not reach callers, the Translation Cache or a Translation Record as a success.
+     */
+    private void rejectUnfinishedCompletion(
+            JsonNode choice,
+            String model,
+            String correlationId,
+            AiTokenUsage tokenUsage) {
+        String finishReason = textValue(choice.path("finish_reason"));
+        String nativeFinishReason = textValue(choice.path("native_finish_reason"));
+        String effective = (finishReason.isBlank() ? nativeFinishReason : finishReason)
+                .trim()
+                .toLowerCase(Locale.ROOT);
+        AiProviderException.Outcome outcome;
+        String reason;
+        if (TRUNCATED_FINISH_REASONS.contains(effective)) {
+            outcome = AiProviderException.Outcome.MALFORMED_RESPONSE;
+            reason = "TRUNCATED_OUTPUT";
+        } else if (FILTERED_FINISH_REASONS.contains(effective)) {
+            outcome = AiProviderException.Outcome.SAFETY_BLOCKED;
+            reason = "CONTENT_FILTER";
+        } else {
+            return;
+        }
+        log.warn("OpenRouter completion did not finish: model={}, finishReason={}, "
+                        + "nativeFinishReason={}, outputTokens={}, correlation={}",
+                SafeLog.metadata(model),
+                SafeLog.metadata(finishReason),
+                SafeLog.metadata(nativeFinishReason),
+                tokenUsage.outputTokens(),
+                SafeLog.metadata(correlationId));
+        throw new AiProviderException(
+                outcome, providerName(), model, reason, correlationId, 200, null, tokenUsage);
+    }
+
+    private static String textValue(JsonNode node) {
+        return node.isTextual() ? node.asText() : "";
     }
 
     private String contentText(JsonNode content) {

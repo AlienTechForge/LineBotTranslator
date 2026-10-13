@@ -51,41 +51,18 @@ public class LineUserProfileService {
                 throw new IllegalStateException("LINE profile response body is empty");
             }
 
-            // 檢查用戶是否已存在
-            Optional<UserProfile> existingProfile = userProfileRepository.findByUserId(userId);
+            // 取得或建立用戶資料（統一由 UserPreferencesModule 建立）
+            UserProfile userProfile = userPreferencesModule.profile(userId);
+            userProfile.setDisplayName(lineProfile.displayName());
 
-            if (existingProfile.isPresent()) {
-                // 更新現有用戶資料
-                UserProfile userProfile = existingProfile.get();
-                userProfile.setDisplayName(lineProfile.displayName());
-
-                // 將 URI 轉換為 String
-                if (lineProfile.pictureUrl() != null) {
-                    userProfile.setPictureUrl(lineProfile.pictureUrl().toString());
-                }
-
-                userProfile.setStatusMessage(lineProfile.statusMessage());
-                userProfileRepository.save(userProfile);
-                log.info("已更新用戶資料: user={}", SafeLog.user(userId));
-            } else {
-                // 創建新用戶資料
-                UserProfile.UserProfileBuilder builder = UserProfile.builder()
-                        .userId(userId)
-                        .displayName(lineProfile.displayName());
-
-                // 將 URI 轉換為 String
-                if (lineProfile.pictureUrl() != null) {
-                    builder.pictureUrl(lineProfile.pictureUrl().toString());
-                }
-
-                if (lineProfile.statusMessage() != null) {
-                    builder.statusMessage(lineProfile.statusMessage());
-                }
-
-                UserProfile newProfile = builder.build();
-                userProfileRepository.save(newProfile);
-                log.info("已創建用戶資料: user={}", SafeLog.user(userId));
+            // 將 URI 轉換為 String
+            if (lineProfile.pictureUrl() != null) {
+                userProfile.setPictureUrl(lineProfile.pictureUrl().toString());
             }
+
+            userProfile.setStatusMessage(lineProfile.statusMessage());
+            userProfileRepository.save(userProfile);
+            log.info("已同步用戶資料: user={}", SafeLog.user(userId));
         } catch (Exception e) {
             log.error("同步用戶資料失敗: user={}, failure={}",
                     SafeLog.user(userId), SafeLog.failure(e));

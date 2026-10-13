@@ -29,6 +29,7 @@ import com.linetranslate.bot.service.settings.RuntimeSettings;
 import com.linetranslate.bot.service.settings.RuntimeSettingsSource;
 import com.linetranslate.bot.service.translation.TranslationResponse;
 import com.linetranslate.bot.service.translation.TranslationStylePreset;
+import com.linetranslate.bot.util.LineTextLimit;
 
 /** Central LINE message renderer for user-facing interaction results. */
 @Component
@@ -206,6 +207,11 @@ public class LineMessageRenderer {
         return text("圖片處理失敗。\n請確保圖片清晰且包含可識別的文字，或稍後再試。");
     }
 
+    public Message unidentifiedSender() {
+        return text("⚠️ 無法辨識此聊天室中的傳送者，因此無法為您翻譯。\n"
+                + "請先將本機器人加為好友並同意 LINE 使用條款，或直接在一對一聊天中使用。");
+    }
+
     public Message invalid(LineIntent.Invalid invalid) {
         return text(switch (invalid.reason()) {
             case MODEL_REQUIRED -> "請指定完整 OpenRouter 模型 slug。例如：/model openai/gpt-4o-mini";
@@ -230,7 +236,12 @@ public class LineMessageRenderer {
     }
 
     private static Message text(String value) {
-        return new TextMessage(value == null ? "" : value);
+        return new TextMessage(lineText(value));
+    }
+
+    /** LINE rejects an oversized text message outright, so every text sent here is fitted. */
+    private static String lineText(String value) {
+        return value == null ? "" : LineTextLimit.fit(value);
     }
 
     private Message interactiveTranslation(TranslationResponse response) {
@@ -266,7 +277,7 @@ public class LineMessageRenderer {
             }
         }
 
-        return new TextMessage.Builder(response.displayText())
+        return new TextMessage.Builder(lineText(response.displayText()))
                 .quickReply(new QuickReply(items))
                 .build();
     }

@@ -2,6 +2,7 @@ package com.linetranslate.bot.controller;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
@@ -21,6 +22,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import com.linecorp.bot.messaging.model.FlexMessage;
 import com.linecorp.bot.messaging.model.Message;
 import com.linetranslate.bot.service.AdminService;
+import com.linetranslate.bot.service.BroadcastResult;
 import com.linetranslate.bot.service.line.AdminCardRenderer;
 
 @ExtendWith(MockitoExtension.class)
@@ -54,6 +56,8 @@ class AdminControllerCardContractTests {
     @MethodSource("adminCommands")
     void everyAdminInteractionReturnsFlexCard(String command) {
         when(adminService.isAdmin(ADMIN_ID)).thenReturn(true);
+        lenient().when(adminService.broadcastMessage(anyString()))
+                .thenReturn(new BroadcastResult(1, 1, 0, false));
 
         Message response = controller.handleCommand(ADMIN_ID, command);
 
@@ -90,6 +94,20 @@ class AdminControllerCardContractTests {
         assertThat(response).isInstanceOf(FlexMessage.class);
         assertThat(((FlexMessage) response).altText()).contains("廣播訊息過長");
         verify(adminService, never()).broadcastMessage(anyString());
+    }
+
+    @Test
+    void broadcastCardStatesDeliveredAndFailedCounts() {
+        when(adminService.isAdmin(ADMIN_ID)).thenReturn(true);
+        when(adminService.broadcastMessage("系統通知"))
+                .thenReturn(new BroadcastResult(3, 2, 1, false));
+
+        Message response = controller.handleCommand(ADMIN_ID, "broadcast 系統通知");
+
+        assertThat(response).isInstanceOf(FlexMessage.class);
+        assertThat(((FlexMessage) response).altText())
+                .contains("廣播部分完成")
+                .contains("已送達 2 位，失敗 1 位（共 3 位）");
     }
 
     @Test

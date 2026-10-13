@@ -155,18 +155,11 @@ public class GoogleVisionOcrService implements OcrService {
                         continue;
                     }
                     for (var paragraph : block.getParagraphsList()) {
-                        String text = paragraph.getWordsList().stream()
-                                .map(word -> word.getSymbolsList().stream()
-                                        .map(symbol -> symbol.getText())
-                                        .reduce("", String::concat))
-                                .filter(value -> !value.isBlank())
-                                .reduce((left, right) -> left + " " + right)
-                                .orElse("");
+                        String text = paragraphText(paragraph);
                         List<OcrPoint> polygon = points(paragraph.getBoundingBox());
                         if (!text.isBlank() && polygon.size() >= 4) {
                             List<OcrWord> words = paragraph.getWordsList().stream().map(word -> {
-                                String wordText = word.getSymbolsList().stream().map(Symbol::getText)
-                                        .reduce("", String::concat);
+                                String wordText = wordText(word);
                                 List<OcrSymbol> symbols = word.getSymbolsList().stream()
                                         .map(symbol -> new OcrSymbol(symbol.getText(), points(symbol.getBoundingBox()),
                                                 symbol.getConfidence(), symbol.getConfidence() > 0))
@@ -196,6 +189,69 @@ public class GoogleVisionOcrService implements OcrService {
             }
             throw new OcrProcessingException("Google Vision located OCR failed", failure);
         }
+    }
+
+    /**
+     * A paragraph's text, rebuilt with the separators Vision detected between its words. Vision
+     * returns CJK text one glyph or short run per word, so a space between every pair of words
+     * would split every character apart. A line end collapses to the script rule because a region
+     * is a single block that the renderer wraps again, and newlines already separate regions.
+     * Paragraphs that carry no break at all, such as hand-built fixtures, use the script rule
+     * throughout.
+     */
+    private static String paragraphText(Paragraph paragraph) {
+        List<Word> words = paragraph.getWordsList().stream()
+                .filter(word -> !wordText(word).isBlank())
+                .toList();
+        boolean breaksDetected = words.stream()
+                .flatMap(word -> word.getSymbolsList().stream())
+                .anyMatch(symbol -> symbol.getProperty().hasDetectedBreak());
+        StringBuilder text = new StringBuilder();
+        Word previous = null;
+        for (Word word : words) {
+            String value = wordText(word);
+            if (previous != null) {
+                text.append(breaksDetected
+                        ? separator(breakBetween(previous, word), text, value)
+                        : OcrWordJoiner.scriptSeparator(text, value));
+            }
+            text.append(value);
+            previous = word;
+        }
+        return text.toString();
+    }
+
+    private static String wordText(Word word) {
+        return word.getSymbolsList().stream().map(Symbol::getText).reduce("", String::concat);
+    }
+
+    /** The break Vision recorded after {@code previous}, or before {@code next} when prefixed. */
+    private static TextAnnotation.DetectedBreak.BreakType breakBetween(Word previous, Word next) {
+        if (next.getSymbolsCount() > 0) {
+            TextAnnotation.TextProperty property = next.getSymbols(0).getProperty();
+            if (property.hasDetectedBreak() && property.getDetectedBreak().getIsPrefix()) {
+                return property.getDetectedBreak().getType();
+            }
+        }
+        if (previous.getSymbolsCount() > 0) {
+            TextAnnotation.TextProperty property =
+                    previous.getSymbols(previous.getSymbolsCount() - 1).getProperty();
+            if (property.hasDetectedBreak() && !property.getDetectedBreak().getIsPrefix()) {
+                return property.getDetectedBreak().getType();
+            }
+        }
+        return TextAnnotation.DetectedBreak.BreakType.UNKNOWN;
+    }
+
+    private static String separator(
+            TextAnnotation.DetectedBreak.BreakType type, CharSequence left, String right) {
+        return switch (type) {
+            case SPACE, SURE_SPACE -> " ";
+            case EOL_SURE_SPACE, LINE_BREAK -> OcrWordJoiner.scriptSeparator(left, right);
+            // Vision leaves an end-of-line hyphen out of the symbols and reports it as a break.
+            case HYPHEN -> "-";
+            default -> "";
+        };
     }
 
     private record DocumentAnnotation(List<OcrRegion> regions, String fullText) {

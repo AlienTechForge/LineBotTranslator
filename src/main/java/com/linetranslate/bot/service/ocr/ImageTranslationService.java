@@ -12,11 +12,13 @@ import com.linetranslate.bot.logging.SafeLog;
 import com.linetranslate.bot.model.UserProfile;
 import com.linetranslate.bot.repository.UserProfileRepository;
 import com.linetranslate.bot.service.ai.AiExecutionFailure;
+import com.linetranslate.bot.service.preference.UserPreferencesModule;
 import com.linetranslate.bot.service.settings.RuntimeSettings;
 import com.linetranslate.bot.service.settings.RuntimeSettingsSource;
 import com.linetranslate.bot.service.translation.TranslationWorkflowResult;
 import com.linetranslate.bot.service.translation.TranslationResponse;
 import com.linetranslate.bot.util.LanguageUtils;
+import com.linetranslate.bot.util.LineTextLimit;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -27,23 +29,27 @@ public class ImageTranslationService {
 
     private final ImageTranslationPipeline imageTranslationPipeline;
     private final UserProfileRepository userProfileRepository;
+    private final UserPreferencesModule userPreferencesModule;
     private final RuntimeSettingsSource runtimeSettingsSource;
 
     @Autowired
     public ImageTranslationService(
             ImageTranslationPipeline imageTranslationPipeline,
             UserProfileRepository userProfileRepository,
+            UserPreferencesModule userPreferencesModule,
             RuntimeSettingsSource runtimeSettingsSource) {
         this.imageTranslationPipeline = imageTranslationPipeline;
         this.userProfileRepository = userProfileRepository;
+        this.userPreferencesModule = userPreferencesModule;
         this.runtimeSettingsSource = runtimeSettingsSource;
     }
 
     /** Compatibility constructor for focused unit tests. */
     public ImageTranslationService(
             ImageTranslationPipeline imageTranslationPipeline,
-            UserProfileRepository userProfileRepository) {
-        this(imageTranslationPipeline, userProfileRepository, () -> null);
+            UserProfileRepository userProfileRepository,
+            UserPreferencesModule userPreferencesModule) {
+        this(imageTranslationPipeline, userProfileRepository, userPreferencesModule, () -> null);
     }
 
     public boolean isOcrEnabled() {
@@ -99,12 +105,16 @@ public class ImageTranslationService {
             display.append("⚠️ 本次未能覆寫原圖，僅提供文字翻譯。\n\n");
         }
         display.append("【圖片文字辨識結果】\n\n")
-                .append("識別的文字：\n").append(recognizedText).append("\n\n")
-                .append("翻譯結果：\n").append(translation.translatedText()).append("\n\n");
+                .append("識別的文字：\n");
+        String translationSection = "\n\n翻譯結果：\n" + translation.translatedText() + "\n\n"
+                + "[偵測到: " + LanguageUtils.toChineseName(translation.sourceLanguage())
+                + " | 翻譯成: " + LanguageUtils.toChineseName(translation.targetLanguage()) + "]";
+        // Recognized text yields its space first so the translation stays inside the LINE limit.
+        int recognizedBudget = LineTextLimit.MAX_CODE_POINTS
+                - LineTextLimit.codePoints(display) - LineTextLimit.codePoints(translationSection);
+        display.append(LineTextLimit.fit(recognizedText, recognizedBudget))
+                .append(translationSection);
         logOverlayOutcome(result);
-        display.append("[偵測到: ").append(LanguageUtils.toChineseName(translation.sourceLanguage()))
-                .append(" | 翻譯成: ").append(LanguageUtils.toChineseName(translation.targetLanguage()))
-                .append("]");
         return new ImageTranslationReply(
                 TranslationResponse.success(translation, display.toString()),
                 renderedImageUrl);
@@ -156,20 +166,9 @@ public class ImageTranslationService {
     }
 
     private UserProfile ensureUserProfileExists(String userId) {
-        Optional<UserProfile> userProfileOptional = userProfileRepository.findByUserId(userId);
-
-        if (userProfileOptional.isPresent()) {
-            UserProfile userProfile = userProfileOptional.get();
-            userProfile.setLastInteractionAt(LocalDateTime.now());
-            return userProfileRepository.save(userProfile);
-        }
-
-        UserProfile newUserProfile = UserProfile.builder()
-                .userId(userId)
-                .firstInteractionAt(LocalDateTime.now())
-                .lastInteractionAt(LocalDateTime.now())
-                .build();
-        return userProfileRepository.save(newUserProfile);
+        UserProfile userProfile = userPreferencesModule.profile(userId);
+        userProfile.setLastInteractionAt(LocalDateTime.now());
+        return userProfileRepository.save(userProfile);
     }
 
     private void logWorkflowFailure(String userId, AiExecutionFailure failure) {
