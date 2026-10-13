@@ -471,6 +471,9 @@ public class AdminService {
         configBuilder.append("• OCR 功能: ").append(runtime.ocrEnabled() ? "已啟用" : "已禁用").append("\n\n");
         configBuilder.append("• 圖片短網址直接輸出: ")
                 .append(runtime.shortUrlEnabled() ? "已啟用" : "已禁用")
+                .append("\n");
+        configBuilder.append("• 圖片翻譯附帶文字譯文: ")
+                .append(runtime.imageTextReplyEnabled() ? "已啟用" : "已禁用")
                 .append("\n\n");
         
         configBuilder.append("【OpenRouter 設定】\n");
@@ -566,6 +569,20 @@ public class AdminService {
             return "❌ 無效的設定值，請使用 on 或 off";
         } catch (RuntimeSettingsPersistenceException failure) {
             log.error("持久化短網址設定失敗: failure={}", SafeLog.failure(failure));
+            return "❌ 設置未能保存，請稍後再試";
+        }
+    }
+
+    public String setImageTextReplyEnabled(String enabled, String operatorId) {
+        try {
+            RuntimeSettings updated = runtimeSettingsModule.update(
+                    RuntimeSettingKey.IMAGE_TEXT_REPLY_ENABLED, enabled, operatorId);
+            return "✅ 已" + (updated.imageTextReplyEnabled() ? "啟用" : "禁用")
+                    + "圖片翻譯附帶文字譯文";
+        } catch (InvalidRuntimeSettingException failure) {
+            return "❌ 無效的設定值，請使用 on 或 off";
+        } catch (RuntimeSettingsPersistenceException failure) {
+            log.error("持久化圖片文字譯文設定失敗: failure={}", SafeLog.failure(failure));
             return "❌ 設置未能保存，請稍後再試";
         }
     }

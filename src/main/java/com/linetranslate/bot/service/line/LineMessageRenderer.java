@@ -6,6 +6,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.regex.Pattern;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
@@ -187,6 +188,42 @@ public class LineMessageRenderer {
             return new ImageMessage(selected, selected);
         }
         return interactiveTranslation(reply.response());
+    }
+
+    /**
+     * Image reply as an ordered message list. A delivered overlay image is followed by the
+     * recognised text and translation with their quick replies unless the administrator
+     * switched {@code imageTextReplyEnabled} off. Quick replies only show on the last message.
+     */
+    public List<Message> imageResultMessages(ImageTranslationReply reply) {
+        Message primary = imageResult(reply);
+        if (!(primary instanceof ImageMessage) || !imageTextReplyEnabled()) {
+            return List.of(primary);
+        }
+        return List.of(primary, interactiveTranslation(withoutImageLink(reply)));
+    }
+
+    private boolean imageTextReplyEnabled() {
+        RuntimeSettings settings = runtimeSettingsSource.current();
+        return settings == null || settings.imageTextReplyEnabled();
+    }
+
+    /** The image message already shows the artifact, so its signed link is not repeated in text. */
+    private static TranslationResponse withoutImageLink(ImageTranslationReply reply) {
+        TranslationResponse response = reply.response();
+        if (response.displayText() == null || reply.renderedImageUrl().isEmpty()) {
+            return response;
+        }
+        String display = response.displayText().replaceFirst(
+                "^[^\\n]*\\n" + Pattern.quote(reply.renderedImageUrl().get()) + "\\n\\n", "");
+        return new TranslationResponse(
+                display,
+                response.translatedText(),
+                response.recordId(),
+                response.sourceLanguage(),
+                response.targetLanguage(),
+                response.stylePresetId(),
+                response.stylePromptVersion());
     }
 
     private static Optional<URI> safeHttpsUri(String raw) {

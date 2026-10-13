@@ -50,6 +50,7 @@ class RuntimeSettingsModuleIntegrationTests {
         module.update(RuntimeSettingKey.OPENROUTER_DEFAULT_MODEL, "openai/gpt-4o-mini", OPERATOR);
         module.update(RuntimeSettingKey.OCR_ENABLED, "off", OPERATOR);
         module.update(RuntimeSettingKey.SHORT_URL_ENABLED, "on", OPERATOR);
+        module.update(RuntimeSettingKey.IMAGE_TEXT_REPLY_ENABLED, "off", OPERATOR);
 
         RuntimeSettingsModule restarted = new RuntimeSettingsModule(
                 mongoTemplate,
@@ -64,14 +65,16 @@ class RuntimeSettingsModuleIntegrationTests {
         assertThat(settings.openRouterDefaultModel()).isEqualTo("openai/gpt-4o-mini");
         assertThat(settings.ocrEnabled()).isFalse();
         assertThat(settings.shortUrlEnabled()).isTrue();
+        assertThat(settings.imageTextReplyEnabled()).isFalse();
         assertThat(settings.source()).isEqualTo(RuntimeSettings.Source.PERSISTED);
 
         Document stored = mongoTemplate.getCollection(COLLECTION).find().first();
         assertThat(stored).isNotNull();
-        assertThat(stored.getInteger("schemaVersion")).isEqualTo(3);
-        assertThat(((Number) stored.get("revision")).longValue()).isEqualTo(5);
+        assertThat(stored.getInteger("schemaVersion")).isEqualTo(4);
+        assertThat(stored.getBoolean("imageTextReplyEnabled")).isFalse();
+        assertThat(((Number) stored.get("revision")).longValue()).isEqualTo(6);
         List<Document> changes = stored.getList("changes", Document.class);
-        assertThat(changes).hasSize(5).allSatisfy(change -> {
+        assertThat(changes).hasSize(6).allSatisfy(change -> {
             assertThat(change.getString("updatedBy")).isEqualTo(OPERATOR);
             assertThat(change.get("updatedAt")).isNotNull();
             assertThat(change.keySet()).doesNotContain("secret", "token", "apiKey");
@@ -92,8 +95,54 @@ class RuntimeSettingsModuleIntegrationTests {
                 RuntimeSettingKey.OCR_ENABLED,
                 "maybe",
                 OPERATOR)).isInstanceOf(InvalidRuntimeSettingException.class);
+        assertThatThrownBy(() -> module.update(
+                RuntimeSettingKey.IMAGE_TEXT_REPLY_ENABLED,
+                "maybe",
+                OPERATOR)).isInstanceOf(InvalidRuntimeSettingException.class);
 
         assertThat(mongoTemplate.collectionExists(COLLECTION)).isFalse();
+    }
+
+    @Test
+    void imageTextReplySwitchAcceptsTheSameValuesAsTheOtherSwitchesAndRecordsTheChange() {
+        assertThat(module.current().imageTextReplyEnabled()).isTrue();
+
+        RuntimeSettings off = module.update(RuntimeSettingKey.IMAGE_TEXT_REPLY_ENABLED, "關", OPERATOR);
+        assertThat(off.imageTextReplyEnabled()).isFalse();
+        assertThat(off.shortUrlEnabled()).isEqualTo(appConfig.isShortUrlEnabled());
+        RuntimeSettings on = module.update(RuntimeSettingKey.IMAGE_TEXT_REPLY_ENABLED, "ON", OPERATOR);
+        assertThat(on.imageTextReplyEnabled()).isTrue();
+        assertThat(on.revision()).isEqualTo(2);
+
+        Document stored = mongoTemplate.getCollection(COLLECTION).find().first();
+        List<Document> changes = stored.getList("changes", Document.class);
+        assertThat(changes).extracting(change -> change.getString("key"))
+                .containsExactly("IMAGE_TEXT_REPLY_ENABLED", "IMAGE_TEXT_REPLY_ENABLED");
+        assertThat(changes.get(0).getBoolean("previousValue")).isTrue();
+        assertThat(changes.get(0).getBoolean("newValue")).isFalse();
+        assertThat(changes.get(1).getBoolean("previousValue")).isFalse();
+        assertThat(changes.get(1).getBoolean("newValue")).isTrue();
+    }
+
+    @Test
+    void schemaThreeDocumentWithoutTheSwitchKeepsDeploymentDefaultUntilFirstUpdate() {
+        mongoTemplate.getCollection(COLLECTION).insertOne(new Document("_id", RuntimeSettingsModule.DOCUMENT_ID)
+                .append("schemaVersion", 3)
+                .append("shortUrlEnabled", true)
+                .append("revision", 2L));
+
+        RuntimeSettings legacy = module.current();
+        assertThat(legacy.source()).isEqualTo(RuntimeSettings.Source.PERSISTED);
+        assertThat(legacy.shortUrlEnabled()).isTrue();
+        assertThat(legacy.imageTextReplyEnabled()).isEqualTo(appConfig.isImageTextReplyEnabled());
+
+        RuntimeSettings updated = module.update(RuntimeSettingKey.IMAGE_TEXT_REPLY_ENABLED, "off", OPERATOR);
+
+        assertThat(updated.imageTextReplyEnabled()).isFalse();
+        assertThat(updated.shortUrlEnabled()).isTrue();
+        assertThat(updated.revision()).isEqualTo(3);
+        Document stored = mongoTemplate.getCollection(COLLECTION).find().first();
+        assertThat(stored.getInteger("schemaVersion")).isEqualTo(4);
     }
 
     @Test
@@ -107,6 +156,8 @@ class RuntimeSettingsModuleIntegrationTests {
         assertThat(settings.openRouterDefaultModel()).isEqualTo(openRouterConfig.getModelName());
         assertThat(settings.ocrEnabled()).isEqualTo(appConfig.isOcrEnabled());
         assertThat(settings.shortUrlEnabled()).isEqualTo(appConfig.isShortUrlEnabled());
+        assertThat(settings.imageTextReplyEnabled()).isEqualTo(appConfig.isImageTextReplyEnabled());
+        assertThat(settings.imageTextReplyEnabled()).isTrue();
         assertThat(settings.source()).isEqualTo(RuntimeSettings.Source.DEPLOYMENT_DEFAULTS);
         assertThat(mongoTemplate.collectionExists(COLLECTION)).isFalse();
     }

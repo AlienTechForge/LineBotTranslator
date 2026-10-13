@@ -7,6 +7,8 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.verify;
 
+import java.util.List;
+
 import org.junit.jupiter.api.Test;
 
 import com.linecorp.bot.messaging.model.TextMessage;
@@ -60,10 +62,10 @@ class LineBotControllerLoadingTests {
         when(event.source()).thenReturn(source);
         when(content.id()).thenReturn("message-1");
         when(loading.startImage(source)).thenReturn(session);
-        when(interaction.executeImage("user-1", "message-1")).thenReturn(response);
+        when(interaction.executeImage("user-1", "message-1")).thenReturn(List.of(response));
         var controller = new LineBotController(parser, interaction, loading);
 
-        assertThat(controller.handleImageMessageEvent(event, content)).isSameAs(response);
+        assertThat(controller.handleImageMessageEvent(event, content)).containsExactly(response);
 
         var order = inOrder(loading, interaction);
         order.verify(loading).startImage(source);

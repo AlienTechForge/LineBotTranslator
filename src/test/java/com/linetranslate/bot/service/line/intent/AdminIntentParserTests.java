@@ -31,6 +31,8 @@ class AdminIntentParserTests {
         assertAction("config ocr on", AdminIntent.Action.CONFIG_OCR, "on", "");
         assertAction("config image-proxy on", AdminIntent.Action.CONFIG_SHORT_URL, "on", "");
         assertAction("config short-url off", AdminIntent.Action.CONFIG_SHORT_URL, "off", "");
+        assertAction("config image-text off", AdminIntent.Action.CONFIG_IMAGE_TEXT_REPLY, "off", "");
+        assertAction("config text-reply on", AdminIntent.Action.CONFIG_IMAGE_TEXT_REPLY, "on", "");
         assertAction("usage", AdminIntent.Action.USAGE_CURRENT_MONTH, "", "");
         assertAction("usage day 2026-08-11", AdminIntent.Action.USAGE_DAY, "2026-08-11", "");
         assertAction("usage month 2026-08", AdminIntent.Action.USAGE_MONTH, "2026-08", "");
@@ -51,6 +53,7 @@ class AdminIntentParserTests {
         assertProblem("nickname U-target", AdminIntent.Problem.NICKNAME_REQUIRED);
         assertProblem("models " + "a".repeat(81), AdminIntent.Problem.MODEL_QUERY_TOO_LONG);
         assertProblem("config ocr", AdminIntent.Problem.CONFIG_VALUE_REQUIRED);
+        assertProblem("config image-text", AdminIntent.Problem.CONFIG_VALUE_REQUIRED);
         assertProblem("usage day", AdminIntent.Problem.USAGE_DAY_REQUIRED);
         assertProblem("usage provider", AdminIntent.Problem.USAGE_PROVIDER_REQUIRED);
         assertProblem("add", AdminIntent.Problem.ADD_ADMIN_REQUIRED);

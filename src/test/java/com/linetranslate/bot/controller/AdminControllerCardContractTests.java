@@ -111,7 +111,7 @@ class AdminControllerCardContractTests {
                 "config", "config c2lang en", "config lang zh-TW",
                 "config model openai/gpt-4o-mini",
                 "config openrouter anthropic/claude-sonnet-4", "config ocr on",
-                "config short-url on", "config unknown",
+                "config short-url on", "config image-text off", "config unknown",
                 "usage", "usage day 2026-08-11", "usage month 2026-08",
                 "usage provider openrouter", "usage model openai/gpt-4o-mini", "usage type image",
                 "usage summary", "usage unknown",

@@ -218,6 +218,105 @@ class LineMessageRendererTests {
         assertThat(unshortened.originalContentUrl().toString()).isEqualTo(signed);
     }
 
+    private static final String SIGNED_IMAGE = "https://s3.azndev.com/line-bot/translated-images/1/image.png"
+            + "?X-Amz-Algorithm=AWS4-HMAC-SHA256"
+            + "&X-Amz-Credential=test%2F20260812%2Fus-east-1%2Fs3%2Faws4_request"
+            + "&X-Amz-Date=20260812T071753Z&X-Amz-Expires=3600"
+            + "&X-Amz-SignedHeaders=host&X-Amz-Signature=" + "a".repeat(64);
+
+    private static ImageTranslationReply overlayReply() {
+        TranslationResponse response = new TranslationResponse(
+                "【翻譯圖片（連結 1 小時內有效）】\n" + SIGNED_IMAGE + "\n\n"
+                        + "【圖片文字辨識結果】\n\n識別的文字：\nhello\n\n翻譯結果：\n你好\n\n"
+                        + "[偵測到: 英文 | 翻譯成: 繁體中文]",
+                "你好", "507f1f77bcf86cd799439011", "en", "zh-TW");
+        return new ImageTranslationReply(response, Optional.of(SIGNED_IMAGE));
+    }
+
+    private static ImageTranslationReply textOnlyReply() {
+        TranslationResponse response = new TranslationResponse(
+                "【圖片文字辨識結果】\n\n識別的文字：\nhello\n\n翻譯結果：\n你好\n\n"
+                        + "[偵測到: 英文 | 翻譯成: 繁體中文]",
+                "你好", "507f1f77bcf86cd799439011", "en", "zh-TW");
+        return ImageTranslationReply.text(response);
+    }
+
+    private static LineMessageRenderer imageRenderer(Boolean imageTextReplyEnabled) {
+        RuntimeSettingsSource settings = imageTextReplyEnabled == null
+                ? () -> null
+                : () -> new RuntimeSettings(
+                        "en", "zh-TW", "openai/gpt-4o-mini", true, false, imageTextReplyEnabled,
+                        4, 1, null, null, RuntimeSettings.Source.PERSISTED);
+        return new LineMessageRenderer(mock(AiModelCatalog.class), settings, null, null);
+    }
+
+    @Test
+    void overlayImageIsFollowedByTranslationTextWithQuickRepliesOnTheLastMessage() {
+        List<com.linecorp.bot.messaging.model.Message> messages =
+                imageRenderer(true).imageResultMessages(overlayReply());
+
+        assertThat(messages).hasSize(2);
+        ImageMessage image = (ImageMessage) messages.get(0);
+        assertThat(image.originalContentUrl().toString()).isEqualTo(SIGNED_IMAGE);
+        assertThat(image.quickReply()).isNull();
+        TextMessage text = (TextMessage) messages.get(1);
+        assertThat(text.text())
+                .startsWith("【圖片文字辨識結果】")
+                .contains("識別的文字：\nhello", "翻譯結果：\n你好", "[偵測到: 英文 | 翻譯成: 繁體中文]")
+                .doesNotContain("X-Amz", "https://", "1 小時內有效");
+        assertThat(text.quickReply()).isNotNull();
+        assertThat(text.quickReply().items().stream().map(item -> item.action()))
+                .anySatisfy(action -> assertThat(action)
+                        .isEqualTo(new ClipboardAction("複製譯文", "你好")))
+                .anySatisfy(action -> assertThat(action).isInstanceOfSatisfying(
+                        PostbackAction.class,
+                        postback -> assertThat(postback.data()).contains("retranslate")));
+    }
+
+    @Test
+    void imageTextReplyDefaultsToOnWhenNoRuntimeSettingsAreAvailable() {
+        assertThat(imageRenderer(null).imageResultMessages(overlayReply()))
+                .hasSize(2)
+                .satisfies(messages -> {
+                    assertThat(messages.get(0)).isInstanceOf(ImageMessage.class);
+                    assertThat(messages.get(1)).isInstanceOf(TextMessage.class);
+                });
+    }
+
+    @Test
+    void disabledImageTextReplyKeepsTheOverlayImageOnly() {
+        List<com.linecorp.bot.messaging.model.Message> messages =
+                imageRenderer(false).imageResultMessages(overlayReply());
+
+        assertThat(messages).singleElement().isInstanceOf(ImageMessage.class);
+        assertThat(messages.get(0)).isEqualTo(imageRenderer(false).imageResult(overlayReply()));
+    }
+
+    @Test
+    void imageWithoutOverlayStillRepliesWithTheTextAndQuickRepliesRegardlessOfTheSwitch() {
+        for (Boolean enabled : new Boolean[] {true, false}) {
+            List<com.linecorp.bot.messaging.model.Message> messages =
+                    imageRenderer(enabled).imageResultMessages(textOnlyReply());
+
+            assertThat(messages).singleElement().isInstanceOfSatisfying(TextMessage.class, text -> {
+                assertThat(text.text()).contains("識別的文字：\nhello", "翻譯結果：\n你好");
+                assertThat(text.quickReply()).isNotNull();
+            });
+        }
+    }
+
+    @Test
+    void failedImageReplyStaysASingleTextMessage() {
+        ImageTranslationReply failure = ImageTranslationReply.text(
+                TranslationResponse.plain("圖片翻譯處理失敗，請稍後再試。"));
+
+        assertThat(imageRenderer(true).imageResultMessages(failure)).singleElement()
+                .isInstanceOfSatisfying(TextMessage.class, text -> {
+                    assertThat(text.text()).isEqualTo("圖片翻譯處理失敗，請稍後再試。");
+                    assertThat(text.quickReply()).isNull();
+                });
+    }
+
     private static String text(com.linecorp.bot.messaging.model.Message message) {
         return ((TextMessage) message).text();
     }
