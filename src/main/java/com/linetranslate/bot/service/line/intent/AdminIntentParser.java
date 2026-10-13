@@ -26,6 +26,7 @@ public class AdminIntentParser {
             case "broadcast" -> broadcast(parameter);
             case "stats" -> action(AdminIntent.Action.STATS);
             case "today" -> action(AdminIntent.Action.TODAY);
+            case "quota" -> action(AdminIntent.Action.QUOTA);
             case "users" -> action(AdminIntent.Action.USERS);
             case "user" -> required(parameter, AdminIntent.Action.USER, AdminIntent.Problem.USER_REQUIRED);
             case "nickname" -> nickname(parameter);
@@ -78,6 +79,7 @@ public class AdminIntentParser {
             case "model", "openrouter" -> AdminIntent.Action.CONFIG_MODEL;
             case "ocr" -> AdminIntent.Action.CONFIG_OCR;
             case "image-proxy", "short-url" -> AdminIntent.Action.CONFIG_SHORT_URL;
+            case "image-text", "text-reply" -> AdminIntent.Action.CONFIG_IMAGE_TEXT_REPLY;
             default -> AdminIntent.Action.UNKNOWN_CONFIG;
         };
         return AdminIntent.action(action, action == AdminIntent.Action.UNKNOWN_CONFIG ? command : value, "");

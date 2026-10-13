@@ -109,6 +109,19 @@ public class GoogleVisionOcrService implements OcrService {
 
     @Override
     public List<OcrRegion> recognizeRegions(InputStream imageStream) {
+        return annotateDocument(imageStream).regions();
+    }
+
+    /** The document response already carries the page text, so no second request is needed. */
+    @Override
+    public OcrRecognition recognize(InputStream imageStream) {
+        DocumentAnnotation document = annotateDocument(imageStream);
+        return document.regions().isEmpty()
+                ? OcrRecognition.plain(document.fullText())
+                : OcrRecognition.structured(document.regions());
+    }
+
+    private DocumentAnnotation annotateDocument(InputStream imageStream) {
         if (visionClient == null) {
             throw new OcrProcessingException("Google Vision client is unavailable");
         }
@@ -126,7 +139,7 @@ public class GoogleVisionOcrService implements OcrService {
                     .build();
             BatchAnnotateImagesResponse response = visionClient.batchAnnotateImages(List.of(request));
             if (response.getResponsesCount() == 0) {
-                return List.of();
+                return new DocumentAnnotation(List.of(), "");
             }
             var annotationResponse = response.getResponses(0);
             if (annotationResponse.hasError()) {
@@ -166,7 +179,7 @@ public class GoogleVisionOcrService implements OcrService {
             List<OcrRegion> segmented = regionSegmenter.segment(regions);
             log.info("結構化 OCR 完成: providerRegions={}, layoutRegions={}",
                     regions.size(), segmented.size());
-            return segmented;
+            return new DocumentAnnotation(segmented, fullText.getText());
         } catch (IOException e) {
             log.error("OCR 識別失敗: failure={}", SafeLog.failure(e));
             throw new OcrProcessingException("Google Vision could not read image bytes", e);
@@ -239,6 +252,9 @@ public class GoogleVisionOcrService implements OcrService {
             case HYPHEN -> "-";
             default -> "";
         };
+    }
+
+    private record DocumentAnnotation(List<OcrRegion> regions, String fullText) {
     }
 
     private static List<OcrPoint> points(BoundingPoly polygon) {
