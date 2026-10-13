@@ -37,11 +37,20 @@ public class LanguageDetectionService {
     @Autowired
     private LanguageDetectionCache detectionCache;
 
-    @Value("${app.language-detection.use-ai:true}")
     private boolean useAiDetection;
-    
-    @Value("${app.language-detection.default-chinese:zh-tw}")
+
     private String defaultChineseType;
+
+    // Injected as String so a blank LANGUAGE_DETECTION_* value falls back to the default.
+    @Value("${app.language-detection.use-ai:true}")
+    void setUseAiDetection(String configured) {
+        this.useAiDetection = LanguageDetectionSettings.useAi(configured);
+    }
+
+    @Value("${app.language-detection.default-chinese:zh-tw}")
+    void setDefaultChineseType(String configured) {
+        this.defaultChineseType = LanguageDetectionSettings.defaultChinese(configured);
+    }
 
     @PostConstruct
     public void init() {

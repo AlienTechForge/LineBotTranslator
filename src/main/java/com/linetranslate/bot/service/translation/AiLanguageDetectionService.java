@@ -24,7 +24,6 @@ public class AiLanguageDetectionService {
     @Value("${app.language-detection.model-name:${OPEN_ROUTE_MODEL_NAME:openai/gpt-4o-mini}}")
     private String modelName;
     
-    @Value("${app.language-detection.default-chinese:zh-tw}")
     private String defaultChineseType;
 
     @Autowired
@@ -32,6 +31,12 @@ public class AiLanguageDetectionService {
             TranslationPromptFactory promptFactory) {
         this.aiProviderExecutionModule = aiProviderExecutionModule;
         this.promptFactory = promptFactory;
+    }
+
+    // Injected as String so a blank LANGUAGE_DETECTION_DEFAULT_CHINESE falls back to the default.
+    @Value("${app.language-detection.default-chinese:zh-tw}")
+    void setDefaultChineseType(String configured) {
+        this.defaultChineseType = LanguageDetectionSettings.defaultChinese(configured);
     }
 
     /**

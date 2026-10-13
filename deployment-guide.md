@@ -57,7 +57,6 @@ Self-hosted runner 必須：
 - `ADMIN_WEB_TOKEN`，啟用 `/admin/images` 圖片管理頁時才需要
 - `MINIO_ENDPOINT`、`MINIO_ACCESS_KEY`、`MINIO_SECRET_KEY`、`MINIO_BUCKET_NAME`
 - `DWZ_API_TOKEN`，當管理員啟用木雷短網址時必要
-- `LANGUAGE_DETECTION_USE_AI`、`LANGUAGE_DETECTION_DEFAULT_CHINESE`
 - `APP_BROADCAST_TEST_MODE`
 
 Secrets 只作為容器環境變數傳入，不會寫入 image、Repository 或 Actions artifact。Google service account JSON 會以權限 `0400` 儲存在 Docker volume，掛載至 `/run/secrets/linebot.json`。
@@ -99,6 +98,8 @@ Secrets 只作為容器環境變數傳入，不會寫入 image、Repository 或 
 | `OPEN_ROUTE_HTTP_REFERER` | `https://github.com/AlienTechForge/LineBotTranslator` | 送往 OpenRouter 的 `HTTP-Referer` 標頭。未設定使用預設值；設為 `none`（不分大小寫）則不送出此標頭（空白變數與未設定相同，會回到預設值）。本機 `.env` 留空也不送出。 |
 | `OPEN_ROUTE_APP_TITLE` | `LineBotTranslator` | 送往 OpenRouter 的 `X-OpenRouter-Title` 標頭；規則同 `OPEN_ROUTE_HTTP_REFERER`，設為 `none` 則不送出。 |
 | `OPEN_ROUTE_CATALOG_TTL` | `PT15M` | OpenRouter 模型 catalog 快取存活時間 |
+| `LANGUAGE_DETECTION_USE_AI` | `true` | 是否優先使用 AI 偵測來源語言；設為 `false` 則只用本地規則偵測。GitHub 變數留空會回到預設值。 |
+| `LANGUAGE_DETECTION_DEFAULT_CHINESE` | `zh-tw` | 偵測到中文時回報的來源語言代碼；GitHub 變數留空會回到預設值。 |
 | `TRANSLATION_ACTION_CLAIM_LEASE` | `PT5M` | 翻譯 action claim 處理中的租約；逾期仍未完成時由下一次點擊原子接手重試，需長於一次翻譯的最長耗時 |
 | `MONGODB_CONNECT_TIMEOUT_MS` | `3000` | Mongo socket 連線 timeout |
 | `MONGODB_READ_TIMEOUT_MS` | `5000` | Mongo socket 讀取 timeout |
