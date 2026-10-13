@@ -167,11 +167,11 @@ class ImageTranslationPipelineOcrLimitsTests {
     }
 
     @Test
-    void leadingPreservedRegionsNeverStarveTheTranslatableOnes() throws Exception {
-        List<OcrRegion> regions = new ArrayList<>(IntStream.range(0, 210)
+    void leadingPreservedRegionsAreDroppedOldestFirstToKeepTheFirstTranslatableOne() throws Exception {
+        List<OcrRegion> regions = new ArrayList<>(IntStream.range(0, 250)
                 .mapToObj(index -> note("amount-%03d".formatted(index), "%d".formatted(1000 + index), index))
                 .toList());
-        regions.add(note("title", "Closing time", 210));
+        regions.add(note("title", "Closing time", 250));
         image("message-numbers-first", whitePng(660, 1950));
         when(ocrService.recognizeRegions(any(InputStream.class))).thenReturn(regions);
         when(workflowModule.execute(any())).thenAnswer(invocation -> translated(invocation.getArgument(0)));
@@ -182,10 +182,41 @@ class ImageTranslationPipelineOcrLimitsTests {
         ArgumentCaptor<TranslationWorkflowRequest> workflow =
                 ArgumentCaptor.forClass(TranslationWorkflowRequest.class);
         verify(workflowModule).execute(workflow.capture());
-        assertThat(workflow.getValue().imageRegions())
-                .filteredOn(ImageRegionTranslationInput::translatable)
+        List<ImageRegionTranslationInput> sent = workflow.getValue().imageRegions();
+        // The title is kept with the 199 preserved amounts nearest to it; the 51 oldest are dropped.
+        assertThat(sent).extracting(ImageRegionTranslationInput::regionId)
+                .containsExactlyElementsOf(regions.subList(51, 251).stream().map(OcrRegion::id).toList());
+        assertThat(sent).filteredOn(ImageRegionTranslationInput::translatable)
                 .extracting(ImageRegionTranslationInput::regionId).containsExactly("title");
-        assertThat(result.degradation().count(OverlayDegradationReason.LIMIT)).isZero();
+        // The workflow's plain-text fallback sends this text, so it respects the bound too.
+        assertThat(workflow.getValue().sourceText().split("\n")).hasSize(200);
+        assertThat(result.degradation().count(OverlayDegradationReason.LIMIT)).isEqualTo(51);
+    }
+
+    @Test
+    void leadingPreservedRegionsPastTheCharacterBudgetAreDroppedToo() throws Exception {
+        String account = "1234567890".repeat(300);
+        List<OcrRegion> regions = new ArrayList<>(IntStream.range(0, 20)
+                .mapToObj(index -> note("account-%02d".formatted(index), account, index)).toList());
+        regions.add(note("title", "Closing time", 20));
+        image("message-long-numbers-first", whitePng(660, 1950));
+        when(ocrService.recognizeRegions(any(InputStream.class))).thenReturn(regions);
+        when(workflowModule.execute(any())).thenAnswer(invocation -> translated(invocation.getArgument(0)));
+
+        ImageTranslationPipelineResult result =
+                successResult(pipeline.execute(request("message-long-numbers-first")));
+
+        ArgumentCaptor<TranslationWorkflowRequest> workflow =
+                ArgumentCaptor.forClass(TranslationWorkflowRequest.class);
+        verify(workflowModule).execute(workflow.capture());
+        List<ImageRegionTranslationInput> sent = workflow.getValue().imageRegions();
+        // 16 x 3,000 + 12 characters fit the 50,000 budget; a 17th amount would not.
+        assertThat(sent).extracting(ImageRegionTranslationInput::regionId)
+                .containsExactlyElementsOf(regions.subList(4, 21).stream().map(OcrRegion::id).toList());
+        assertThat(sent.stream().mapToInt(region -> region.sourceText().length()).sum())
+                .isLessThanOrEqualTo(50_000);
+        assertThat(workflow.getValue().sourceText().length()).isLessThanOrEqualTo(50_000 + sent.size());
+        assertThat(result.degradation().count(OverlayDegradationReason.LIMIT)).isEqualTo(4);
     }
 
     @Test

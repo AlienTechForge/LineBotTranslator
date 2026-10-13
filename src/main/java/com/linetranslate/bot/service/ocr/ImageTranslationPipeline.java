@@ -3,6 +3,7 @@ package com.linetranslate.bot.service.ocr;
 import java.io.InputStream;
 import java.util.Base64;
 import java.util.List;
+import java.util.stream.IntStream;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.ObjectProvider;
@@ -302,21 +303,30 @@ public class ImageTranslationPipeline {
     /**
      * The leading regions, in reading order, that fit the region and character bounds. Segmenting
      * one paragraph into rows and columns can multiply the regions Vision returned, so the bounds
-     * cannot be checked on the raw OCR. Reaching a bound ends the list, except that it never ends
-     * before the first translatable region: an image with text is not turned into "no text".
+     * cannot be checked on the raw OCR. The first translatable region is always kept, so an image
+     * with text is not turned into "no text": when preserved regions such as prices come before it
+     * and would break a bound, the oldest of them are dropped instead. Both bounds always hold.
      */
     private static List<OcrRegionDecision> withinModelLimits(List<OcrRegionDecision> decisions) {
-        int characters = 0;
-        boolean translatable = false;
-        for (int index = 0; index < decisions.size(); index++) {
-            OcrRegionDecision decision = decisions.get(index);
-            characters += decision.region().text().length();
-            if (translatable && (index >= MAX_OCR_REGIONS || characters > MAX_OCR_TEXT_CHARS)) {
-                return decisions.subList(0, index);
-            }
-            translatable |= decision.qualification() == OcrQualification.TRANSLATE;
+        int first = IntStream.range(0, decisions.size())
+                .filter(index -> decisions.get(index).qualification() == OcrQualification.TRANSLATE)
+                .findFirst().orElse(-1);
+        int start = Math.max(first, 0);
+        int end = first < 0 ? 0 : first + 1;
+        int characters = first < 0 ? 0 : textLength(decisions.get(first));
+        while (start > 0 && end - start < MAX_OCR_REGIONS
+                && characters + textLength(decisions.get(start - 1)) <= MAX_OCR_TEXT_CHARS) {
+            characters += textLength(decisions.get(--start));
         }
-        return decisions;
+        while (end < decisions.size() && end - start < MAX_OCR_REGIONS
+                && characters + textLength(decisions.get(end)) <= MAX_OCR_TEXT_CHARS) {
+            characters += textLength(decisions.get(end++));
+        }
+        return decisions.subList(start, end);
+    }
+
+    private static int textLength(OcrRegionDecision decision) {
+        return decision.region().text().length();
     }
 
     private static long elapsedMillis(long startedAt) {
