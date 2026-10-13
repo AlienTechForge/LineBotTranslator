@@ -1,8 +1,9 @@
-package com.linetranslate.bot.controller;
+package com.linetranslate.bot.service.line;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
@@ -23,28 +24,36 @@ import com.linecorp.bot.messaging.model.FlexMessage;
 import com.linecorp.bot.messaging.model.Message;
 import com.linetranslate.bot.service.AdminService;
 import com.linetranslate.bot.service.BroadcastResult;
-import com.linetranslate.bot.service.line.AdminCardRenderer;
+import com.linetranslate.bot.service.line.intent.AdminIntentParser;
+import com.linetranslate.bot.service.webhook.PushFallbackModule;
 
 @ExtendWith(MockitoExtension.class)
-class AdminControllerCardContractTests {
+class AdminCommandCardContractTests {
 
     private static final String ADMIN_ID = "U-admin";
 
     @Mock
     private AdminService adminService;
 
-    private AdminController controller;
+    private final AdminIntentParser parser = new AdminIntentParser();
+    private AdminInteractionModule module;
 
     @BeforeEach
     void setUp() {
-        controller = new AdminController(adminService, new AdminCardRenderer());
+        module = new AdminInteractionModule(
+                adminService, new AdminCardRenderer(), mock(PushFallbackModule.class));
+    }
+
+    /** The same parse-then-execute path {@code LineInteractionModule} runs for an admin command. */
+    private Message handleCommand(String userId, String command) {
+        return module.execute(userId, parser.parse(command));
     }
 
     @Test
     void unauthorizedInteractionReturnsCardWithoutAdminData() {
         when(adminService.isAdmin("U-intruder")).thenReturn(false);
 
-        Message response = controller.handleCommand("U-intruder", "config ocr off");
+        Message response = handleCommand("U-intruder", "config ocr off");
 
         assertThat(response).isInstanceOf(FlexMessage.class);
         assertThat(((FlexMessage) response).altText()).contains("沒有管理員權限");
@@ -59,7 +68,7 @@ class AdminControllerCardContractTests {
         lenient().when(adminService.broadcastMessage(anyString()))
                 .thenReturn(new BroadcastResult(1, 1, 0, false));
 
-        Message response = controller.handleCommand(ADMIN_ID, command);
+        Message response = handleCommand(ADMIN_ID, command);
 
         assertThat(response).isInstanceOf(FlexMessage.class);
     }
@@ -79,7 +88,7 @@ class AdminControllerCardContractTests {
                 "aiProvider", "openrouter",
                 "preferredModel", "openai/gpt-4o-mini"));
 
-        Message response = controller.handleCommand(ADMIN_ID, "user U-target");
+        Message response = handleCommand(ADMIN_ID, "user U-target");
 
         assertThat(response).isInstanceOf(FlexMessage.class);
         assertThat(((FlexMessage) response).altText()).contains("用戶詳細資訊");
@@ -89,7 +98,7 @@ class AdminControllerCardContractTests {
     void oversizedBroadcastIsRejectedBeforeSending() {
         when(adminService.isAdmin(ADMIN_ID)).thenReturn(true);
 
-        Message response = controller.handleCommand(ADMIN_ID, "broadcast " + "a".repeat(5001));
+        Message response = handleCommand(ADMIN_ID, "broadcast " + "a".repeat(5001));
 
         assertThat(response).isInstanceOf(FlexMessage.class);
         assertThat(((FlexMessage) response).altText()).contains("廣播訊息過長");
@@ -102,7 +111,7 @@ class AdminControllerCardContractTests {
         when(adminService.broadcastMessage("系統通知"))
                 .thenReturn(new BroadcastResult(3, 2, 1, false));
 
-        Message response = controller.handleCommand(ADMIN_ID, "broadcast 系統通知");
+        Message response = handleCommand(ADMIN_ID, "broadcast 系統通知");
 
         assertThat(response).isInstanceOf(FlexMessage.class);
         assertThat(((FlexMessage) response).altText())
@@ -115,7 +124,7 @@ class AdminControllerCardContractTests {
         when(adminService.isAdmin(ADMIN_ID)).thenReturn(true);
         when(adminService.setOcrEnabled("maybe", ADMIN_ID)).thenReturn("invalid");
 
-        controller.handleCommand(ADMIN_ID, "config ocr maybe");
+        handleCommand(ADMIN_ID, "config ocr maybe");
 
         verify(adminService).setOcrEnabled("maybe", ADMIN_ID);
     }

@@ -110,12 +110,10 @@ final class ImageTranslationStyleEstimator {
         sourceAreas.forEach(area -> bounds.add(area.getBounds()));
         Rectangle window = bounds.intersection(new Rectangle(0, 0, image.getWidth(), image.getHeight()));
         List<Color> colours = new ArrayList<>();
-        int areaPixels = 0;
         boolean[] inside = OverlaySafetyPolicy.coverage(sourceAreas, window);
         for (int y = window.y; y < window.y + window.height; y++) {
             for (int x = window.x; x < window.x + window.width; x++) {
                 if (!inside[(y - window.y) * window.width + x - window.x]) continue;
-                areaPixels++;
                 Color colour = new Color(image.getRGB(x, y), true);
                 if (colour.getAlpha() > 32 && colourDistanceSquared(colour, background)
                         >= MINIMUM_COLOUR_DISTANCE_SQUARED) {
@@ -123,7 +121,7 @@ final class ImageTranslationStyleEstimator {
                 }
             }
         }
-        return new PixelSample(colours, areaPixels == 0 ? 0 : (double) colours.size() / areaPixels);
+        return new PixelSample(colours);
     }
 
     private static Color dominant(List<Color> colours, Color fallback) {
@@ -400,7 +398,7 @@ final class ImageTranslationStyleEstimator {
         return luminance < 128 ? Color.WHITE : new Color(25, 25, 25);
     }
 
-    private record PixelSample(List<Color> colours, double inkRatio) {
+    private record PixelSample(List<Color> colours) {
         PixelSample {
             colours = List.copyOf(colours);
         }

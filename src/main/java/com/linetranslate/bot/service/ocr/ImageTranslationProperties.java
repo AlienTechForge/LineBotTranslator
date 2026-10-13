@@ -46,11 +46,6 @@ public record ImageTranslationProperties(
         this.maxTotalMaskRatio = maxTotalMaskRatio;
     }
 
-    public ImageTranslationProperties(long maxFileSizeBytes, int maxDimension, long maxPixels,
-            float lowConfidenceThreshold) {
-        this(maxFileSizeBytes, maxDimension, maxPixels, lowConfidenceThreshold, true, .12, .35);
-    }
-
     public static ImageTranslationProperties defaults() {
         return new ImageTranslationProperties(10_485_760, 4_096, 16_000_000, 0.60f, true, .12, .35);
     }

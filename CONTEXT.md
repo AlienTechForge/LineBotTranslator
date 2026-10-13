@@ -34,7 +34,7 @@
 | **Translation Action** | 從 Translation Result 建立的複製、換目標語言、換風格或重新翻譯操作；provider action 只攜帶 opaque Translation Record ID 與 allowlisted target/style，執行時重新驗證 owner 並先取得 durable claim。 | 不可把原文／譯文放進 postback data，也不代表重複點擊可重複計費。 |
 | **Translation Style Preset** | 具有穩定 ID、本地化名稱與版本化 provider prompt rule 的 allowlisted 翻譯風格；目前包含 faithful、natural、casual、formal、business、subtitle。 | 不是可由使用者注入的任意 system prompt，也不是成本／品質路由。 |
 | **Translation Workflow** | `TranslationWorkflowModule` 擁有的單次流程：Language Detection → resolve User Preferences → 選目標語言 → provider execution → 成功持久化。 | 不包含 LINE webhook 驗簽或 LINE message rendering。 |
-| **Translation Request Kind** | 翻譯來源類型：一般文字、快速文字、批次文字或圖片 OCR。 | 不等同 Usage Event 的 TEXT/IMAGE 維度。 |
+| **Translation Request Kind** | 翻譯來源類型：一般文字、快速文字或圖片 OCR。 | 不等同 Usage Event 的 TEXT/IMAGE 維度。 |
 | **Language Detection** | 判定 Translation Request 的 source language；可由規則與 AI detection 組合。 | 不決定 provider，也不直接寫入使用者偏好。 |
 | **Source Language** | 原文被偵測出的語言。 | 不是使用者希望的輸出語言。 |
 | **Target Language** | 本次 Translation Request 實際要輸出的語言；可由命令指定或由 User Preferences 推導。 | 不一定等於全域 fallback。 |
@@ -62,7 +62,7 @@
 
 1. LINE webhook 必須先驗證 signature，才可建立 receipt 或處理 event。
 2. 同一 `webhookEventId` 不可重複執行 business operation；queue 滿或 receipt store 暫時不可用時回 `503`，交由 LINE redelivery。
-3. `LineBotController`、`AdminController` 與 webhook controller 是 Adapter；intent grammar、business execution 與 message assembly 不回流 Controller。
+3. `LineBotController` 與 webhook controller 是 Adapter；intent grammar、business execution 與 message assembly 不回流 Controller。
 4. Admin Intent 的授權必須發生在任何敏感 `AdminService` 呼叫前；每次 interaction 都重新檢查。
 5. Translation Workflow 只消費 immutable effective User Preferences；其他 Module 不直接推測 `UserProfile` 欄位 fallback。
 6. Provider caller 只依 normalized outcome 決策；成功結果與 Translation Record 必須使用 OpenRouter 實際回傳的 provider/model metadata，不可用 requested/default 值代替。

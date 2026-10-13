@@ -44,7 +44,7 @@ class AdminInteractionModuleTests {
     void setUp() {
         adminService = mock(AdminService.class);
         renderer = mock(AdminCardRenderer.class);
-        module = new AdminInteractionModule(adminService, renderer);
+        module = new AdminInteractionModule(adminService, renderer, mock(PushFallbackModule.class));
     }
 
     @Test

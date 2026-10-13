@@ -302,7 +302,6 @@ class TranslationWorkflowModuleTests {
         return Stream.of(
                 Arguments.of(TranslationRequestKind.STANDARD_TEXT),
                 Arguments.of(TranslationRequestKind.QUICK_TEXT),
-                Arguments.of(TranslationRequestKind.BATCH_TEXT),
                 Arguments.of(TranslationRequestKind.IMAGE_OCR));
     }
 

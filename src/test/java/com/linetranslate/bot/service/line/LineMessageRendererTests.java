@@ -58,7 +58,7 @@ class LineMessageRendererTests {
                         Set.of("text"),
                         null,
                         null)), 1, false));
-        renderer = new LineMessageRenderer(catalog);
+        renderer = new LineMessageRenderer(catalog, () -> null, null, null);
     }
 
     @Test
@@ -101,7 +101,7 @@ class LineMessageRendererTests {
         AiModelCatalog catalog = mock(AiModelCatalog.class);
         when(catalog.list("", 20)).thenReturn(new AiModelPage(models, 100, false));
 
-        String rendered = text(new LineMessageRenderer(catalog).models(""));
+        String rendered = text(new LineMessageRenderer(catalog, () -> null, null, null).models(""));
 
         assertThat(rendered.length()).isLessThanOrEqualTo(5_000);
         assertThat(rendered).contains("只顯示前 20 個");

@@ -16,7 +16,7 @@ import org.junit.jupiter.api.Test;
 class ImageInputValidatorTests {
 
     private final ImageTranslationProperties properties = new ImageTranslationProperties(
-            1_000_000, 4_096, 16_000_000, 0.60f);
+            1_000_000, 4_096, 16_000_000, 0.60f, true, .12, .35);
     private final ImageInputValidator validator = new ImageInputValidator(properties);
 
     @Test
@@ -42,7 +42,7 @@ class ImageInputValidatorTests {
     @Test
     void rejectsUnsupportedAndOversizedImagesBeforeRendering() throws Exception {
         ImageInputValidator tinyLimit = new ImageInputValidator(
-                new ImageTranslationProperties(32, 4_096, 16_000_000, 0.60f));
+                new ImageTranslationProperties(32, 4_096, 16_000_000, 0.60f, true, .12, .35));
 
         assertThatThrownBy(() -> tinyLimit.validate(image("png", 20, 20), "image/png"))
                 .isInstanceOf(InvalidImageException.class)
@@ -54,7 +54,7 @@ class ImageInputValidatorTests {
     @Test
     void rejectsDecodedDimensionsAboveTheConfiguredLimit() throws Exception {
         ImageInputValidator smallDimensions = new ImageInputValidator(
-                new ImageTranslationProperties(1_000_000, 8, 64, 0.60f));
+                new ImageTranslationProperties(1_000_000, 8, 64, 0.60f, true, .12, .35));
 
         assertThatThrownBy(() -> smallDimensions.validate(image("png", 9, 8), "image/png"))
                 .isInstanceOf(InvalidImageException.class)

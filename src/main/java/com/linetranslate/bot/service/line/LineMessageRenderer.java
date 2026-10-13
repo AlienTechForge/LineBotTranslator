@@ -60,11 +60,6 @@ public class LineMessageRenderer {
         this.dwzShortLinkService = dwzShortLinkService;
     }
 
-    /** Compatibility constructor for focused renderer tests. */
-    public LineMessageRenderer(AiModelCatalog modelCatalog) {
-        this(modelCatalog, () -> null, null, null);
-    }
-
     public Message help() {
         return text("🤖 LINE 翻譯機器人幫助\n\n"
                 + "[💬 基本使用]\n"
