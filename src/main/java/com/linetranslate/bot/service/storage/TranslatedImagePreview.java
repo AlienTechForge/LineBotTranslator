@@ -40,23 +40,42 @@ final class TranslatedImagePreview {
      */
     static Optional<Rendition> create(byte[] imageBytes) {
         try {
-            BufferedImage source = ImageIO.read(new ByteArrayInputStream(imageBytes));
-            if (source == null || source.getWidth() <= 0 || source.getHeight() <= 0) {
-                return Optional.empty();
-            }
-            BufferedImage flat = flatten(downscale(source));
-            for (float quality : JPEG_QUALITIES) {
-                byte[] jpeg = encode(flat, quality);
-                if (jpeg.length <= MAX_BYTES) {
-                    return Optional.of(new Rendition(jpeg, flat.getWidth(), flat.getHeight()));
-                }
-            }
-            return Optional.empty();
+            return fromRaster(ImageIO.read(new ByteArrayInputStream(imageBytes)));
         } catch (Exception failure) {
-            log.warn("Translated image preview could not be built: failure={}",
-                    MinioStorageService.safeFailure(failure));
+            return failed(failure);
+        }
+    }
+
+    /**
+     * The same preview from an image the caller already holds decoded, which skips decoding a
+     * second full-size raster. The raster is only read, never modified or retained.
+     */
+    static Optional<Rendition> create(BufferedImage source) {
+        try {
+            return fromRaster(source);
+        } catch (Exception failure) {
+            return failed(failure);
+        }
+    }
+
+    private static Optional<Rendition> fromRaster(BufferedImage source) throws IOException {
+        if (source == null || source.getWidth() <= 0 || source.getHeight() <= 0) {
             return Optional.empty();
         }
+        BufferedImage flat = flatten(downscale(source));
+        for (float quality : JPEG_QUALITIES) {
+            byte[] jpeg = encode(flat, quality);
+            if (jpeg.length <= MAX_BYTES) {
+                return Optional.of(new Rendition(jpeg, flat.getWidth(), flat.getHeight()));
+            }
+        }
+        return Optional.empty();
+    }
+
+    private static Optional<Rendition> failed(Exception failure) {
+        log.warn("Translated image preview could not be built: failure={}",
+                MinioStorageService.safeFailure(failure));
+        return Optional.empty();
     }
 
     private static BufferedImage downscale(BufferedImage source) throws IOException {
