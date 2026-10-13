@@ -248,7 +248,11 @@ public class ImageTranslationOverlayRenderer {
             Layout layout) {
         graphics.setFont(layout.font());
         FontMetrics metrics = graphics.getFontMetrics();
-        int baseline = bounds.y() + metrics.getAscent();
+        // A block shorter than its region is centred so it does not sit on the top edge over blank
+        // background. A block taller than the region gets no offset: it starts at the top and the
+        // guard below drops the lines that run past the bottom, rather than pushing ink above it.
+        int slack = Math.max(0, bounds.height() - textHeight(metrics, layout.lines().size()));
+        int baseline = bounds.y() + slack / 2 + metrics.getAscent();
         for (String line : layout.lines()) {
             if (baseline > bounds.bottom()) break;
             graphics.drawString(line, bounds.x() + 1, baseline);
@@ -481,7 +485,8 @@ public class ImageTranslationOverlayRenderer {
         Layout layout = fitHorizontal(graphics, text, bounds);
         graphics.setFont(layout.font());
         FontMetrics metrics = graphics.getFontMetrics();
-        int baseline = bounds.y() + metrics.getAscent();
+        int slack = Math.max(0, bounds.height() - textHeight(metrics, layout.lines().size()));
+        int baseline = bounds.y() + slack / 2 + metrics.getAscent();
         for (String line : layout.lines()) {
             if (baseline > bounds.bottom()) {
                 break;
