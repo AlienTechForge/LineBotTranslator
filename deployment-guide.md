@@ -99,12 +99,21 @@ Secrets 只作為容器環境變數傳入，不會寫入 image、Repository 或 
 | `MONGODB_SERVER_SELECTION_TIMEOUT_MS` | `3000` | 每次操作等待可用 Mongo 節點的上限 |
 | `MONGODB_HEARTBEAT_FREQUENCY_MS` | `5000` | Mongo background topology recheck 間隔 |
 | `MONGODB_MIN_HEARTBEAT_FREQUENCY_MS` | `500` | Mongo background recheck 的最小間隔 |
+| `TRANSLATION_RECORD_RETENTION` | `P90D` | `translation_records` 保留期（ISO-8601 duration）。設為 `PT0S` 停用；GitHub 變數留空會回到預設值。 |
+| `TRANSLATION_ACTION_CLAIM_RETENTION` | `P7D` | `translation_action_claims` 保留期；超過後同一按鈕再次點擊會視為新操作。 |
+| `AI_USAGE_EVENT_RETENTION` | `P730D` | `ai_usage_events` 保留期，約 24 個月；用量與成本報表只涵蓋仍保留的事件。 |
 | `MINIO_ENABLED` | `true` | 是否啟用 optional MinIO 圖片儲存 |
 | `MINIO_RETRY_INTERVAL_MS` | `30000` | MinIO outage 後再次 probe 的間隔 |
 | `MINIO_CONNECT_TIMEOUT_MS` | `3000` | MinIO 連線 timeout |
 | `MINIO_WRITE_TIMEOUT_MS` | `5000` | MinIO 上傳 timeout |
 | `MINIO_READ_TIMEOUT_MS` | `5000` | MinIO API 讀取 timeout |
 | `GOOGLE_VISION_TIMEOUT_MS` | `60000` | 單次 Google Vision OCR 呼叫（含重試）的總時間上限 |
+
+### MongoDB 資料保留
+
+應用程式啟動完成後，`RetentionIndexInitializer` 為 `translation_records`（索引 `translation_record_created_at`）、`translation_action_claims`（`translation_action_claim_ttl`）與 `ai_usage_events`（`ai_usage_event_ttl`）建立或更新 TTL index，重複啟動不會改變結果；MongoDB 約每分鐘清除一次過期文件。已存在的同鍵非 TTL 索引（例如統計查詢索引）在 MongoDB 5.1 以上以 `collMod` 就地轉為 TTL，較舊版本會改為刪除後重建；CI 使用 `mongo:7`。
+
+保留期設為 `PT0S`（環境變數留空亦同）只代表不再建立或更新索引，已建立的 TTL index 不會被移除，需要時請手動 `dropIndex`。數值無法解析或建立失敗只記錄 WARN，不影響啟動。`webhook_event_receipts` 沿用 `WEBHOOK_RECEIPT_TTL`；`user_profiles` 與 `runtime_settings` 不設保留期。
 
 ### 同機木雷連線
 
