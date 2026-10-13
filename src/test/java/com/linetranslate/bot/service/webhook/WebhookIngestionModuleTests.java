@@ -12,15 +12,18 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.net.SocketTimeoutException;
 import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.stream.Stream;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -30,6 +33,10 @@ import org.junit.jupiter.params.provider.MethodSource;
 import com.linecorp.bot.messaging.model.TextMessage;
 import com.linecorp.bot.webhook.model.Event;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 
 class WebhookIngestionModuleTests {
@@ -39,9 +46,13 @@ class WebhookIngestionModuleTests {
     private WebhookReplySender replySender;
     private WebhookIngestionProperties properties;
     private SimpleMeterRegistry meterRegistry;
+    private final Logger logger = (Logger) org.slf4j.LoggerFactory.getLogger(WebhookIngestionModule.class);
+    private final ListAppender<ILoggingEvent> logs = new ListAppender<>();
 
     @BeforeEach
     void setUp() {
+        logs.start();
+        logger.addAppender(logs);
         receiptStore = mock(WebhookEventReceiptStore.class);
         eventProcessor = mock(WebhookEventProcessor.class);
         replySender = mock(WebhookReplySender.class);
@@ -49,6 +60,11 @@ class WebhookIngestionModuleTests {
         properties.setReplyMaxAttempts(3);
         properties.setReplyRetryBackoff(Duration.ZERO);
         meterRegistry = new SimpleMeterRegistry();
+    }
+
+    @AfterEach
+    void tearDown() {
+        logger.detachAppender(logs);
     }
 
     @Test
@@ -192,6 +208,9 @@ class WebhookIngestionModuleTests {
         verify(receiptStore, never()).markCompleted(any(), any(Integer.class));
         assertThat(replyCount("rejected")).isEqualTo(1);
         assertThat(replyCount("retry")).isZero();
+        assertThat(logMessages(Level.WARN)).singleElement().asString().contains("status=400");
+        assertThat(logMessages(Level.ERROR)).singleElement().asString()
+                .contains("failure=WebhookReplyRejectedException<-IOException");
     }
 
     @Test
@@ -235,13 +254,68 @@ class WebhookIngestionModuleTests {
 
     /**
      * The reply adapter lets 429, 5xx and I/O failures through as the
-     * CompletionException that wraps the SDK's checked IOException.
+     * CompletionException that wraps the SDK's checked IOException; the receipt
+     * has to name that cause, not the wrapper.
      */
     private static Stream<Arguments> transientReplyFailures() {
         return Stream.of(
-                Arguments.of(new CompletionException(new IOException("server error")), "CompletionException"),
-                Arguments.of(new CompletionException(new SocketTimeoutException("timeout")), "CompletionException"),
+                Arguments.of(new CompletionException(new IOException("server error")), "IOException"),
+                Arguments.of(new CompletionException(new SocketTimeoutException("timeout")),
+                        "SocketTimeoutException"),
+                Arguments.of(new CompletionException(new CompletionException(new SocketTimeoutException("timeout"))),
+                        "SocketTimeoutException"),
+                Arguments.of(new CompletionException(new ExecutionException(new SocketTimeoutException("timeout"))),
+                        "SocketTimeoutException"),
+                Arguments.of(new UncheckedIOException(new SocketTimeoutException("timeout")),
+                        "SocketTimeoutException"),
+                Arguments.of(new CompletionException(new IllegalStateException("unavailable")),
+                        "IllegalStateException"),
+                Arguments.of(new CompletionException("no cause", null), "CompletionException"),
                 Arguments.of(new IllegalStateException("unavailable"), "IllegalStateException"));
+    }
+
+    @Test
+    void poisonLogNamesTheUnwrappedCauseWithoutMessageText() {
+        Event event = event("event-reply-timeout", 2_000L, false);
+        WebhookClaim claim = WebhookClaim.claimed("event-reply-timeout", "claim-reply-timeout");
+        WebhookReply reply = new WebhookReply("reply-token", List.of(new TextMessage("done")));
+        when(receiptStore.claim(any())).thenReturn(claim);
+        when(eventProcessor.process(event)).thenReturn(Optional.of(reply));
+        doThrow(new CompletionException(new SocketTimeoutException("secret-detail")))
+                .when(replySender).send(reply);
+        WebhookIngestionModule module = module(Runnable::run);
+
+        assertThat(module.ingest(event)).isEqualTo(WebhookIngestionResult.ACCEPTED);
+
+        verify(receiptStore).markPoisoned(claim, "SocketTimeoutException", 3);
+        assertThat(logMessages(Level.ERROR)).singleElement().asString()
+                .contains("event=event-reply-timeout")
+                .contains("failure=SocketTimeoutException")
+                .doesNotContain("CompletionException")
+                .doesNotContain("ReplyAttemptException")
+                .doesNotContain("secret-detail");
+    }
+
+    @Test
+    void wrappedProcessingFailureIsRecordedByItsCause() {
+        Event event = event("event-process-wrapped", 2_000L, false);
+        WebhookClaim claim = WebhookClaim.claimed("event-process-wrapped", "claim-process-wrapped");
+        when(receiptStore.claim(any())).thenReturn(claim);
+        when(eventProcessor.process(event)).thenThrow(new CompletionException(new IllegalStateException("broken")));
+        WebhookIngestionModule module = module(Runnable::run);
+
+        assertThat(module.ingest(event)).isEqualTo(WebhookIngestionResult.ACCEPTED);
+
+        verify(receiptStore).markPoisoned(claim, "IllegalStateException", 0);
+        assertThat(logMessages(Level.ERROR)).singleElement().asString()
+                .contains("failure=IllegalStateException");
+    }
+
+    private List<String> logMessages(Level level) {
+        return logs.list.stream()
+                .filter(entry -> entry.getLevel() == level)
+                .map(ILoggingEvent::getFormattedMessage)
+                .toList();
     }
 
     private double replyCount(String result) {

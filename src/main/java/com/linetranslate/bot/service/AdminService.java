@@ -247,7 +247,8 @@ public class AdminService {
      * 向所有用戶廣播消息
      * 
      * @param message 消息內容
-     * @return 嘗試、送達與失敗的用戶數；測試模式下模擬發送計為送達
+     * @return 已處理、送達與失敗的用戶數；測試模式下模擬發送計為送達。執行緒被中斷時（例如服務關閉或
+     *         工作被取消）立即停止，還原中斷旗標，並以 remaining 回報尚未處理的用戶，不重試
      */
     public BroadcastResult broadcastMessage(String message) {
         // 獲取所有用戶
@@ -260,9 +261,15 @@ public class AdminService {
 
         int sentCount = 0;
         int failedCount = 0;
+        boolean interrupted = false;
         TextMessage textMessage = new TextMessage(message);
 
         for (UserProfile user : validUsers) {
+            // 已完成的 future 的 get() 不會檢查中斷旗標，所以每輪先自行檢查
+            if (Thread.currentThread().isInterrupted()) {
+                interrupted = true;
+                break;
+            }
             try {
                 if (!broadcastTestMode) {
                     // 使用 LINE Messaging API 實際發送消息；測試模式不實際發送
@@ -273,6 +280,11 @@ public class AdminService {
                     messagingApiClient.pushMessage(UUID.randomUUID(), pushMessage).get();
                 }
                 sentCount++;
+            } catch (InterruptedException e) {
+                // 這位用戶的推播已送出但結果未知，不計入送達或失敗；還原旗標讓上層看得到
+                Thread.currentThread().interrupt();
+                interrupted = true;
+                break;
             } catch (Exception e) {
                 failedCount++;
                 log.warn("廣播消息發送失敗: user={}, failure={}",
@@ -280,9 +292,16 @@ public class AdminService {
             }
         }
 
-        log.info("廣播消息完成: testMode={}, attempted={}, sent={}, failed={}",
-                broadcastTestMode, validUsers.size(), sentCount, failedCount);
-        return new BroadcastResult(validUsers.size(), sentCount, failedCount, broadcastTestMode);
+        int remainingCount = validUsers.size() - sentCount - failedCount;
+        if (interrupted) {
+            log.warn("廣播消息被中斷: testMode={}, attempted={}, sent={}, failed={}, remaining={}",
+                    broadcastTestMode, sentCount + failedCount, sentCount, failedCount, remainingCount);
+        } else {
+            log.info("廣播消息完成: testMode={}, attempted={}, sent={}, failed={}",
+                    broadcastTestMode, validUsers.size(), sentCount, failedCount);
+        }
+        return new BroadcastResult(
+                sentCount + failedCount, sentCount, failedCount, broadcastTestMode, remainingCount);
     }
     
     /**

@@ -264,6 +264,33 @@ public class LanguageUtils {
     }
 
     /**
+     * 找出文字開頭的中文語言名稱（含別名），多個名稱都符合時取最長者。
+     * 供「翻譯成英文我愛你」這類語言名稱與原文之間沒有空白的輸入切分用。
+     *
+     * @param text 以中文字開頭的文字
+     * @return 開頭的已知中文語言名稱，沒有時返回 null
+     */
+    public static String leadingChineseName(String text) {
+        if (text == null || text.isEmpty()) {
+            return null;
+        }
+        String longest = null;
+        for (String name : LANGUAGE_NAME_TO_CODE.keySet()) {
+            if (isChineseName(name)
+                    && text.startsWith(name)
+                    && (longest == null || name.length() > longest.length())) {
+                longest = name;
+            }
+        }
+        return longest;
+    }
+
+    private static boolean isChineseName(String name) {
+        return name.codePoints()
+                .allMatch(codePoint -> Character.UnicodeScript.of(codePoint) == Character.UnicodeScript.HAN);
+    }
+
+    /**
      * 供同套件的單元測試檢查映射表結構
      *
      * @return 語言名稱到語言代碼映射的唯讀檢視
