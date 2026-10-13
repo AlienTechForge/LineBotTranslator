@@ -211,8 +211,7 @@ public class ImageTranslationPipeline {
                             decision.region().id(), decision.region().text(),
                             decision.region().languages().stream().findFirst()
                                     .map(OcrDetectedLanguage::code).orElse(sourceLanguage),
-                            decision.qualification() == OcrQualification.PRESERVE
-                                    ? List.of(decision.region().text()) : decision.protectedTokens(),
+                            protectedTokens(decision),
                             decision.qualification() == OcrQualification.TRANSLATE,
                             decision.region().readingOrder(),
                             layout(decision.region())))
@@ -269,6 +268,22 @@ public class ImageTranslationPipeline {
                         overlay.degradation()));
     }
 
+    /**
+     * A preserved region is sent with translatable=false and its tokens are never encoded or
+     * checked, so it carries none. A translatable region's tokens are bounded to the input
+     * contract so a dense receipt or menu cannot fail the whole image.
+     */
+    private static List<String> protectedTokens(OcrRegionDecision decision) {
+        if (decision.qualification() != OcrQualification.TRANSLATE) return List.of();
+        List<String> derived = decision.protectedTokens();
+        List<String> bounded = ImageRegionTranslationInput.boundedProtectedTokens(derived);
+        if (bounded.size() < derived.size()) {
+            log.info("Image region protected tokens bounded: region={}, derived={}, kept={}",
+                    decision.region().id(), derived.size(), bounded.size());
+        }
+        return bounded;
+    }
+
     private static long elapsedMillis(long startedAt) {
         return java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt);
     }
@@ -308,22 +323,20 @@ public class ImageTranslationPipeline {
     private OcrRecognition recognize(ImageTranslationRequest request, ValidatedImage image) {
         if (ocrService != null) {
             try {
-                List<OcrRegion> regions;
+                OcrRecognition recognition;
                 try (InputStream stream = new java.io.ByteArrayInputStream(image.bytes())) {
-                    regions = ocrService.recognizeRegions(stream);
+                    recognition = ocrService.recognize(stream);
                 }
-                if (regions != null && !regions.isEmpty()) {
+                List<OcrRegion> regions = recognition.regions();
+                if (!regions.isEmpty()) {
                     int characters = regions.stream().mapToInt(region -> region.text().length()).sum();
                     long uniqueIds = regions.stream().map(OcrRegion::id).distinct().count();
                     if (regions.size() > MAX_OCR_REGIONS || characters > MAX_OCR_TEXT_CHARS
                             || uniqueIds != regions.size()) {
                         throw new InvalidImageException("OCR result exceeds processing limits");
                     }
-                    return OcrRecognition.structured(regions);
                 }
-                try (InputStream stream = new java.io.ByteArrayInputStream(image.bytes())) {
-                    return OcrRecognition.plain(ocrService.recognizeText(stream));
-                }
+                return recognition;
             } catch (OcrProcessingException failure) {
                 log.info("Primary OCR unavailable; using AI image recognition: failure={}",
                         SafeLog.failure(failure));

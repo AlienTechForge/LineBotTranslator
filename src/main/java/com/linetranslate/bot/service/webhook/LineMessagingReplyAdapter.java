@@ -1,11 +1,13 @@
 package com.linetranslate.bot.service.webhook;
 
+import java.util.Locale;
 import java.util.concurrent.CompletionException;
 
 import org.springframework.stereotype.Component;
 
 import com.linecorp.bot.client.base.exception.AbstractLineClientException;
 import com.linecorp.bot.messaging.client.MessagingApiClient;
+import com.linecorp.bot.messaging.client.MessagingApiClientException;
 import com.linecorp.bot.messaging.model.ReplyMessageRequest;
 
 /** Outbound LINE messaging Adapter. */
@@ -13,9 +15,11 @@ import com.linecorp.bot.messaging.model.ReplyMessageRequest;
 public class LineMessagingReplyAdapter implements WebhookReplySender {
 
     private final MessagingApiClient messagingApiClient;
+    private final PushFallbackModule pushFallback;
 
-    public LineMessagingReplyAdapter(MessagingApiClient messagingApiClient) {
+    public LineMessagingReplyAdapter(MessagingApiClient messagingApiClient, PushFallbackModule pushFallback) {
         this.messagingApiClient = messagingApiClient;
+        this.pushFallback = pushFallback;
     }
 
     @Override
@@ -26,6 +30,9 @@ public class LineMessagingReplyAdapter implements WebhookReplySender {
         } catch (CompletionException failure) {
             if (failure.getCause() instanceof AbstractLineClientException clientFailure
                     && isRejected(clientFailure.getCode())) {
+                if (isExpiredReplyToken(clientFailure) && pushFallback.pushInstead(reply)) {
+                    return;
+                }
                 throw new WebhookReplyRejectedException(clientFailure.getCode(), clientFailure);
             }
             if (failure.getCause() instanceof RuntimeException runtimeFailure) {
@@ -41,5 +48,13 @@ public class LineMessagingReplyAdapter implements WebhookReplySender {
      */
     private static boolean isRejected(int status) {
         return status >= 400 && status < 500 && status != 429;
+    }
+
+    /** LINE answers an expired or already used reply token with 400 {@code Invalid reply token}. */
+    private static boolean isExpiredReplyToken(AbstractLineClientException failure) {
+        return failure.getCode() == 400
+                && failure instanceof MessagingApiClientException lineFailure
+                && lineFailure.getError() != null
+                && lineFailure.getError().toLowerCase(Locale.ROOT).contains("reply token");
     }
 }

@@ -55,17 +55,29 @@ WEBHOOK_PROCESSING_LEASE=PT5M
 WEBHOOK_REPLY_MAX_ATTEMPTS=3
 WEBHOOK_REPLY_RETRY_BACKOFF=PT1S
 
+# MongoDB 資料保留（ISO-8601 duration）；留空或 PT0S 停用該集合的保留
+TRANSLATION_RECORD_RETENTION=P90D
+TRANSLATION_ACTION_CLAIM_RETENTION=P7D
+AI_USAGE_EVENT_RETENTION=P730D
+
+# reply token 過期時改用 push 傳送答案（push 會消耗官方帳號每月訊息額度）
+LINE_PUSH_FALLBACK_ENABLED=true
+LINE_PUSH_FALLBACK_DAILY_LIMIT=100
+
 # OpenRouter 配置（API key 的名稱固定為 OPEN_ROUTE_API_KEY）
 OPEN_ROUTE_API_KEY=your_openrouter_api_key
 OPEN_ROUTE_MODEL_NAME=openai/gpt-4o-mini
 OPEN_ROUTE_API_URL=https://openrouter.ai/api/v1
 
 # Google Cloud Vision API 配置 (OCR)
-GOOGLE_CLOUD_VISION_API_KEY=your_google_cloud_vision_api_key
+# 指向 Google service account JSON；正式環境改由 GOOGLE_CREDENTIALS_JSON secret 傳入（見 deployment-guide.md）
+GOOGLE_APPLICATION_CREDENTIALS=./linebot.json
 GOOGLE_VISION_TIMEOUT_MS=60000
 
 # 應用程式配置
 OCR_ENABLED=true
+# 翻譯圖片後是否再附上辨識文字、譯文與快速操作（管理員可用 /admin config image-text 動態切換）
+IMAGE_TEXT_REPLY_ENABLED=true
 
 # 可選 MinIO 圖片儲存；停用或不可用時圖片翻譯仍可繼續
 MINIO_ENABLED=true
@@ -78,11 +90,22 @@ MINIO_REGION=us-east-1
 
 # 管理員配置
 ADMIN_USERS=U123456789abcdef,U987654321abcdef
+
+# 選填：圖片管理頁 /admin/images 的 Bearer token；留空（預設）則不註冊該頁面與 API
+ADMIN_WEB_TOKEN=
 ```
+
+`ADMIN_USERS` 只是管理員清單的 bootstrap seed：MongoDB `runtime_settings` 尚未保存管理員清單時才會使用。管理員以 `/admin add`、`/admin remove` 做的變更會保存在 MongoDB，重啟或重新部署後仍有效；清單一旦保存，之後修改 `ADMIN_USERS` 不會覆蓋它。最後一位管理員無法被移除。
+
+設定 `ADMIN_WEB_TOKEN` 後，可開啟 `https://<host>/admin/images`，輸入該 token 檢視、篩選並刪除機器人存入 MinIO 的圖片；使用者原圖不會自動刪除，這個頁面是人工清理的入口。部署細節見 [deployment-guide.md](deployment-guide.md)。
 
 翻譯快取採 `expire-after-write` TTL；超過 `TRANSLATION_CACHE_MAX_ENTRIES` 時，Caffeine 會依使用頻率與近期性淘汰項目。失敗、safety blocked 與 model mismatch 不會寫入；實際使用的 style preset ID、prompt version 與 glossary version 都納入 cache identity。
 
 Webhook 先驗證 LINE signature，再以 `webhookEventId` 建立 MongoDB TTL receipt 並交給 bounded executor。重送事件不重複處理；queue 已滿或 receipt store 暫時不可用時回傳 `503`，讓 LINE 稍後 redeliver。receipt 僅保存事件 ID、時間與處理狀態，不保存訊息內容或 reply token。
+
+`translation_records`（預設 90 天）、`translation_action_claims`（7 天）與 `ai_usage_events`（730 天）以 MongoDB TTL index 自動清除舊資料；啟動完成後由 `RetentionIndexInitializer` 建立或更新索引，保留期可用上列 `*_RETENTION` 調整（`user_profiles` 與 `runtime_settings` 不在此範圍）。舊紀錄過期後，翻譯結果的 postback 會回覆「找不到可操作的翻譯結果」，管理員統計的總量只涵蓋仍保留的紀錄。
+
+reply token 約一分鐘後失效，圖片翻譯可能超過這段時間。LINE 以 `Invalid reply token` 拒絕 reply 時，機器人會把同一則答案改用 push 傳給原本的使用者、群組或聊天室，其他 4xx 不受影響。push 會消耗官方帳號的每月訊息額度（reply 免費），因此每日最多備援 `LINE_PUSH_FALLBACK_DAILY_LIMIT` 則（以 UTC+8 計日，重啟後歸零），也可用 `LINE_PUSH_FALLBACK_ENABLED=false` 完全關閉；結果計入 `line.push.fallback{result=sent|skipped_limit|failed}`。群組與聊天室的 push 可能依成員人數計入額度，請依官方帳號方案調整每日上限。管理員可用 `/admin quota` 查看每月額度、已用量、剩餘量與今日備援次數；每日首次發現本月用量達 80% 時會記錄一筆 WARN。
 
 ## 建立與運行
 
@@ -150,10 +173,14 @@ java -jar target/linebot-translator-0.0.1-SNAPSHOT.jar
 
 - `/admin stats` - 顯示系統統計信息
 - `/admin today` - 顯示今日統計信息
+- `/admin quota` - 顯示官方帳號每月訊息額度、已用量與今日 push 備援次數
 - `/admin users` - 顯示最近活躍用戶
 - `/admin config` - 查看或變更非敏感 runtime settings
 - `/admin usage` - 查看 provider attempt 使用量與成本報表
+- `/admin add [用戶 ID]` - 新增管理員（保存於 MongoDB，重啟後仍有效）
+- `/admin remove [用戶 ID]` - 移除管理員（保存於 MongoDB，無法移除最後一位管理員）
 - `/admin config model [完整模型 slug]` - 設置全域 OpenRouter 默認模型
+- `/admin config image-text [on|off]` - 切換翻譯圖片後是否附上辨識文字、譯文與快速操作（預設 on，部署預設值 `IMAGE_TEXT_REPLY_ENABLED`）
 
 ## 貢獻與支持
 

@@ -1,5 +1,7 @@
 package com.linetranslate.bot.controller;
 
+import java.util.List;
+
 import org.springframework.stereotype.Component;
 
 import com.linecorp.bot.messaging.model.Message;
@@ -53,10 +55,10 @@ public class LineBotController {
         return interactionModule.execute(userId, intent);
     }
 
-    public Message handleImageMessageEvent(MessageEvent event, ImageMessageContent content) {
+    public List<Message> handleImageMessageEvent(MessageEvent event, ImageMessageContent content) {
         String userId = event.source().userId();
         if (isUnidentified(userId)) {
-            return unidentifiedSender("image", event.source());
+            return List.of(unidentifiedSender("image", event.source()));
         }
         String messageId = content.id();
         log.info("收到圖片訊息: user={}, message={}",
