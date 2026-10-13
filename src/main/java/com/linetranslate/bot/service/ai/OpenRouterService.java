@@ -44,6 +44,7 @@ public class OpenRouterService implements AiProviderAdapter {
     private static final Set<String> ERRORED_FINISH_REASONS = Set.of("error");
     private static final String GENERATION_INSTRUCTIONS =
             "你是專業語言助手。依照使用者提示簡潔回應。";
+    private static final String HEADER_OPT_OUT = "none";
 
     private final OpenRouterConfig config;
     private final OkHttpClient httpClient;
@@ -434,9 +435,18 @@ public class OpenRouterService implements AiProviderAdapter {
                 cause);
     }
 
+    /**
+     * Adds an optional attribution header unless the value is blank or the literal {@code none}
+     * (case-insensitive). GitHub Actions cannot express a blank variable, so the deploy path
+     * uses {@code none} to opt out of a header whose default would otherwise always apply.
+     */
     private static void optionalHeader(Request.Builder builder, String name, String value) {
-        if (value != null && !value.isBlank()) {
-            builder.header(name, value.trim());
+        if (value == null || value.isBlank()) {
+            return;
+        }
+        String header = value.trim();
+        if (!HEADER_OPT_OUT.equalsIgnoreCase(header)) {
+            builder.header(name, header);
         }
     }
 }

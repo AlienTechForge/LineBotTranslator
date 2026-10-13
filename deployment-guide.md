@@ -84,6 +84,8 @@ Secrets 只作為容器環境變數傳入，不會寫入 image、Repository 或 
 | `DOCKER_NETWORK` | `host` | 與既有 MongoDB/MinIO 相容的 Docker network |
 | `IMAGE_PROXY_PUBLIC_BASE_URL` | 選填 | 需要獨立 preview proxy 時才設；留空時直接使用 MinIO/木雷 URL 傳送 LINE 圖片。 |
 | `IMAGE_PROXY_CONTENT_CACHE_MAX_BYTES` | `67108864` | `/i/{token}` proxy 快取保留的 original + preview 位元組上限（64 MiB）；取代已不再生效的 `IMAGE_PROXY_CONTENT_CACHE_ENTRIES`。 |
+| `IMAGE_TRANSLATION_MAX_OUTPUT_BYTES` | `10485760` | 產生圖片的大小上限（LINE 原圖限制 10 MB）；PNG 超過時改輸出 JPEG 或縮小。 |
+| `IMAGE_TEXT_REPLY_ENABLED` | `true` | 翻譯圖片後是否再附上辨識文字、譯文與快速操作的部署預設值；管理員可用 `/admin config image-text [on\|off]` 動態切換。 |
 | `DWZ_API_BASE_URL` | 短網址啟用時必填 | 木雷 API base。host network 可用固定 loopback port；也可用公開 HTTPS domain。 |
 | `DWZ_SHORT_DOMAIN` | 選填 | 指定木雷短域名；留空使用木雷預設 domain。 |
 | `DWZ_WORKSPACE_ID` | 選填 | 木雷 workspace ID。 |
@@ -94,6 +96,9 @@ Secrets 只作為容器環境變數傳入，不會寫入 image、Repository 或 
 | `JAVA_TOOL_OPTIONS` | `-XX:MaxRAMPercentage=75.0 -XX:+ExitOnOutOfMemoryError` | 容器 JVM 參數；覆寫時應保留 heap 上限與 OOM 結束設定 |
 | `OPEN_ROUTE_MODEL_NAME` | `openai/gpt-4o-mini` | OpenRouter 全域預設模型 slug |
 | `OPEN_ROUTE_API_URL` | `https://openrouter.ai/api/v1` | OpenRouter API base URL |
+| `OPEN_ROUTE_HTTP_REFERER` | `https://github.com/AlienTechForge/LineBotTranslator` | 送往 OpenRouter 的 `HTTP-Referer` 標頭。未設定使用預設值；設為 `none`（不分大小寫）則不送出此標頭（空白變數與未設定相同，會回到預設值）。本機 `.env` 留空也不送出。 |
+| `OPEN_ROUTE_APP_TITLE` | `LineBotTranslator` | 送往 OpenRouter 的 `X-OpenRouter-Title` 標頭；規則同 `OPEN_ROUTE_HTTP_REFERER`，設為 `none` 則不送出。 |
+| `OPEN_ROUTE_CATALOG_TTL` | `PT15M` | OpenRouter 模型 catalog 快取存活時間 |
 | `TRANSLATION_ACTION_CLAIM_LEASE` | `PT5M` | 翻譯 action claim 處理中的租約；逾期仍未完成時由下一次點擊原子接手重試，需長於一次翻譯的最長耗時 |
 | `MONGODB_CONNECT_TIMEOUT_MS` | `3000` | Mongo socket 連線 timeout |
 | `MONGODB_READ_TIMEOUT_MS` | `5000` | Mongo socket 讀取 timeout |
