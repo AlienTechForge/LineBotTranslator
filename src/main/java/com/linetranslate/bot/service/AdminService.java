@@ -5,9 +5,10 @@ import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.YearMonth;
 import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
-import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -17,6 +18,7 @@ import java.util.stream.Collectors;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.domain.Limit;
 import org.springframework.stereotype.Service;
 
 import com.linecorp.bot.messaging.client.MessagingApiClient;
@@ -25,7 +27,6 @@ import com.linecorp.bot.messaging.model.TextMessage;
 
 import com.linetranslate.bot.config.AppConfig;
 import com.linetranslate.bot.config.OpenRouterConfig;
-import com.linetranslate.bot.model.TranslationRecord;
 import com.linetranslate.bot.model.UserProfile;
 import com.linetranslate.bot.repository.TranslationRecordRepository;
 import com.linetranslate.bot.repository.UserProfileRepository;
@@ -270,13 +271,16 @@ public class AdminService {
     public List<Map<String, Object>> getRecentUsers(int limit) {
         log.info("獲取最近活躍的用戶，限制數量: {}", limit);
         
-        // 按最後互動時間排序獲取用戶
-        List<UserProfile> recentUsers = userProfileRepository.findAll().stream()
-                .sorted((u1, u2) -> {
-                    LocalDateTime time1 = u1.getLastInteractionAt() != null ? u1.getLastInteractionAt() : u1.getFirstInteractionAt();
-                    LocalDateTime time2 = u2.getLastInteractionAt() != null ? u2.getLastInteractionAt() : u2.getFirstInteractionAt();
-                    return time2.compareTo(time1);
-                })
+        // 按最後互動時間排序獲取用戶；尚未完成翻譯（lastInteractionAt 為空）的用戶以首次互動時間排序。
+        // 兩組用戶各由資料庫排序並只取前 limit 筆，合併後的前 limit 筆即為全體的前 limit 筆。
+        List<UserProfile> candidates = new ArrayList<>(userProfileRepository
+                .findByLastInteractionAtNotNullOrderByLastInteractionAtDesc(Limit.of(limit)));
+        candidates.addAll(userProfileRepository
+                .findByLastInteractionAtIsNullOrderByFirstInteractionAtDesc(Limit.of(limit)));
+        List<UserProfile> recentUsers = candidates.stream()
+                .sorted(Comparator.comparing(
+                        (UserProfile u) -> u.getLastInteractionAt() != null ? u.getLastInteractionAt() : u.getFirstInteractionAt(),
+                        Comparator.nullsLast(Comparator.reverseOrder())))
                 .limit(limit)
                 .collect(Collectors.toList());
         
@@ -354,25 +358,15 @@ public class AdminService {
         
         // 獲取過去24小時的活躍用戶
         LocalDateTime yesterday = LocalDateTime.now().minusDays(1);
-        long activeUsersLast24h = userProfileRepository.findByLastInteractionAtAfter(yesterday).size();
+        long activeUsersLast24h = userProfileRepository.countByLastInteractionAtAfter(yesterday);
         
         // 統計每個 AI 提供商的使用情況
         long openRouterCount = translationRecordRepository.countByAiProvider("openrouter");
         
-        // 統計過去7天的翻譯量
+        // 統計過去7天每天的翻譯量（由資料庫依日期分組計數並排序）
         LocalDateTime weekAgo = LocalDateTime.now().minusDays(7);
-        List<TranslationRecord> recentTranslations = translationRecordRepository.findByCreatedAtBetween(weekAgo, LocalDateTime.now());
-        
-        // 計算每天的翻譯量
-        Map<String, Long> dailyTranslations = new HashMap<>();
-        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("MM-dd");
-        
-        for (TranslationRecord record : recentTranslations) {
-            if (record.getCreatedAt() != null) {
-                String day = record.getCreatedAt().format(formatter);
-                dailyTranslations.put(day, dailyTranslations.getOrDefault(day, 0L) + 1);
-            }
-        }
+        List<TranslationRecordRepository.KeyedCount> dailyTranslations = translationRecordRepository
+                .countPerDayByCreatedAtBetween(weekAgo, LocalDateTime.now(), persistenceTimeZone());
         
         // 格式化輸出
         StringBuilder stats = new StringBuilder();
@@ -394,14 +388,23 @@ public class AdminService {
         stats.append("-------------------\n");
         
         // 按日期排序顯示每天的翻譯量
-        List<String> sortedDays = new ArrayList<>(dailyTranslations.keySet());
-        Collections.sort(sortedDays);
-        
-        for (String day : sortedDays) {
-            stats.append(day).append(": ").append(dailyTranslations.get(day)).append("\n");
+        for (TranslationRecordRepository.KeyedCount day : dailyTranslations) {
+            stats.append(day.key()).append(": ").append(day.count()).append("\n");
         }
         
         return stats.toString();
+    }
+
+    /**
+     * Spring Data 以 JVM 預設時區把 LocalDateTime 存成時間點，依日期分組時須使用同一時區，
+     * 才與 LocalDateTime 的日期一致。固定位移的時區轉成 MongoDB 接受的 "+hh:mm" 格式。
+     */
+    private static String persistenceTimeZone() {
+        ZoneId zone = ZoneId.systemDefault().normalized();
+        if (zone instanceof ZoneOffset offset) {
+            return offset.getTotalSeconds() == 0 ? "+00:00" : offset.getId();
+        }
+        return zone.getId();
     }
     
     /**
@@ -414,27 +417,25 @@ public class AdminService {
         LocalDateTime todayStart = LocalDateTime.of(LocalDate.now(), LocalTime.MIN);
         LocalDateTime todayEnd = LocalDateTime.of(LocalDate.now(), LocalTime.MAX);
 
-        // 獲取今日翻譯記錄
-        List<TranslationRecord> todayRecords = translationRecordRepository.findByCreatedAtBetween(todayStart, todayEnd);
+        // 由資料庫彙總今日翻譯記錄：總數、圖片翻譯數與平均處理時間
+        Optional<TranslationRecordRepository.TranslationSummary> todaySummary =
+                translationRecordRepository.summarizeByCreatedAtBetween(todayStart, todayEnd);
 
         // 計算統計數據
-        long totalTranslations = todayRecords.size();
-        long textTranslations = todayRecords.stream().filter(r -> !r.isImageTranslation()).count();
-        long imageTranslations = todayRecords.stream().filter(TranslationRecord::isImageTranslation).count();
+        long totalTranslations = todaySummary.map(TranslationRecordRepository.TranslationSummary::total).orElse(0L);
+        long imageTranslations = todaySummary.map(TranslationRecordRepository.TranslationSummary::imageTranslations).orElse(0L);
+        long textTranslations = totalTranslations - imageTranslations;
 
         // 計算平均處理時間
-        double avgProcessingTime = todayRecords.stream()
-                .mapToDouble(TranslationRecord::getProcessingTimeMs)
-                .average()
+        double avgProcessingTime = todaySummary
+                .map(TranslationRecordRepository.TranslationSummary::averageProcessingTimeMs)
                 .orElse(0.0);
 
         // 獲取 AI 提供者使用統計
         Map<String, Long> providerStats = new HashMap<>();
-        for (TranslationRecord record : todayRecords) {
-            String provider = record.getAiProvider();
-            if (provider != null) {
-                providerStats.put(provider, providerStats.getOrDefault(provider, 0L) + 1);
-            }
+        for (TranslationRecordRepository.KeyedCount provider
+                : translationRecordRepository.countPerAiProviderByCreatedAtBetween(todayStart, todayEnd)) {
+            providerStats.put(provider.key(), provider.count());
         }
 
         // 生成統計信息字符串

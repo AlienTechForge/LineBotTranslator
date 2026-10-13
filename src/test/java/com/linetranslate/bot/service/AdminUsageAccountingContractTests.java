@@ -7,11 +7,15 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.util.List;
+import java.util.Optional;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.domain.Limit;
 
 import com.linecorp.bot.messaging.client.MessagingApiClient;
 import com.linetranslate.bot.config.OpenRouterConfig;
@@ -67,6 +71,27 @@ class AdminUsageAccountingContractTests {
         assertThat(adminService.getApiUsageSummary()).isEqualTo("rendered report");
 
         verify(usageAccountingModule).report(UsageQuery.all());
+        verify(translationRecordRepository, never()).findAll();
+    }
+
+    @Test
+    void statisticsAreCountedByTheDatabaseWithoutLoadingCollections() {
+        when(translationRecordRepository.summarizeByCreatedAtBetween(any(), any()))
+                .thenReturn(Optional.of(new TranslationRecordRepository.TranslationSummary(3, 1, 1_500)));
+        when(translationRecordRepository.countPerAiProviderByCreatedAtBetween(any(), any()))
+                .thenReturn(List.of(new TranslationRecordRepository.KeyedCount("openrouter", 3)));
+        when(translationRecordRepository.countPerDayByCreatedAtBetween(any(), any(), anyString()))
+                .thenReturn(List.of(new TranslationRecordRepository.KeyedCount("08-11", 3)));
+
+        assertThat(adminService.getTodayStats())
+                .contains("今日總翻譯次數：3\n", "文字翻譯：2 次\n", "圖片翻譯：1 次\n", "openrouter：3 次\n");
+        assertThat(adminService.getSystemStats()).endsWith("-------------------\n08-11: 3\n");
+        assertThat(adminService.getRecentUsers(10)).isEmpty();
+
+        verify(userProfileRepository).countByLastInteractionAtAfter(any());
+        verify(userProfileRepository).findByLastInteractionAtNotNullOrderByLastInteractionAtDesc(any(Limit.class));
+        verify(userProfileRepository).findByLastInteractionAtIsNullOrderByFirstInteractionAtDesc(any(Limit.class));
+        verify(userProfileRepository, never()).findAll();
         verify(translationRecordRepository, never()).findAll();
     }
 }
