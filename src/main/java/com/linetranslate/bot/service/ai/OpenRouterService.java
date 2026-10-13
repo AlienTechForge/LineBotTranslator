@@ -39,6 +39,9 @@ public class OpenRouterService implements AiProviderAdapter {
     // native_finish_reason (for example MAX_TOKENS or SAFETY).
     private static final Set<String> TRUNCATED_FINISH_REASONS = Set.of("length", "max_tokens");
     private static final Set<String> FILTERED_FINISH_REASONS = Set.of("content_filter", "safety");
+    // Some upstream routes end a generation with finish_reason "error" without a choice.error
+    // object, leaving empty or partial content behind.
+    private static final Set<String> ERRORED_FINISH_REASONS = Set.of("error");
     private static final String GENERATION_INSTRUCTIONS =
             "你是專業語言助手。依照使用者提示簡潔回應。";
 
@@ -258,7 +261,8 @@ public class OpenRouterService implements AiProviderAdapter {
                             usage.path("prompt_tokens").asLong(-1),
                             usage.path("completion_tokens").asLong(-1),
                             usage.path("total_tokens").asLong(-1));
-            rejectUnfinishedCompletion(choice, requestedModel, correlationId, tokenUsage);
+            rejectUnfinishedCompletion(
+                    choice, responseModel(root, requestedModel), correlationId, tokenUsage);
             String text = contentText(choice.path("message").path("content")).trim();
             if (text.isEmpty()) {
                 throw failure(AiProviderException.Outcome.EMPTY_RESPONSE,
@@ -277,8 +281,18 @@ public class OpenRouterService implements AiProviderAdapter {
     }
 
     /**
-     * A completion cut off by max_tokens or withheld by a content filter is not a usable answer,
-     * so it must not reach callers, the Translation Cache or a Translation Record as a success.
+     * The model that actually ran. A routed or alias request such as openrouter/auto only
+     * resolves in the response, and a billed failure has to be priced under that model.
+     */
+    private static String responseModel(JsonNode root, String requestedModel) {
+        String reported = textValue(root.path("model")).trim();
+        return reported.isEmpty() ? requestedModel : reported;
+    }
+
+    /**
+     * A completion cut off by max_tokens, withheld by a content filter or ended by an upstream
+     * error is not a usable answer, so it must not reach callers, the Translation Cache or a
+     * Translation Record as a success.
      */
     private void rejectUnfinishedCompletion(
             JsonNode choice,
@@ -298,6 +312,9 @@ public class OpenRouterService implements AiProviderAdapter {
         } else if (FILTERED_FINISH_REASONS.contains(effective)) {
             outcome = AiProviderException.Outcome.SAFETY_BLOCKED;
             reason = "CONTENT_FILTER";
+        } else if (ERRORED_FINISH_REASONS.contains(effective)) {
+            outcome = AiProviderException.Outcome.HTTP_ERROR;
+            reason = "PROVIDER_ERROR";
         } else {
             return;
         }
