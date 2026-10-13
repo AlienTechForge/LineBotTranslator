@@ -2,8 +2,13 @@ package com.linetranslate.bot.service.ocr;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+
+import java.time.LocalDateTime;
 
 import org.junit.jupiter.api.Test;
 
@@ -25,7 +30,6 @@ class ImageTranslationResultRenderingTests {
         UserProfile profile = UserProfile.builder().userId("U-result").build();
         UserPreferencesModule profiles = mock(UserPreferencesModule.class);
         when(profiles.profile("U-result")).thenReturn(profile);
-        when(repository.save(any(UserProfile.class))).thenAnswer(invocation -> invocation.getArgument(0));
         ImageTranslationContext context = new ImageTranslationContext(
                 new DownloadedImage(new byte[] {1}, "image/png"),
                 ImageStorageResult.notStored(),
@@ -56,6 +60,70 @@ class ImageTranslationResultRenderingTests {
                 .contains("1 小時內有效")
                 .contains("翻譯結果：\n你好")
                 .doesNotContain("低信心區塊");
+        // The activity time is one atomic field write; the whole profile is never saved back.
+        verify(repository).setLastInteractionAt(eq("U-result"), any(LocalDateTime.class));
+        verify(repository, never()).save(any(UserProfile.class));
+    }
+
+    @Test
+    void storedPreviewRenditionIsCarriedSeparatelyFromTheOriginalUrl() {
+        ImageTranslationReply reply = replyFor(ImageStorageResult.stored(
+                "https://s3.example/result.png?signature=safe",
+                "https://s3.example/result-preview.jpg?signature=safe"));
+
+        assertThat(reply.renderedImageUrl()).contains("https://s3.example/result.png?signature=safe");
+        assertThat(reply.renderedPreviewUrl()).contains("https://s3.example/result-preview.jpg?signature=safe");
+        assertThat(reply.renderedPreviewUrl()).isNotEqualTo(reply.renderedImageUrl());
+        assertThat(reply.response().displayText()).doesNotContain("result-preview.jpg");
+    }
+
+    @Test
+    void insecurePreviewUrlIsDroppedButTheOriginalStillRenders() {
+        ImageTranslationReply reply = replyFor(ImageStorageResult.stored(
+                "https://s3.example/result.png?signature=safe",
+                "http://user:secret@internal/result-preview.jpg"));
+
+        assertThat(reply.renderedImageUrl()).contains("https://s3.example/result.png?signature=safe");
+        assertThat(reply.renderedPreviewUrl()).isEmpty();
+    }
+
+    @Test
+    void anImageWithoutAStoredPreviewKeepsAnEmptyPreviewUrl() {
+        ImageTranslationReply reply = replyFor(ImageStorageResult.stored("https://s3.example/result.png?signature=safe"));
+
+        assertThat(reply.renderedPreviewUrl()).isEmpty();
+    }
+
+    @Test
+    void aPreviewWithoutAnOriginalIsNeverReported() {
+        assertThat(ImageStorageResult.stored(null, "https://s3.example/result-preview.jpg").previewUrl()).isEmpty();
+        assertThat(ImageStorageResult.notStored().previewUrl()).isEmpty();
+        assertThat(new ImageStorageResult(false, java.util.Optional.of("https://s3.example/a"),
+                java.util.Optional.of("https://s3.example/b")).previewUrl()).isEmpty();
+        assertThat(new ImageTranslationReply(TranslationResponse.plain("x"), java.util.Optional.empty(),
+                java.util.Optional.of("https://s3.example/b")).renderedPreviewUrl()).isEmpty();
+    }
+
+    private static ImageTranslationReply replyFor(ImageStorageResult rendered) {
+        ImageTranslationPipeline pipeline = mock(ImageTranslationPipeline.class);
+        UserProfileRepository repository = mock(UserProfileRepository.class);
+        UserProfile profile = UserProfile.builder().userId("U-result").build();
+        UserPreferencesModule profiles = mock(UserPreferencesModule.class);
+        when(profiles.profile("U-result")).thenReturn(profile);
+        when(repository.save(any(UserProfile.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        ImageTranslationContext context = new ImageTranslationContext(
+                new DownloadedImage(new byte[] {1}, "image/png"),
+                ImageStorageResult.notStored(),
+                "hello",
+                null);
+        TranslationWorkflowResult translation = new TranslationWorkflowResult(
+                "hello", "en", "zh-TW",
+                new AiExecutionResult("你好", "openrouter", "model"),
+                20, TranslationRequestKind.IMAGE_OCR);
+        when(pipeline.execute(any())).thenReturn(new ImageTranslationOutcome.Success(
+                new ImageTranslationPipelineResult(context, translation, rendered, 0)));
+        return new ImageTranslationService(pipeline, repository, profiles)
+                .processImageTranslationReply("U-result", "message");
     }
 
     @Test
@@ -65,7 +133,6 @@ class ImageTranslationResultRenderingTests {
         UserProfile profile = UserProfile.builder().userId("U-result").build();
         UserPreferencesModule profiles = mock(UserPreferencesModule.class);
         when(profiles.profile("U-result")).thenReturn(profile);
-        when(repository.save(any(UserProfile.class))).thenAnswer(invocation -> invocation.getArgument(0));
         ImageTranslationContext context = new ImageTranslationContext(
                 new DownloadedImage(new byte[] {1}, "image/png"),
                 ImageStorageResult.notStored(),
@@ -98,7 +165,6 @@ class ImageTranslationResultRenderingTests {
         UserProfile profile = UserProfile.builder().userId("U-safe").build();
         UserPreferencesModule profiles = mock(UserPreferencesModule.class);
         when(profiles.profile("U-safe")).thenReturn(profile);
-        when(repository.save(any(UserProfile.class))).thenAnswer(invocation -> invocation.getArgument(0));
         ImageTranslationContext context = new ImageTranslationContext(
                 new DownloadedImage(new byte[] {1}, "image/png"), ImageStorageResult.notStored(), "hello", null);
         TranslationWorkflowResult translation = new TranslationWorkflowResult(
@@ -125,7 +191,6 @@ class ImageTranslationResultRenderingTests {
         UserProfile profile = UserProfile.builder().userId("U-coverage").build();
         UserPreferencesModule profiles = mock(UserPreferencesModule.class);
         when(profiles.profile("U-coverage")).thenReturn(profile);
-        when(repository.save(any(UserProfile.class))).thenAnswer(invocation -> invocation.getArgument(0));
         ImageTranslationContext context = new ImageTranslationContext(
                 new DownloadedImage(new byte[] {1}, "image/png"), ImageStorageResult.notStored(), "text", null);
         TranslationWorkflowResult translation = new TranslationWorkflowResult(
@@ -167,7 +232,6 @@ class ImageTranslationResultRenderingTests {
         UserProfile profile = UserProfile.builder().userId(userId).build();
         UserPreferencesModule profiles = mock(UserPreferencesModule.class);
         when(profiles.profile(userId)).thenReturn(profile);
-        when(repository.save(any(UserProfile.class))).thenAnswer(invocation -> invocation.getArgument(0));
         ImageTranslationContext context = new ImageTranslationContext(
                 new DownloadedImage(new byte[] {1}, "image/png"), ImageStorageResult.notStored(), "text", null);
         TranslationWorkflowResult translation = new TranslationWorkflowResult(

@@ -97,7 +97,8 @@ class AiProviderExecutionModuleTests {
         FakeAdapter adapter = new FakeAdapter("openai/gpt-4o-mini",
                 Set.of("openai/gpt-4o-mini", "anthropic/claude-sonnet-4"));
         AtomicReference<RuntimeSettings> runtime = new AtomicReference<>(settings("openai/gpt-4o-mini"));
-        AiProviderExecutionModule module = new AiProviderExecutionModule(List.of(adapter), runtime::get);
+        AiProviderExecutionModule module = new AiProviderExecutionModule(
+                List.of(adapter), runtime::get, (operation, outcome) -> { });
 
         module.generateTextOutcome(null, "first");
         runtime.set(settings("anthropic/claude-sonnet-4"));
@@ -128,7 +129,8 @@ class AiProviderExecutionModuleTests {
     }
 
     private static AiProviderExecutionModule module(AiProviderAdapter adapter) {
-        return new AiProviderExecutionModule(List.of(adapter), () -> settings(adapter.defaultModel()));
+        return new AiProviderExecutionModule(
+                List.of(adapter), () -> settings(adapter.defaultModel()), (operation, outcome) -> { });
     }
 
     private static RuntimeSettings settings(String model) {

@@ -21,6 +21,8 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
@@ -43,6 +45,9 @@ import okhttp3.Response;
 import okhttp3.ResponseBody;
 
 class OpenRouterModelCatalogTests {
+
+    /** Only a safety net so a regression fails instead of hanging; no test depends on it elapsing. */
+    private static final long SAFETY_TIMEOUT_SECONDS = 30;
 
     @Test
     void catalogFiltersTextModelsSearchesAndCachesOfficialPricing() throws IOException {
@@ -110,7 +115,7 @@ class OpenRouterModelCatalogTests {
 
             AiModelPage expired = within(() -> catalog.list("", 20));
 
-            assertThat(refreshStarted.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(refreshStarted.await(SAFETY_TIMEOUT_SECONDS, TimeUnit.SECONDS)).isTrue();
             assertThat(expired.models()).extracting(AiModelDescriptor::id).containsExactly("vendor/model-a");
             assertThat(expired.stale()).isFalse();
             assertThat(within(() -> catalog.find("vendor/model-b"))).isEmpty();
@@ -160,9 +165,9 @@ class OpenRouterModelCatalogTests {
             });
             startGate.countDown();
 
-            assertThat(first.get(5, TimeUnit.SECONDS)).isPresent();
-            assertThat(second.get(5, TimeUnit.SECONDS)).isPresent();
-            assertThat(refreshStarted.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(first.get(SAFETY_TIMEOUT_SECONDS, TimeUnit.SECONDS)).isPresent();
+            assertThat(second.get(SAFETY_TIMEOUT_SECONDS, TimeUnit.SECONDS)).isPresent();
+            assertThat(refreshStarted.await(SAFETY_TIMEOUT_SECONDS, TimeUnit.SECONDS)).isTrue();
 
             releaseRefresh.countDown();
             drain(refreshExecutor);
@@ -173,6 +178,32 @@ class OpenRouterModelCatalogTests {
             releaseRefresh.countDown();
             callers.shutdownNow();
             catalog.shutdown();
+        }
+    }
+
+    @Test
+    void anExpiredLookupRightAfterARefreshCompletesSchedulesTheNextRefresh() throws Exception {
+        OpenRouterConfig config = config();
+        OkHttpClient client = client(new AtomicInteger(), fetch -> response(catalogJson("vendor/model-a")));
+        // The first lookup resumes the moment its refresh completes, while the refresh thread is still
+        // finishing. The window is a few instructions wide, so the sequence is repeated to hit it.
+        for (int round = 0; round < 300; round++) {
+            MutableClock clock = new MutableClock(Instant.parse("2026-08-11T00:00:00Z"));
+            CountingExecutor refreshExecutor = new CountingExecutor();
+            OpenRouterModelCatalog catalog = new OpenRouterModelCatalog(
+                    config, client, new ObjectMapper(), clock, refreshExecutor);
+            try {
+                catalog.list("", 20);
+                clock.advance(Duration.ofMinutes(16));
+
+                catalog.list("", 20);
+
+                // Scheduling happens on the calling thread, so no wait is involved: the expired lookup
+                // either handed a second refresh to the executor or it joined the finished one.
+                assertThat(refreshExecutor.submitted()).as("refreshes scheduled in round %s", round).isEqualTo(2);
+            } finally {
+                catalog.shutdown();
+            }
         }
     }
 
@@ -270,7 +301,7 @@ class OpenRouterModelCatalogTests {
 
     private static void await(CountDownLatch latch) throws IOException {
         try {
-            if (!latch.await(5, TimeUnit.SECONDS)) {
+            if (!latch.await(SAFETY_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
                 throw new InterruptedIOException("test latch was not released");
             }
         } catch (InterruptedException interrupted) {
@@ -281,17 +312,37 @@ class OpenRouterModelCatalogTests {
 
     /** Fails instead of hanging when a lookup waits on the provider. */
     private static <T> T within(Supplier<T> lookup) throws Exception {
-        return CompletableFuture.supplyAsync(lookup).get(5, TimeUnit.SECONDS);
+        return CompletableFuture.supplyAsync(lookup).get(SAFETY_TIMEOUT_SECONDS, TimeUnit.SECONDS);
     }
 
     /** The refresh executor is single-threaded, so a no-op runs after the pending refresh. */
     private static void drain(ExecutorService refreshExecutor) throws Exception {
-        refreshExecutor.submit(() -> { }).get(5, TimeUnit.SECONDS);
+        refreshExecutor.submit(() -> { }).get(SAFETY_TIMEOUT_SECONDS, TimeUnit.SECONDS);
     }
 
     @FunctionalInterface
     private interface CatalogResponder {
         Response respond(int fetch) throws IOException;
+    }
+
+    /** Single-threaded like the production executor, and counts what the catalog hands to it. */
+    private static final class CountingExecutor extends ThreadPoolExecutor {
+
+        private final AtomicInteger submitted = new AtomicInteger();
+
+        CountingExecutor() {
+            super(1, 1, 0L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<>());
+        }
+
+        @Override
+        public void execute(Runnable task) {
+            submitted.incrementAndGet();
+            super.execute(task);
+        }
+
+        int submitted() {
+            return submitted.get();
+        }
     }
 
     private static final class MutableClock extends Clock {

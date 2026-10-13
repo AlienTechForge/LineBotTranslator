@@ -113,7 +113,8 @@ class LanguageDetectionCacheTests {
                 preferences, "hello", "zh-TW", TranslationStylePreset.FAITHFUL))
                 .thenReturn(new AiExecutionOutcome.Success(
                         new AiExecutionResult("你好", "openai", "gpt-a")));
-        AiLanguageDetectionService realAiDetector = new AiLanguageDetectionService(providerModule);
+        AiLanguageDetectionService realAiDetector = new AiLanguageDetectionService(
+                providerModule, new TranslationPromptFactory());
         ReflectionTestUtils.setField(realAiDetector, "modelName", DETECTION_MODEL);
         ReflectionTestUtils.setField(realAiDetector, "defaultChineseType", "zh-tw");
         UserPreferencesModule preferencesModule = mock(UserPreferencesModule.class);

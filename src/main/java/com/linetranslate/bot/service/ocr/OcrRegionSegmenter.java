@@ -114,9 +114,12 @@ public class OcrRegionSegmenter {
         if (left.isEmpty() || right.isEmpty()) return left + right;
         int previous = left.codePointBefore(left.length());
         int next = right.codePointAt(0);
-        return OcrWordJoiner.isCjk(previous)
-                && (OcrWordJoiner.isCjk(next) || Character.getType(next) == Character.OTHER_PUNCTUATION)
-                ? left + right : left + " " + right;
+        // Punctuation closes the CJK text it follows; between two words the joiner decides, so
+        // Hangul keeps its space while Han and Kana join directly.
+        if (OcrWordJoiner.isCjk(previous) && Character.getType(next) == Character.OTHER_PUNCTUATION) {
+            return left + right;
+        }
+        return left + OcrWordJoiner.scriptSeparator(left, right) + right;
     }
 
     private static List<OcrRegion> splitDenseParagraph(OcrRegion region) {

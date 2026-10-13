@@ -51,17 +51,12 @@ public class LineUserProfileService {
                 throw new IllegalStateException("LINE profile response body is empty");
             }
 
-            // 取得或建立用戶資料（統一由 UserPreferencesModule 建立）
-            UserProfile userProfile = userPreferencesModule.profile(userId);
-            userProfile.setDisplayName(lineProfile.displayName());
-
-            // 將 URI 轉換為 String
-            if (lineProfile.pictureUrl() != null) {
-                userProfile.setPictureUrl(lineProfile.pictureUrl().toString());
-            }
-
-            userProfile.setStatusMessage(lineProfile.statusMessage());
-            userProfileRepository.save(userProfile);
+            // 取得或建立用戶資料（統一由 UserPreferencesModule 建立），只以原子更新寫入 LINE 欄位，
+            // 不覆寫同時間其他 worker 變更的偏好與計數。
+            userPreferencesModule.profile(userId);
+            String pictureUrl = lineProfile.pictureUrl() == null ? null : lineProfile.pictureUrl().toString();
+            userProfileRepository.setLineProfile(
+                    userId, lineProfile.displayName(), pictureUrl, lineProfile.statusMessage());
             log.info("已同步用戶資料: user={}", SafeLog.user(userId));
         } catch (Exception e) {
             log.error("同步用戶資料失敗: user={}, failure={}",
@@ -104,35 +99,29 @@ public class LineUserProfileService {
             return "❌ 顯示名稱不能為空";
         }
         
-        // 檢查用戶是否存在
-        Optional<UserProfile> userProfileOptional = userProfileRepository.findByUserId(userId);
-        
-        if (userProfileOptional.isPresent()) {
-            UserProfile userProfile = userProfileOptional.get();
-            String oldDisplayName = userProfile.getDisplayName();
-            userProfile.setDisplayName(displayName.trim());
-            userProfileRepository.save(userProfile);
-            
-                log.info("已更改用戶顯示名稱: user={}, old={}, new={}",
-                        SafeLog.user(userId), SafeLog.content(oldDisplayName), SafeLog.content(displayName.trim()));
-            return "✅ 已將用戶 " + userId + " 的顯示名稱設置為: " + displayName.trim();
-        } else {
-            // 如果用戶不存在，嘗試先創建用戶資料
-            try {
-                UserProfile newProfile = UserProfile.builder()
-                        .userId(userId)
-                        .displayName(displayName.trim())
-                        .build();
-                userProfileRepository.save(newProfile);
-                
-                log.info("已創建用戶資料並設置顯示名稱: user={}, displayName={}",
-                        SafeLog.user(userId), SafeLog.content(displayName.trim()));
-                return "✅ 已為用戶 " + userId + " 創建資料並設置顯示名稱為: " + displayName.trim();
-            } catch (Exception e) {
-                log.error("設置用戶顯示名稱失敗: user={}, failure={}",
-                        SafeLog.user(userId), SafeLog.failure(e));
-                return "❌ 設置顯示名稱失敗，請稍後再試。";
+        String newDisplayName = displayName.trim();
+        try {
+            // 用戶不存在時由 UserPreferencesModule 冪等建立（唯一索引競爭時改讀勝出者），
+            // 再以原子 $set 寫入顯示名稱，不會因並發建立而失敗。
+            Optional<UserProfile> existing = userProfileRepository.findByUserId(userId);
+            userPreferencesModule.profile(userId);
+            if (!userProfileRepository.setDisplayName(userId, newDisplayName)) {
+                throw new IllegalStateException("User profile disappeared during update");
             }
+
+            if (existing.isPresent()) {
+                log.info("已更改用戶顯示名稱: user={}, old={}, new={}",
+                        SafeLog.user(userId), SafeLog.content(existing.get().getDisplayName()),
+                        SafeLog.content(newDisplayName));
+                return "✅ 已將用戶 " + userId + " 的顯示名稱設置為: " + newDisplayName;
+            }
+            log.info("已創建用戶資料並設置顯示名稱: user={}, displayName={}",
+                    SafeLog.user(userId), SafeLog.content(newDisplayName));
+            return "✅ 已為用戶 " + userId + " 創建資料並設置顯示名稱為: " + newDisplayName;
+        } catch (Exception e) {
+            log.error("設置用戶顯示名稱失敗: user={}, failure={}",
+                    SafeLog.user(userId), SafeLog.failure(e));
+            return "❌ 設置顯示名稱失敗，請稍後再試。";
         }
     }
     

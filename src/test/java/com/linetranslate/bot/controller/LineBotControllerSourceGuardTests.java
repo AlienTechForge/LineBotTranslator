@@ -40,7 +40,7 @@ class LineBotControllerSourceGuardTests {
         parser = mock(LineIntentParser.class);
         interaction = mock(LineInteractionModule.class);
         loading = mock(LineLoadingFeedback.class);
-        renderer = new LineMessageRenderer(mock(AiModelCatalog.class));
+        renderer = new LineMessageRenderer(mock(AiModelCatalog.class), () -> null, null, null);
         controller = new LineBotController(parser, interaction, loading, renderer);
     }
 

@@ -14,6 +14,12 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+/**
+ * Webhook events of one user run on different worker threads, so a stored profile is never
+ * updated by reading it, changing fields in memory and calling {@code save}: the later save
+ * would overwrite the other writer's fields. Create with {@code UserPreferencesModule#profile}
+ * and update fields through {@code UserProfileAtomicUpdates}.
+ */
 @Document("user_profiles")
 @Data
 @Builder

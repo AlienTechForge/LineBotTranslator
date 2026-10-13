@@ -11,7 +11,8 @@ import java.util.List;
 import java.util.Optional;
 
 @Repository
-public interface UserProfileRepository extends MongoRepository<UserProfile, String> {
+public interface UserProfileRepository
+        extends MongoRepository<UserProfile, String>, UserProfileAtomicUpdates {
 
     Optional<UserProfile> findByUserId(String userId);
 

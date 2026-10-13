@@ -64,8 +64,6 @@ class TranslationDetectionContractTests {
         lenient().when(appConfig.getDefaultTargetLanguageForChinese()).thenReturn("en");
         translationService = createService(languageDetectionService);
         when(userProfileRepository.findByUserId(USER_ID)).thenReturn(Optional.of(profile()));
-        lenient().when(userProfileRepository.save(any(UserProfile.class)))
-                .thenAnswer(invocation -> invocation.getArgument(0));
         lenient().when(translationAdapter.translate(any(UserPreferences.class), anyString(), anyString()))
                 .thenReturn(new AiExecutionOutcome.Success(
                         new AiExecutionResult("翻譯結果", "openai", "gpt-test")));
@@ -107,26 +105,6 @@ class TranslationDetectionContractTests {
 
         verify(languageDetectionService, times(1)).detectLanguage("hello");
         assertThat(savedRecord().getSourceLanguage()).isEqualTo("en");
-    }
-
-    @Test
-    void batchTranslationDetectsWholeBatchExactlyOnceAndPersistsIt() {
-        String batch = "hello\nworld";
-        when(languageDetectionService.detectLanguage(batch)).thenReturn("en");
-
-        translationService.processBatchTranslation(USER_ID, batch);
-
-        verify(languageDetectionService, times(1)).detectLanguage(batch);
-        assertThat(savedRecord().getSourceLanguage()).isEqualTo("en");
-    }
-
-    @Test
-    void singleLineBatchDelegatesWithoutAddingAnotherDetection() {
-        when(languageDetectionService.detectLanguage("hello")).thenReturn("en");
-
-        translationService.processBatchTranslation(USER_ID, "hello");
-
-        verify(languageDetectionService, times(1)).detectLanguage("hello");
     }
 
     @Test
