@@ -1,9 +1,12 @@
 package com.linetranslate.bot.service.webhook;
 
+import java.io.UncheckedIOException;
 import java.time.Duration;
 import java.util.EnumMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
 
@@ -24,6 +27,8 @@ import lombok.extern.slf4j.Slf4j;
 @Service
 @Slf4j
 public class WebhookIngestionModule {
+
+    private static final int MAX_UNWRAP_DEPTH = 8;
 
     private final WebhookEventReceiptStore receiptStore;
     private final WebhookEventProcessor eventProcessor;
@@ -90,10 +95,12 @@ public class WebhookIngestionModule {
             processingCompleted.increment();
         } catch (RuntimeException failure) {
             processingPoisoned.increment();
-            receiptStore.markPoisoned(claim, failureType(failure), replyAttempts(failure, replyAttempts));
+            Throwable cause = failureCause(failure);
+            receiptStore.markPoisoned(claim, cause.getClass().getSimpleName(),
+                    replyAttempts(failure, replyAttempts));
             log.error("Webhook event became poison: event={}, failure={}",
                     SafeLog.metadata(envelope.eventId()),
-                    SafeLog.failure(failure));
+                    SafeLog.failure(cause));
         }
     }
 
@@ -140,12 +147,25 @@ public class WebhookIngestionModule {
                 : completedAttempts;
     }
 
-    private String failureType(RuntimeException failure) {
-        if (failure instanceof ReplyAttemptException replyFailure
-                && replyFailure.getCause() != null) {
-            return replyFailure.getCause().getClass().getSimpleName();
+    /**
+     * The failure worth recording: the first non-wrapper in the chain. The reply
+     * future's {@code join()} reports every transient I/O failure as a
+     * {@link CompletionException}, so recording the outermost type would label
+     * timeouts, resets and 5xx alike.
+     */
+    private static Throwable failureCause(Throwable failure) {
+        Throwable current = failure;
+        for (int depth = 0; depth < MAX_UNWRAP_DEPTH && isWrapper(current) && current.getCause() != null; depth++) {
+            current = current.getCause();
         }
-        return failure.getClass().getSimpleName();
+        return current;
+    }
+
+    private static boolean isWrapper(Throwable failure) {
+        return failure instanceof ReplyAttemptException
+                || failure instanceof CompletionException
+                || failure instanceof ExecutionException
+                || failure instanceof UncheckedIOException;
     }
 
     private void increment(WebhookIngestionResult result) {
