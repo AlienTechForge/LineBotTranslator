@@ -5,7 +5,7 @@
 	<parent>
 		<groupId>org.springframework.boot</groupId>
 		<artifactId>spring-boot-starter-parent</artifactId>
-		<version>4.1.0</version>
+		<version>4.1.1</version>
 		<relativePath/> <!-- lookup parent from repository -->
 	</parent>
 	<groupId>com.linetranslate</groupId>
@@ -16,8 +16,8 @@
 
 	<properties>
 		<java.version>17</java.version>
-		<line.bot.sdk.version>10.1.0</line.bot.sdk.version>
-		<guava.version>33.6.0-jre</guava.version>
+		<line.bot.sdk.version>10.2.0</line.bot.sdk.version>
+		<guava.version>33.7.2-jre</guava.version>
 	</properties>
 
 	<dependencies>
@@ -69,7 +69,7 @@
 		<dependency>
 			<groupId>com.squareup.okhttp3</groupId>
 			<artifactId>okhttp-jvm</artifactId>
-			<version>5.4.0</version>
+			<version>5.5.0</version>
 		</dependency>
 
 		<!-- JSON 處理 -->
@@ -100,28 +100,28 @@
 		<dependency>
 			<groupId>com.google.cloud</groupId>
 			<artifactId>google-cloud-vision</artifactId>
-			<version>3.47.0</version>
+			<version>3.97.0</version>
 		</dependency>
 
 		<!-- 圖片處理 -->
 		<dependency>
 			<groupId>net.coobird</groupId>
 			<artifactId>thumbnailator</artifactId>
-			<version>0.4.20</version>
+			<version>0.4.21</version>
 		</dependency>
 
 		<!-- MinIO 儲存服務 -->
 		<dependency>
 			<groupId>io.minio</groupId>
 			<artifactId>minio</artifactId>
-			<version>9.0.2</version>
+			<version>9.0.3</version>
 		</dependency>
 
 		<!-- 環境變數處理 -->
 		<dependency>
 			<groupId>io.github.cdimascio</groupId>
 			<artifactId>dotenv-java</artifactId>
-			<version>3.0.0</version>
+			<version>3.2.0</version>
 		</dependency>
 
 		<!-- 工具類 -->
