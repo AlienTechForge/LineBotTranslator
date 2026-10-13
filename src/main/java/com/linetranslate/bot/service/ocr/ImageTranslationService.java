@@ -12,6 +12,7 @@ import com.linetranslate.bot.logging.SafeLog;
 import com.linetranslate.bot.model.UserProfile;
 import com.linetranslate.bot.repository.UserProfileRepository;
 import com.linetranslate.bot.service.ai.AiExecutionFailure;
+import com.linetranslate.bot.service.preference.UserPreferencesModule;
 import com.linetranslate.bot.service.settings.RuntimeSettings;
 import com.linetranslate.bot.service.settings.RuntimeSettingsSource;
 import com.linetranslate.bot.service.translation.TranslationWorkflowResult;
@@ -27,23 +28,27 @@ public class ImageTranslationService {
 
     private final ImageTranslationPipeline imageTranslationPipeline;
     private final UserProfileRepository userProfileRepository;
+    private final UserPreferencesModule userPreferencesModule;
     private final RuntimeSettingsSource runtimeSettingsSource;
 
     @Autowired
     public ImageTranslationService(
             ImageTranslationPipeline imageTranslationPipeline,
             UserProfileRepository userProfileRepository,
+            UserPreferencesModule userPreferencesModule,
             RuntimeSettingsSource runtimeSettingsSource) {
         this.imageTranslationPipeline = imageTranslationPipeline;
         this.userProfileRepository = userProfileRepository;
+        this.userPreferencesModule = userPreferencesModule;
         this.runtimeSettingsSource = runtimeSettingsSource;
     }
 
     /** Compatibility constructor for focused unit tests. */
     public ImageTranslationService(
             ImageTranslationPipeline imageTranslationPipeline,
-            UserProfileRepository userProfileRepository) {
-        this(imageTranslationPipeline, userProfileRepository, () -> null);
+            UserProfileRepository userProfileRepository,
+            UserPreferencesModule userPreferencesModule) {
+        this(imageTranslationPipeline, userProfileRepository, userPreferencesModule, () -> null);
     }
 
     public boolean isOcrEnabled() {
@@ -156,20 +161,9 @@ public class ImageTranslationService {
     }
 
     private UserProfile ensureUserProfileExists(String userId) {
-        Optional<UserProfile> userProfileOptional = userProfileRepository.findByUserId(userId);
-
-        if (userProfileOptional.isPresent()) {
-            UserProfile userProfile = userProfileOptional.get();
-            userProfile.setLastInteractionAt(LocalDateTime.now());
-            return userProfileRepository.save(userProfile);
-        }
-
-        UserProfile newUserProfile = UserProfile.builder()
-                .userId(userId)
-                .firstInteractionAt(LocalDateTime.now())
-                .lastInteractionAt(LocalDateTime.now())
-                .build();
-        return userProfileRepository.save(newUserProfile);
+        UserProfile userProfile = userPreferencesModule.profile(userId);
+        userProfile.setLastInteractionAt(LocalDateTime.now());
+        return userProfileRepository.save(userProfile);
     }
 
     private void logWorkflowFailure(String userId, AiExecutionFailure failure) {
