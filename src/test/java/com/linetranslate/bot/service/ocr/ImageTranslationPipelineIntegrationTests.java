@@ -500,6 +500,34 @@ class ImageTranslationPipelineIntegrationTests {
                         org.assertj.core.groups.Tuple.tuple("date", false));
     }
 
+    @Test
+    void longPreservedRegionAndDenseTokenRegionStillReachTheTranslationWorkflow() throws Exception {
+        image("message-dense-tokens", png(300, 150), "image/png");
+        when(minioStorageService.uploadImage(any(byte[].class), anyString()))
+                .thenReturn(ImageStorageResult.notStored());
+        List<String> prices = java.util.stream.IntStream.rangeClosed(1, 80)
+                .mapToObj(value -> "$" + value).toList();
+        String menu = "Menu $" + "9".repeat(200) + " " + String.join(" ", prices);
+        String account = "1234567890".repeat(30);
+        when(ocrService.recognizeRegions(any(InputStream.class))).thenReturn(List.of(
+                region("menu", menu, 10, 10, 280, 60, .98f),
+                region("account", account, 10, 90, 280, 40, .98f)));
+        when(workflowModule.execute(any())).thenReturn(success(menu + "\n" + account, "菜單"));
+
+        ImageTranslationOutcome outcome = pipeline.execute(request("message-dense-tokens"));
+
+        assertThat(outcome).isInstanceOf(ImageTranslationOutcome.Success.class);
+        ArgumentCaptor<TranslationWorkflowRequest> request = ArgumentCaptor.forClass(TranslationWorkflowRequest.class);
+        verify(workflowModule).execute(request.capture());
+        var regions = request.getValue().imageRegions().stream().collect(java.util.stream.Collectors.toMap(
+                com.linetranslate.bot.service.translation.ImageRegionTranslationInput::regionId, value -> value));
+        assertThat(regions).containsOnlyKeys("menu", "account");
+        assertThat(regions.get("menu").translatable()).isTrue();
+        assertThat(regions.get("menu").protectedTokens()).containsExactlyElementsOf(prices.subList(0, 64));
+        assertThat(regions.get("account").translatable()).isFalse();
+        assertThat(regions.get("account").protectedTokens()).isEmpty();
+    }
+
     private TrackingInputStream image(String messageId, byte[] bytes) throws Exception {
         return image(messageId, bytes, null);
     }
