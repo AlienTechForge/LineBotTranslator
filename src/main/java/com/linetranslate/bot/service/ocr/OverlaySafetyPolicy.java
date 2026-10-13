@@ -156,10 +156,35 @@ public class OverlaySafetyPolicy {
         return result;
     }
 
-    static Area sourceMask(OcrRegion region) {
-        Area result = new Area();
-        region.masks().forEach(points -> result.add(new Area(polygon(points))));
-        return result;
+    /** Source glyph polygons kept as separate areas; empty polygons are dropped. */
+    static List<Area> sourceAreas(OcrRegion region) {
+        List<Area> result = new ArrayList<>();
+        region.masks().forEach(points -> {
+            Area area = new Area(polygon(points));
+            if (!area.isEmpty()) result.add(area);
+        });
+        return List.copyOf(result);
+    }
+
+    /**
+     * Row-major flags for the pixels of {@code window} whose centre lies inside any of the areas.
+     * A centre is inside the union of the areas exactly when it is inside one of them, so each
+     * area is tested only within its own bounds. Testing every pixel against the union instead
+     * walks every outline segment of every area per pixel, which grows with the square of the
+     * area count.
+     */
+    static boolean[] coverage(List<Area> areas, Rectangle window) {
+        boolean[] inside = new boolean[Math.max(0, window.width) * Math.max(0, window.height)];
+        for (Area area : areas) {
+            Rectangle reach = area.getBounds().intersection(window);
+            for (int y = reach.y; y < reach.y + reach.height; y++) {
+                int row = (y - window.y) * window.width - window.x;
+                for (int x = reach.x; x < reach.x + reach.width; x++) {
+                    if (!inside[row + x] && area.contains(x + .5, y + .5)) inside[row + x] = true;
+                }
+            }
+        }
+        return inside;
     }
 
     /** Pixels that may be painted with the sampled background to erase source glyphs. */

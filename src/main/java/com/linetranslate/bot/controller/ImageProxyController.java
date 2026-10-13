@@ -48,7 +48,7 @@ public class ImageProxyController {
         }
         byte[] body = preview ? asset.get().preview() : asset.get().original();
         return ResponseEntity.ok()
-                .contentType(MediaType.IMAGE_PNG)
+                .contentType(MediaType.parseMediaType(asset.get().contentType()))
                 .cacheControl(CACHE)
                 .header("X-Content-Type-Options", "nosniff")
                 .header("Referrer-Policy", "no-referrer")

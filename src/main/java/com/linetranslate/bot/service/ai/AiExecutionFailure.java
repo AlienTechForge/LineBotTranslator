@@ -9,10 +9,23 @@ public record AiExecutionFailure(
         String reason,
         String correlationId,
         int httpStatus,
-        List<AiProviderAttempt> attempts) {
+        List<AiProviderAttempt> attempts,
+        AiTokenUsage tokenUsage) {
 
     public AiExecutionFailure {
         attempts = attempts == null ? List.of() : List.copyOf(attempts);
+        tokenUsage = tokenUsage == null ? AiTokenUsage.UNKNOWN : tokenUsage;
+    }
+
+    public AiExecutionFailure(
+            AiProviderException.Outcome outcome,
+            String provider,
+            String model,
+            String reason,
+            String correlationId,
+            int httpStatus,
+            List<AiProviderAttempt> attempts) {
+        this(outcome, provider, model, reason, correlationId, httpStatus, attempts, AiTokenUsage.UNKNOWN);
     }
 
     public static AiExecutionFailure from(
@@ -25,7 +38,8 @@ public record AiExecutionFailure(
                 failure.getReason(),
                 failure.getCorrelationId(),
                 failure.getHttpStatus(),
-                attempts);
+                attempts,
+                failure.getTokenUsage());
     }
 
     public AiProviderException toException() {
@@ -36,6 +50,7 @@ public record AiExecutionFailure(
                 reason,
                 correlationId,
                 httpStatus,
-                null);
+                null,
+                tokenUsage);
     }
 }

@@ -25,12 +25,15 @@ import okhttp3.Request;
 import okhttp3.Response;
 import okhttp3.ResponseBody;
 
-/** Fetches allowlisted signed targets and creates a LINE-compatible PNG preview. */
+/** Fetches allowlisted signed targets and creates a LINE-compatible preview in the same format. */
 @Service
 @Slf4j
 public class ImageProxyContentService {
 
+    private static final String JPEG_CONTENT_TYPE = "image/jpeg";
     private static final String PNG_CONTENT_TYPE = "image/png";
+    /** Approximate per-entry overhead (key, record, array headers) counted by the weigher. */
+    private static final int ENTRY_OVERHEAD_BYTES = 256;
 
     private final ImageProxyLinkService linkService;
     private final OkHttpClient httpClient;
@@ -48,7 +51,7 @@ public class ImageProxyContentService {
             @Value("${app.image-translation.max-dimension:4096}") int maxDimension,
             @Value("${app.image-translation.max-pixels:16000000}") long maxPixels,
             @Value("${app.image-translation.proxy-content-cache-ttl:PT5M}") Duration cacheTtl,
-            @Value("${app.image-translation.proxy-content-cache-entries:256}") long cacheEntries) {
+            @Value("${app.image-translation.proxy-content-cache-max-bytes:67108864}") long cacheMaxBytes) {
         this(
                 linkService,
                 new OkHttpClient.Builder()
@@ -62,7 +65,7 @@ public class ImageProxyContentService {
                 maxDimension,
                 maxPixels,
                 cacheTtl,
-                cacheEntries);
+                cacheMaxBytes);
     }
 
     ImageProxyContentService(
@@ -73,9 +76,9 @@ public class ImageProxyContentService {
             int maxDimension,
             long maxPixels,
             Duration cacheTtl,
-            long cacheEntries) {
+            long cacheMaxBytes) {
         if (maxOriginalBytes <= 0 || maxPreviewBytes <= 0 || maxDimension <= 0 || maxPixels <= 0
-                || cacheTtl == null || cacheTtl.isZero() || cacheTtl.isNegative() || cacheEntries <= 0) {
+                || cacheTtl == null || cacheTtl.isZero() || cacheTtl.isNegative() || cacheMaxBytes <= 0) {
             throw new IllegalArgumentException("Image proxy bounds must be positive");
         }
         this.linkService = linkService;
@@ -84,9 +87,15 @@ public class ImageProxyContentService {
         this.maxPreviewBytes = maxPreviewBytes;
         this.maxDimension = maxDimension;
         this.maxPixels = maxPixels;
+        // Bound by retained bytes, not entry count: one entry can hold an original of up
+        // to maxOriginalBytes plus its preview. An asset heavier than the whole cap is
+        // served once and then evicted. Eviction runs on the writing thread so the cap
+        // is enforced right after each insert instead of waiting on the common pool.
         this.assets = Caffeine.newBuilder()
-                .maximumSize(cacheEntries)
+                .maximumWeight(cacheMaxBytes)
+                .weigher((String token, ImageProxyAsset asset) -> weigh(asset))
                 .expireAfterWrite(cacheTtl)
+                .executor(Runnable::run)
                 .build();
     }
 
@@ -103,14 +112,30 @@ public class ImageProxyContentService {
         }
     }
 
+    long cachedBytes() {
+        assets.cleanUp();
+        return assets.policy().eviction().orElseThrow().weightedSize().orElse(0L);
+    }
+
+    long cachedEntries() {
+        assets.cleanUp();
+        return assets.estimatedSize();
+    }
+
+    private static int weigh(ImageProxyAsset asset) {
+        long bytes = (long) asset.originalLength() + asset.previewLength() + ENTRY_OVERHEAD_BYTES;
+        return (int) Math.min(Integer.MAX_VALUE, bytes);
+    }
+
     private Optional<ImageProxyAsset> fetch(URI target) {
         Request request = new Request.Builder()
                 .url(target.toString())
-                .header("Accept", PNG_CONTENT_TYPE)
+                .header("Accept", PNG_CONTENT_TYPE + ", " + JPEG_CONTENT_TYPE)
                 .get()
                 .build();
         try (Response response = httpClient.newCall(request).execute()) {
-            if (response.code() != 200 || !isPng(response.header("Content-Type"))) {
+            String contentType = supportedContentType(response.header("Content-Type"));
+            if (response.code() != 200 || contentType == null) {
                 return Optional.empty();
             }
             ResponseBody body = response.body();
@@ -122,8 +147,8 @@ public class ImageProxyContentService {
                 return Optional.empty();
             }
             BufferedImage decoded = decodeAndValidate(original);
-            byte[] preview = createPreview(decoded, original);
-            return Optional.of(new ImageProxyAsset(original, preview));
+            byte[] preview = createPreview(decoded, original, contentType);
+            return Optional.of(new ImageProxyAsset(original, preview, contentType));
         } catch (Exception failure) {
             log.warn("Image proxy upstream unavailable: failure={}", SafeLog.failure(failure));
             return Optional.empty();
@@ -143,15 +168,19 @@ public class ImageProxyContentService {
         return image;
     }
 
-    private byte[] createPreview(BufferedImage source, byte[] original) throws java.io.IOException {
+    private byte[] createPreview(BufferedImage source, byte[] original, String contentType)
+            throws java.io.IOException {
         if (original.length <= maxPreviewBytes) {
             return original;
         }
+        // JPEG carries no alpha channel, so a JPEG preview is drawn onto an opaque canvas.
+        boolean jpeg = JPEG_CONTENT_TYPE.equals(contentType);
         double ratio = Math.min(0.9, Math.sqrt((double) maxPreviewBytes / original.length) * 0.9);
         for (int attempt = 0; attempt < 8; attempt++) {
             int width = Math.max(1, (int) Math.round(source.getWidth() * ratio));
             int height = Math.max(1, (int) Math.round(source.getHeight() * ratio));
-            BufferedImage resized = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
+            BufferedImage resized = new BufferedImage(width, height,
+                    jpeg ? BufferedImage.TYPE_INT_RGB : BufferedImage.TYPE_INT_ARGB);
             Graphics2D graphics = resized.createGraphics();
             try {
                 graphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION,
@@ -163,8 +192,8 @@ public class ImageProxyContentService {
                 graphics.dispose();
             }
             ByteArrayOutputStream output = new ByteArrayOutputStream();
-            if (!ImageIO.write(resized, "png", output)) {
-                throw new java.io.IOException("PNG writer unavailable");
+            if (!ImageIO.write(resized, jpeg ? "jpeg" : "png", output)) {
+                throw new java.io.IOException("Preview writer unavailable");
             }
             byte[] preview = output.toByteArray();
             if (preview.length <= maxPreviewBytes) {
@@ -172,11 +201,18 @@ public class ImageProxyContentService {
             }
             ratio *= 0.7;
         }
-        throw new java.io.IOException("PNG preview exceeds LINE limit");
+        throw new java.io.IOException("Preview exceeds LINE limit");
     }
 
-    private static boolean isPng(String contentType) {
-        return contentType != null
-                && PNG_CONTENT_TYPE.equalsIgnoreCase(contentType.split(";", 2)[0].trim());
+    /** The renderer stores PNG, or JPEG when PNG would exceed the output cap; nothing else is served. */
+    private static String supportedContentType(String contentType) {
+        if (contentType == null) {
+            return null;
+        }
+        String mediaType = contentType.split(";", 2)[0].trim();
+        if (PNG_CONTENT_TYPE.equalsIgnoreCase(mediaType)) {
+            return PNG_CONTENT_TYPE;
+        }
+        return JPEG_CONTENT_TYPE.equalsIgnoreCase(mediaType) ? JPEG_CONTENT_TYPE : null;
     }
 }
