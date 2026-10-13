@@ -5,7 +5,6 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -73,8 +72,11 @@ class TranslationUserPreferenceTests {
                 .preferredChineseTargetLanguage("en")
                 .build();
         lenient().when(userProfileRepository.findByUserId(USER_ID)).thenReturn(Optional.of(profile));
-        lenient().when(userProfileRepository.save(any(UserProfile.class)))
-                .thenAnswer(invocation -> invocation.getArgument(0));
+        lenient().when(userProfileRepository.setPreferredLanguage(eq(USER_ID), anyString()))
+                .thenAnswer(invocation -> {
+                    profile.setPreferredLanguage(invocation.getArgument(1));
+                    return Optional.of(profile);
+                });
         lenient().when(translationAdapter.translate(any(UserPreferences.class), anyString(), anyString()))
                 .thenReturn(new AiExecutionOutcome.Success(
                         new AiExecutionResult("translated", "openai", "gpt-test")));
@@ -124,7 +126,7 @@ class TranslationUserPreferenceTests {
 
         assertThat(profile.getPreferredLanguage()).isEqualTo("ja");
         assertThat(result).contains("ja");
-        verify(userProfileRepository, atLeastOnce()).save(profile);
+        verify(userProfileRepository).setPreferredLanguage(USER_ID, "ja");
     }
 
     @Test
@@ -133,6 +135,6 @@ class TranslationUserPreferenceTests {
 
         assertThat(result).contains("不支持的語言");
         assertThat(profile.getPreferredLanguage()).isEqualTo("ja");
-        verify(userProfileRepository, never()).save(any(UserProfile.class));
+        verify(userProfileRepository, never()).setPreferredLanguage(any(), any());
     }
 }

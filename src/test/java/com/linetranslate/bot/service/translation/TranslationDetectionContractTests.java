@@ -64,8 +64,6 @@ class TranslationDetectionContractTests {
         lenient().when(appConfig.getDefaultTargetLanguageForChinese()).thenReturn("en");
         translationService = createService(languageDetectionService);
         when(userProfileRepository.findByUserId(USER_ID)).thenReturn(Optional.of(profile()));
-        lenient().when(userProfileRepository.save(any(UserProfile.class)))
-                .thenAnswer(invocation -> invocation.getArgument(0));
         lenient().when(translationAdapter.translate(any(UserPreferences.class), anyString(), anyString()))
                 .thenReturn(new AiExecutionOutcome.Success(
                         new AiExecutionResult("翻譯結果", "openai", "gpt-test")));

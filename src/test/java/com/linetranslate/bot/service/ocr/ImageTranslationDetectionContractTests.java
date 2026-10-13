@@ -98,8 +98,6 @@ class ImageTranslationDetectionContractTests {
                 .preferredModel("gpt-test")
                 .build();
         when(userPreferencesModule.profile("U-test")).thenReturn(userProfile);
-        when(userProfileRepository.save(any(UserProfile.class)))
-                .thenAnswer(invocation -> invocation.getArgument(0));
         lenient().when(translationRecordRepository.save(any(TranslationRecord.class)))
                 .thenAnswer(invocation -> {
                     TranslationRecord record = invocation.getArgument(0);

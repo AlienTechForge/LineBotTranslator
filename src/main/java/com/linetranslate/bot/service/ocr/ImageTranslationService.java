@@ -168,8 +168,8 @@ public class ImageTranslationService {
 
     private UserProfile ensureUserProfileExists(String userId) {
         UserProfile userProfile = userPreferencesModule.profile(userId);
-        userProfile.setLastInteractionAt(LocalDateTime.now());
-        return userProfileRepository.save(userProfile);
+        userProfileRepository.setLastInteractionAt(userId, LocalDateTime.now());
+        return userProfile;
     }
 
     private void logWorkflowFailure(String userId, AiExecutionFailure failure) {
