@@ -20,7 +20,8 @@
 `./mvnw clean verify -B` 是 PR 與 `master` 的必要 gate：
 
 - Surefire 執行 `*Tests` focused suite，涵蓋文字/圖片翻譯、provider failure、使用者偏好、管理員授權與 signed LINE webhook routing。
-- Failsafe 執行 `*IntegrationTests`，對隔離 MongoDB 與 MinIO 驗證 unavailable、recovery 與實際讀寫流程。
+- Failsafe 執行 `*IntegrationTests`，對隔離 MongoDB 與 MinIO 驗證 unavailable、recovery、readiness 與實際讀寫流程。
+- 分層規則：`*Tests` 必須在沒有任何基礎設施的機器上以 `./mvnw test` 全數通過；任何需要 MongoDB 或 MinIO 的測試（包含斷言 readiness `mongo` component 為 `UP` 的 health endpoint 測試）都命名為 `*IntegrationTests`，交由 Failsafe 執行。
 - `verify` lifecycle 會 compile、執行兩層測試並建立 Spring Boot JAR；workflow 另行確認 packaged JAR 存在。
 - provider、LINE reply、OCR 與 storage 邊界在 focused tests 使用 mocks/adapters，不讀 production Secrets，也不呼叫付費 API。
 - 測試失敗時 Actions 會保留 Surefire 與 Failsafe reports 7 天；成功時不建立多餘 artifact。
