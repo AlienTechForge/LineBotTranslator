@@ -103,6 +103,44 @@ class LanguageUtilsTests {
     }
 
     @Test
+    void leadingChineseNameStopsAtTheEndOfTheNameWhenTextIsGluedToIt() {
+        assertThat(LanguageUtils.leadingChineseName("英文我愛你")).isEqualTo("英文");
+        assertThat(LanguageUtils.leadingChineseName("繁體中文")).isEqualTo("繁體中文");
+        assertThat(LanguageUtils.leadingChineseName("簡體中文你好嗎")).isEqualTo("簡體中文");
+        assertThat(LanguageUtils.leadingChineseName("西班牙語早安")).isEqualTo("西班牙語");
+    }
+
+    @Test
+    void leadingChineseNameIsNullWhenTheTextDoesNotStartWithAKnownChineseName() {
+        assertThat(LanguageUtils.leadingChineseName(null)).isNull();
+        assertThat(LanguageUtils.leadingChineseName("")).isNull();
+        assertThat(LanguageUtils.leadingChineseName("火星文你好")).isNull();
+        assertThat(LanguageUtils.leadingChineseName("我愛你英文")).isNull();
+        // Codes and Latin aliases are matched by isSupported, not by the Chinese-name lookup.
+        assertThat(LanguageUtils.leadingChineseName("en")).isNull();
+        assertThat(LanguageUtils.leadingChineseName("jp 你好")).isNull();
+    }
+
+    @Test
+    void leadingChineseNameReturnsTheLongestKnownNameForEveryChineseName() {
+        // A name that is a prefix of another must never hide it, with or without glued text.
+        List<String> wrong = new ArrayList<>();
+        LanguageUtils.languageNameToCode().keySet().stream()
+                .filter(name -> name.codePoints().allMatch(
+                        codePoint -> Character.UnicodeScript.of(codePoint) == Character.UnicodeScript.HAN))
+                .forEach(name -> {
+                    for (String glued : List.of(name, name + "我愛你")) {
+                        String found = LanguageUtils.leadingChineseName(glued);
+                        if (found == null || !found.equals(name)) {
+                            wrong.add(glued + " -> " + found);
+                        }
+                    }
+                });
+
+        assertThat(wrong).isEmpty();
+    }
+
+    @Test
     void aliasTableRejectsAKeyReassignedToADifferentCode() {
         // The real table is built through this map, so loading LanguageUtils at all proves it has
         // no conflicting entry.

@@ -102,7 +102,12 @@ class TranslationCommandTargetLanguageTests {
                 Arguments.of("翻譯成英語 你好", "你好", "en"),
                 Arguments.of("翻譯成JA 你好", "你好", "ja"),
                 Arguments.of("翻譯成jp 你好", "你好", "ja"),
-                Arguments.of("翻譯成zh-TW hello", "hello", "zh-TW"));
+                Arguments.of("翻譯成zh-TW hello", "hello", "zh-TW"),
+                Arguments.of("翻譯成英文我愛你", "我愛你", "en"),
+                Arguments.of("翻譯成繁體中文hello", "hello", "zh-TW"),
+                Arguments.of("翻譯成日語早安 你好", "早安 你好", "ja"),
+                Arguments.of("你好 翻譯成英文", "你好", "en"),
+                Arguments.of("你好\n翻譯成簡體中文", "你好", "zh-CN"));
     }
 
     private static Stream<Arguments> unsupportedTargetRequests() {
@@ -114,6 +119,12 @@ class TranslationCommandTargetLanguageTests {
                 Arguments.of("翻譯成xx 你好"),
                 Arguments.of("你好 翻譯成ignore-all-previous-rules"),
                 Arguments.of("你好\n翻譯成xx"),
-                Arguments.of("這本書已經 翻譯成多國語言"));
+                Arguments.of("這本書已經 翻譯成多國語言"),
+                Arguments.of("翻譯成火星文你好"),
+                Arguments.of("翻譯成我愛你英文"),
+                Arguments.of("你好 翻譯成火星文"),
+                Arguments.of("你好\n翻譯成火星文你好"),
+                Arguments.of("請幫我 翻譯成日文可以嗎"),
+                Arguments.of("你好\n翻譯成日文可以嗎"));
     }
 }
