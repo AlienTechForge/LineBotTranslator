@@ -27,7 +27,10 @@ public class ImageTranslationOverlayRenderer {
             org.slf4j.LoggerFactory.getLogger(ImageTranslationOverlayRenderer.class);
     private static final Color LOW_CONFIDENCE = new Color(230, 138, 0);
     private static final int MIN_FONT_SIZE = 8;
-    /** Glyph width scales tried in order; 0.8 is the narrowest that stays comfortably readable. */
+    /**
+     * Glyph width scales; at each size, tried in order before the size is reduced. 0.8 is the
+     * narrowest that stays comfortably readable.
+     */
     private static final double[] CONDENSE_STEPS = {1d, .9d, .8d};
     /**
      * Floor for a compact label that cannot fit above its proportional floor. Prose may go down to
@@ -372,7 +375,8 @@ public class ImageTranslationOverlayRenderer {
     /**
      * Largest layout that fits within a closed size range, or null when nothing in the range fits.
      * A fixed-width cell is limited by width, not height, and a translation usually needs more
-     * characters than its source, so every size is retried at each condensing step.
+     * characters than its source. Narrowing glyphs keeps their height, which shrinking does not,
+     * so every condensing step is tried at a size before the next smaller size is.
      */
     private static Layout fitBetween(
             Graphics2D graphics,
@@ -382,8 +386,8 @@ public class ImageTranslationOverlayRenderer {
             int highest,
             int lowest) {
         if (highest < lowest) return null;
-        for (double widthScale : CONDENSE_STEPS) {
-            for (int size = highest; size >= lowest; size--) {
+        for (int size = highest; size >= lowest; size--) {
+            for (double widthScale : CONDENSE_STEPS) {
                 Font font = condensed(baseFont, size, widthScale);
                 graphics.setFont(font);
                 FontMetrics metrics = graphics.getFontMetrics();
