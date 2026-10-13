@@ -23,6 +23,8 @@ import java.util.concurrent.Executors;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.ObjectProvider;
 
@@ -31,13 +33,19 @@ import javax.imageio.ImageIO;
 import com.linecorp.bot.client.base.BlobContent;
 import com.linecorp.bot.client.base.Result;
 import com.linecorp.bot.messaging.client.MessagingApiBlobClient;
+import com.linetranslate.bot.model.TranslationRecord;
 import com.linetranslate.bot.model.UserProfile;
+import com.linetranslate.bot.repository.TranslationRecordRepository;
+import com.linetranslate.bot.service.ai.AiExecutionOutcome;
 import com.linetranslate.bot.service.ai.AiExecutionResult;
 import com.linetranslate.bot.service.ai.AiProviderException;
 import com.linetranslate.bot.service.ai.AiProviderExecutionModule;
+import com.linetranslate.bot.service.preference.UserPreferences;
 import com.linetranslate.bot.service.preference.UserPreferencesModule;
 import com.linetranslate.bot.service.storage.ImageStorageResult;
 import com.linetranslate.bot.service.storage.MinioStorageService;
+import com.linetranslate.bot.service.translation.CachedTranslationAdapter;
+import com.linetranslate.bot.service.translation.LanguageDetectionService;
 import com.linetranslate.bot.service.translation.TranslationRequestKind;
 import com.linetranslate.bot.service.translation.TranslationWorkflowModule;
 import com.linetranslate.bot.service.translation.TranslationWorkflowOutcome;
@@ -498,6 +506,61 @@ class ImageTranslationPipelineIntegrationTests {
                 com.linetranslate.bot.service.translation.ImageRegionTranslationInput::translatable)
                 .containsExactly(org.assertj.core.groups.Tuple.tuple("product", true),
                         org.assertj.core.groups.Tuple.tuple("date", false));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"本書已翻譯成多國語言", "本菜單可翻譯成英文", "翻譯成ja 你好"})
+    void recognizedTextNeverRequestsItsOwnTargetLanguage(String recognizedText) throws Exception {
+        image("message-embedded-command", new byte[] {11});
+        when(minioStorageService.uploadImage(any(byte[].class), anyString()))
+                .thenReturn(ImageStorageResult.notStored());
+        when(ocrService.recognizeText(any(InputStream.class))).thenReturn(recognizedText);
+        when(workflowModule.execute(any())).thenReturn(success(recognizedText, "translated"));
+
+        ImageTranslationPipelineResult result =
+                successResult(pipeline.execute(request("message-embedded-command")));
+
+        assertThat(result.context().requestedTargetLanguage()).isNull();
+        ArgumentCaptor<TranslationWorkflowRequest> workflow =
+                ArgumentCaptor.forClass(TranslationWorkflowRequest.class);
+        verify(workflowModule).execute(workflow.capture());
+        assertThat(workflow.getValue().requestedTargetLanguage()).isNull();
+        assertThat(workflow.getValue().sourceText()).isEqualTo(recognizedText);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"本書已翻譯成多國語言", "本菜單可翻譯成英文"})
+    void embeddedTranslationPhraseKeepsThePreferenceTargetAndIsTranslatedVerbatim(
+            String recognizedText) throws Exception {
+        LanguageDetectionService detection = mock(LanguageDetectionService.class);
+        CachedTranslationAdapter adapter = mock(CachedTranslationAdapter.class);
+        TranslationRecordRepository records = mock(TranslationRecordRepository.class);
+        UserPreferences preferences = new UserPreferences("ko", "ja", "en", "gpt-test", List.of());
+        when(userPreferencesModule.resolve(userProfile)).thenReturn(preferences);
+        when(detection.detectLanguage(recognizedText)).thenReturn("zh-TW");
+        when(adapter.translate(preferences, recognizedText, "ja")).thenReturn(
+                new AiExecutionOutcome.Success(new AiExecutionResult("翻訳", "openrouter", "gpt-test")));
+        pipeline = new ImageTranslationPipeline(
+                ocrServiceProvider,
+                new TranslationWorkflowModule(detection, adapter, records, userPreferencesModule),
+                aiProviderExecutionModule,
+                userPreferencesModule,
+                messagingApiBlobClient,
+                minioStorageService);
+        image("message-embedded-phrase", new byte[] {12});
+        when(minioStorageService.uploadImage(any(byte[].class), anyString()))
+                .thenReturn(ImageStorageResult.notStored());
+        when(ocrService.recognizeText(any(InputStream.class))).thenReturn(recognizedText);
+
+        ImageTranslationPipelineResult result =
+                successResult(pipeline.execute(request("message-embedded-phrase")));
+
+        assertThat(result.translation().targetLanguage()).isEqualTo("ja");
+        verify(adapter).translate(preferences, recognizedText, "ja");
+        ArgumentCaptor<TranslationRecord> record = ArgumentCaptor.forClass(TranslationRecord.class);
+        verify(records).save(record.capture());
+        assertThat(record.getValue().getSourceText()).isEqualTo(recognizedText);
+        assertThat(record.getValue().getTargetLanguage()).isEqualTo("ja");
     }
 
     private TrackingInputStream image(String messageId, byte[] bytes) throws Exception {
