@@ -35,7 +35,10 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 public class MinioStorageService {
 
-    private static final String TRANSLATED_IMAGE_PREFIX = "translated-images/";
+    /** Key prefix of user-submitted originals; shared with the admin object browser. */
+    static final String ORIGINAL_IMAGE_PREFIX = "images/";
+    /** Key prefix of rendered translations; shared with the admin object browser. */
+    static final String TRANSLATED_IMAGE_PREFIX = "translated-images/";
     private static final int TRANSLATED_URL_EXPIRY_SECONDS = 3_600;
     private static final long TRANSLATED_RETENTION_SECONDS = 86_400;
 
@@ -315,7 +318,7 @@ public class MinioStorageService {
             case "image/gif" -> ".gif";
             default -> ".bin";
         };
-        return "images/" + UUID.randomUUID() + extension;
+        return ORIGINAL_IMAGE_PREFIX + UUID.randomUUID() + extension;
     }
 
     private String generateTranslatedObjectName() {
