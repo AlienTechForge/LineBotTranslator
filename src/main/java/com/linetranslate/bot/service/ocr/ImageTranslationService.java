@@ -17,6 +17,7 @@ import com.linetranslate.bot.service.settings.RuntimeSettingsSource;
 import com.linetranslate.bot.service.translation.TranslationWorkflowResult;
 import com.linetranslate.bot.service.translation.TranslationResponse;
 import com.linetranslate.bot.util.LanguageUtils;
+import com.linetranslate.bot.util.LineTextLimit;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -99,12 +100,16 @@ public class ImageTranslationService {
             display.append("⚠️ 本次未能覆寫原圖，僅提供文字翻譯。\n\n");
         }
         display.append("【圖片文字辨識結果】\n\n")
-                .append("識別的文字：\n").append(recognizedText).append("\n\n")
-                .append("翻譯結果：\n").append(translation.translatedText()).append("\n\n");
+                .append("識別的文字：\n");
+        String translationSection = "\n\n翻譯結果：\n" + translation.translatedText() + "\n\n"
+                + "[偵測到: " + LanguageUtils.toChineseName(translation.sourceLanguage())
+                + " | 翻譯成: " + LanguageUtils.toChineseName(translation.targetLanguage()) + "]";
+        // Recognized text yields its space first so the translation stays inside the LINE limit.
+        int recognizedBudget = LineTextLimit.MAX_CODE_POINTS
+                - LineTextLimit.codePoints(display) - LineTextLimit.codePoints(translationSection);
+        display.append(LineTextLimit.fit(recognizedText, recognizedBudget))
+                .append(translationSection);
         logOverlayOutcome(result);
-        display.append("[偵測到: ").append(LanguageUtils.toChineseName(translation.sourceLanguage()))
-                .append(" | 翻譯成: ").append(LanguageUtils.toChineseName(translation.targetLanguage()))
-                .append("]");
         return new ImageTranslationReply(
                 TranslationResponse.success(translation, display.toString()),
                 renderedImageUrl);
