@@ -138,13 +138,17 @@ public class MinioStorageService {
         }
     }
 
-    /** Stores a generated PNG behind a one-hour signed URL and a 24-hour retention key. */
-    public ImageStorageResult uploadTranslatedImage(byte[] imageBytes) {
-        if (imageBytes == null || imageBytes.length == 0 || !beginAttempt()) {
+    /**
+     * Stores a generated PNG or JPEG behind a one-hour signed URL and a 24-hour retention key.
+     * Any other content type is refused, since the object is served to LINE as an image.
+     */
+    public ImageStorageResult uploadTranslatedImage(byte[] imageBytes, String contentType) {
+        String extension = translatedImageExtension(contentType);
+        if (imageBytes == null || imageBytes.length == 0 || extension == null || !beginAttempt()) {
             return ImageStorageResult.notStored();
         }
 
-        String objectName = generateTranslatedObjectName();
+        String objectName = generateTranslatedObjectName(extension);
         try {
             ensureBucket();
             try (InputStream inputStream = new ByteArrayInputStream(imageBytes)) {
@@ -153,7 +157,7 @@ public class MinioStorageService {
                                 .bucket(bucketName)
                                 .object(objectName)
                                 .stream(inputStream, Long.valueOf(imageBytes.length), Long.valueOf(-1))
-                                .contentType("image/png")
+                                .contentType(contentType)
                                 .build());
             }
             try {
@@ -318,9 +322,17 @@ public class MinioStorageService {
         return "images/" + UUID.randomUUID() + extension;
     }
 
-    private String generateTranslatedObjectName() {
+    private static String translatedImageExtension(String contentType) {
+        return switch (contentType == null ? "" : contentType) {
+            case "image/png" -> ".png";
+            case "image/jpeg" -> ".jpg";
+            default -> null;
+        };
+    }
+
+    private String generateTranslatedObjectName(String extension) {
         long expiresAt = currentTimeMs.getAsLong() / 1_000 + TRANSLATED_RETENTION_SECONDS;
-        return TRANSLATED_IMAGE_PREFIX + expiresAt + "/" + UUID.randomUUID() + ".png";
+        return TRANSLATED_IMAGE_PREFIX + expiresAt + "/" + UUID.randomUUID() + extension;
     }
 
     private static boolean isExpiredTranslatedImage(String objectName, long nowEpochSeconds) {

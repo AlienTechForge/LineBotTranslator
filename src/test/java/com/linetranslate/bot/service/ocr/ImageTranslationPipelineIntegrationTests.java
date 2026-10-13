@@ -334,7 +334,7 @@ class ImageTranslationPipelineIntegrationTests {
                 "hello\nworld", "greetings\nplanet",
                 List.of(new ImageRegionTranslation("r-hello", "greetings"),
                         new ImageRegionTranslation("r-world", "planet"))));
-        when(minioStorageService.uploadTranslatedImage(any(byte[].class)))
+        when(minioStorageService.uploadTranslatedImage(any(byte[].class), anyString()))
                 .thenReturn(ImageStorageResult.stored("https://storage.example/translated.png"));
 
         ImageTranslationPipelineResult result = successResult(pipeline.execute(request("message-overlay")));
@@ -350,7 +350,7 @@ class ImageTranslationPipelineIntegrationTests {
         assertThat(workflow.getValue().imageRegions()).extracting(
                 com.linetranslate.bot.service.translation.ImageRegionTranslationInput::regionId)
                 .containsExactly("r-hello", "r-world");
-        verify(minioStorageService).uploadTranslatedImage(any(byte[].class));
+        verify(minioStorageService).uploadTranslatedImage(any(byte[].class), anyString());
     }
 
     @Test
@@ -374,7 +374,7 @@ class ImageTranslationPipelineIntegrationTests {
                 List.of(new ImageRegionTranslation("p1", "first"),
                         new ImageRegionTranslation("p2", "second"),
                         new ImageRegionTranslation("p3", "third"))));
-        when(minioStorageService.uploadTranslatedImage(any(byte[].class)))
+        when(minioStorageService.uploadTranslatedImage(any(byte[].class), anyString()))
                 .thenReturn(ImageStorageResult.stored("https://storage.example/document-translated.png"));
 
         ImageTranslationPipelineResult result = successResult(
@@ -383,7 +383,7 @@ class ImageTranslationPipelineIntegrationTests {
         assertThat(result.overlayDisposition()).isEqualTo(ImageOverlayDisposition.GENERATED);
         assertThat(result.renderedImage().url())
                 .contains("https://storage.example/document-translated.png");
-        verify(minioStorageService).uploadTranslatedImage(any(byte[].class));
+        verify(minioStorageService).uploadTranslatedImage(any(byte[].class), anyString());
     }
 
     @Test
@@ -408,7 +408,7 @@ class ImageTranslationPipelineIntegrationTests {
         assertThat(result.translation().translatedText()).isEqualTo("greetings");
         assertThat(result.renderedImage().stored()).isFalse();
         assertThat(result.overlayDisposition()).isEqualTo(ImageOverlayDisposition.SAFETY_DEGRADED);
-        verify(minioStorageService, never()).uploadTranslatedImage(any(byte[].class));
+        verify(minioStorageService, never()).uploadTranslatedImage(any(byte[].class), anyString());
     }
 
     @Test
@@ -425,7 +425,7 @@ class ImageTranslationPipelineIntegrationTests {
 
         assertThat(result.translation().translatedText()).isEqualTo("greetings");
         assertThat(result.overlayDisposition()).isEqualTo(ImageOverlayDisposition.SAFETY_DEGRADED);
-        verify(minioStorageService, never()).uploadTranslatedImage(any(byte[].class));
+        verify(minioStorageService, never()).uploadTranslatedImage(any(byte[].class), anyString());
     }
 
     @Test
@@ -451,7 +451,7 @@ class ImageTranslationPipelineIntegrationTests {
         when(workflowModule.execute(any())).thenReturn(successStructured(
                 "hello\nworld", "greetings\nworld",
                 List.of(new ImageRegionTranslation("r-hello", "greetings"))));
-        when(minioStorageService.uploadTranslatedImage(any(byte[].class)))
+        when(minioStorageService.uploadTranslatedImage(any(byte[].class), anyString()))
                 .thenReturn(ImageStorageResult.stored("https://storage.example/partial.png"));
 
         ImageTranslationPipelineResult result =
@@ -460,7 +460,7 @@ class ImageTranslationPipelineIntegrationTests {
         assertThat(result.overlayDisposition()).isEqualTo(ImageOverlayDisposition.GENERATED);
         assertThat(result.renderedImage().url()).contains("https://storage.example/partial.png");
         assertThat(result.degradation().count(OverlayDegradationReason.MAPPING)).isEqualTo(1);
-        verify(minioStorageService).uploadTranslatedImage(any(byte[].class));
+        verify(minioStorageService).uploadTranslatedImage(any(byte[].class), anyString());
     }
 
     @Test

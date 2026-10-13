@@ -393,7 +393,7 @@ public class ImageTranslationPipeline {
             long rendererStarted = System.nanoTime();
             RenderedImage rendered = overlayRenderer.render(image, plan);
             long rendererMillis = elapsedMillis(rendererStarted);
-            byte[] renderedBytes = rendered.pngBytes();
+            byte[] renderedBytes = rendered.bytes();
             if (rendered.renderedBlockCount() == 0) {
                 log.info("Image overlay timing: rendererMs={}, uploadMs=0, renderedRegions=0, outputBytes={}",
                         rendererMillis, renderedBytes.length);
@@ -402,7 +402,8 @@ public class ImageTranslationPipeline {
                         ImageOverlayDisposition.SAFETY_DEGRADED, rendered.degradation().merge(unmapped));
             }
             long uploadStarted = System.nanoTime();
-            ImageStorageResult storage = minioStorageService.uploadTranslatedImage(renderedBytes);
+            ImageStorageResult storage = minioStorageService.uploadTranslatedImage(
+                    renderedBytes, rendered.contentType());
             long uploadMillis = elapsedMillis(uploadStarted);
             log.info("Image overlay timing: rendererMs={}, uploadMs={}, renderedRegions={}, outputBytes={}",
                     rendererMillis, uploadMillis, rendered.renderedBlockCount(), renderedBytes.length);
