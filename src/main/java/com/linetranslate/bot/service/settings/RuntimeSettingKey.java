@@ -6,7 +6,8 @@ public enum RuntimeSettingKey {
     DEFAULT_OTHER_TARGET_LANGUAGE("defaultTargetLanguageForOthers"),
     OPENROUTER_DEFAULT_MODEL("openRouterDefaultModel"),
     OCR_ENABLED("ocrEnabled"),
-    SHORT_URL_ENABLED("shortUrlEnabled");
+    SHORT_URL_ENABLED("shortUrlEnabled"),
+    IMAGE_TEXT_REPLY_ENABLED("imageTextReplyEnabled");
 
     private final String fieldName;
 

@@ -28,6 +28,8 @@ MinIO upload、1 小時 presigned URL 與 24 小時 object retention 已有獨�
 - Runtime Setting `shortUrlEnabled` 由已授權管理員透過
   `/admin config short-url [on|off]` 修改。關閉時仍直接輸出圖片，只略過木雷。
 - 木雷 API 或回應驗證失敗時 fail-open 到 presigned URL，不影響圖片翻譯結果。
+- 圖片之後預設在同一次 reply 附上第二則文字訊息（辨識文字、譯文與 quick replies，不含長網址）；
+  Runtime Setting `imageTextReplyEnabled` 由 `/admin config image-text [on|off]` 切換，關閉時只回圖片。
 - 木雷 API Token 只由 deployment secret 提供，不保存於 Runtime Settings。
 
 ## Consequences
