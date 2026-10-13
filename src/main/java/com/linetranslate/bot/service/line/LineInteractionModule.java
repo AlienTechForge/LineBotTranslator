@@ -1,5 +1,7 @@
 package com.linetranslate.bot.service.line;
 
+import java.util.List;
+
 import org.springframework.stereotype.Service;
 
 import com.linecorp.bot.messaging.model.Message;
@@ -73,14 +75,14 @@ public class LineInteractionModule {
         return renderer.invalid((LineIntent.Invalid) intent);
     }
 
-    public Message executeImage(String userId, String messageId) {
+    public List<Message> executeImage(String userId, String messageId) {
         try {
-            return renderer.imageResult(
+            return renderer.imageResultMessages(
                     imageTranslationService.processImageTranslationReply(userId, messageId));
         } catch (Exception exception) {
             log.error("圖片翻譯處理失敗: user={}, failure={}",
                     SafeLog.user(userId), SafeLog.failure(exception));
-            return renderer.imageFailure();
+            return List.of(renderer.imageFailure());
         }
     }
 

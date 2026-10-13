@@ -44,9 +44,11 @@ RUN groupadd --system --gid 10001 app && \
 # 複製構建的 JAR 文件
 COPY --from=build --chown=app:app /workspace/app/target/*.jar app.jar
 
-# 設置環境變量
+# 設置環境變量；JVM heap 依容器記憶體比例設定上限，OOM 時直接結束交由重啟策略恢復。
+# 部署時可用同名環境變數覆寫 JAVA_TOOL_OPTIONS。
 ENV SPRING_PROFILES_ACTIVE=prod \
-    SERVER_PORT=4040
+    SERVER_PORT=4040 \
+    JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=75.0 -XX:+ExitOnOutOfMemoryError"
 
 # 暴露端口
 EXPOSE 4040

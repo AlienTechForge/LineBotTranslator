@@ -26,9 +26,6 @@ import java.time.Duration;
 @Slf4j
 public class GoogleVisionConfig {
 
-    @Value("${google.cloud.vision.api.key:#{null}}")
-    private String apiKey;
-
     @Value("${GOOGLE_APPLICATION_CREDENTIALS:./linebot.json}")
     private String credentialsPath;
 

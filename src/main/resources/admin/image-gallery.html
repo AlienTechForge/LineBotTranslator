@@ -1,0 +1,472 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex, nofollow">
+<title>圖片管理</title>
+<style nonce="__CSP_NONCE__">
+:root {
+  color-scheme: light dark;
+  --bg: #f6f7f9;
+  --fg: #1d2433;
+  --muted: #667085;
+  --card: #ffffff;
+  --line: #d3d8e2;
+  --accent: #1769e0;
+  --accent-fg: #ffffff;
+  --danger: #c62828;
+  --danger-fg: #ffffff;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #12151c;
+    --fg: #e8ebf2;
+    --muted: #9aa3b5;
+    --card: #1b2030;
+    --line: #2d3446;
+    --accent: #5b9cff;
+    --accent-fg: #0b1220;
+    --danger: #ef5350;
+    --danger-fg: #1a0505;
+  }
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 16px/1.5 system-ui, -apple-system, "Noto Sans TC", "Microsoft JhengHei", sans-serif;
+}
+header.bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--card);
+}
+h1 { margin: 0; font-size: 1.15rem; }
+main { max-width: 1100px; margin: 0 auto; padding: 16px; }
+label { display: flex; flex-direction: column; gap: 4px; font-size: 0.9rem; color: var(--muted); }
+input, select, button {
+  font: inherit;
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--fg);
+}
+button { cursor: pointer; }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+button.danger { background: var(--danger); border-color: var(--danger); color: var(--danger-fg); }
+:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.login { max-width: 420px; margin: 48px auto 0; display: grid; gap: 12px; }
+.filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; align-items: end; }
+.hint { margin: 8px 0 0; font-size: 0.85rem; color: var(--muted); }
+.actions {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+  padding: 8px 0;
+  background: var(--bg);
+}
+.status { min-height: 1.5em; margin: 8px 0; color: var(--muted); }
+.error { color: var(--danger); }
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.card {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--card);
+}
+.card.selected { outline: 3px solid var(--accent); }
+.pick {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 1;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+}
+.pick input { width: 24px; height: 24px; min-height: 0; padding: 0; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.thumb {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 1 / 1;
+  background: var(--line);
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.thumb img { width: 100%; height: 100%; object-fit: contain; }
+.meta { padding: 8px; font-size: 0.8rem; color: var(--muted); overflow-wrap: anywhere; }
+.meta .name { color: var(--fg); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.more { display: flex; justify-content: center; margin: 24px 0; }
+</style>
+</head>
+<body>
+<header class="bar">
+  <h1>圖片管理</h1>
+  <button id="logout" type="button" hidden>登出</button>
+</header>
+<main>
+  <noscript><p>此頁面需要啟用 JavaScript。</p></noscript>
+
+  <section id="login" hidden>
+    <form id="login-form" class="login">
+      <label for="token">管理權杖
+        <input id="token" type="password" autocomplete="off" spellcheck="false" required>
+      </label>
+      <button type="submit" class="primary">登入</button>
+      <p id="login-error" class="status error" role="alert"></p>
+    </form>
+  </section>
+
+  <section id="app" hidden>
+    <form id="filters" class="filters">
+      <label for="kind">類型
+        <select id="kind">
+          <option value="all">全部</option>
+          <option value="original">使用者原圖</option>
+          <option value="translated">翻譯圖片</option>
+        </select>
+      </label>
+      <label for="from">起始日期
+        <input id="from" type="date">
+      </label>
+      <label for="to">結束日期
+        <input id="to" type="date">
+      </label>
+      <button type="submit" class="primary">查詢</button>
+    </form>
+    <p class="hint">日期以此瀏覽器的時區計算，依物件的最後修改時間篩選，由新到舊排序。</p>
+
+    <div class="actions">
+      <button id="select-all" type="button">全選</button>
+      <button id="clear" type="button">取消選取</button>
+      <button id="delete" type="button" class="danger" disabled>刪除選取</button>
+    </div>
+    <p id="status" class="status" role="status" aria-live="polite"></p>
+    <ul id="grid" class="grid"></ul>
+    <div class="more"><button id="more" type="button" hidden>載入更多</button></div>
+  </section>
+</main>
+<script nonce="__CSP_NONCE__">
+(function () {
+  'use strict';
+
+  var TOKEN_KEY = 'adminImageGalleryToken';
+  var PAGE_SIZE = 50;
+  var DELETE_BATCH = 200;
+  var BASE = window.location.pathname.replace(/\/+$/, '');
+  var ERRORS = {
+    invalid_request: '查詢條件不正確。',
+    too_many_names: '一次選取的數量過多。',
+    storage_unavailable: '物件儲存未啟用或目前無法使用。',
+    storage_error: '物件儲存沒有回應，請稍後再試。'
+  };
+
+  var memoryToken = null;
+  var cursor = null;
+  var busy = false;
+  var selected = new Set();
+  var cards = new Map();
+
+  function $(id) { return document.getElementById(id); }
+
+  function readToken() {
+    try { return window.sessionStorage.getItem(TOKEN_KEY) || memoryToken; } catch (e) { return memoryToken; }
+  }
+  function saveToken(value) {
+    memoryToken = value;
+    try { window.sessionStorage.setItem(TOKEN_KEY, value); } catch (e) { /* memory only */ }
+  }
+  function clearToken() {
+    memoryToken = null;
+    try { window.sessionStorage.removeItem(TOKEN_KEY); } catch (e) { /* nothing stored */ }
+  }
+
+  function AuthError() { this.auth = true; }
+  function ApiError(code) { this.code = code; }
+
+  function api(path, options) {
+    var token = readToken();
+    if (!token) { showLogin(''); return Promise.reject(new AuthError()); }
+    var init = Object.assign({}, options);
+    init.headers = Object.assign({ Authorization: 'Bearer ' + token }, init.headers);
+    init.cache = 'no-store';
+    return fetch(BASE + path, init).then(function (res) {
+      if (res.status === 401) {
+        clearToken();
+        showLogin('權杖錯誤或已失效，請重新輸入。');
+        throw new AuthError();
+      }
+      if (!res.ok) {
+        return res.json().then(
+          function (body) { throw new ApiError(body && body.error); },
+          function () { throw new ApiError(''); });
+      }
+      return res.json();
+    });
+  }
+
+  function showLogin(message) {
+    $('app').hidden = true;
+    $('logout').hidden = true;
+    $('login').hidden = false;
+    $('login-error').textContent = message || '';
+    $('token').value = '';
+    $('token').focus();
+  }
+
+  function showApp() {
+    $('login').hidden = true;
+    $('app').hidden = false;
+    $('logout').hidden = false;
+  }
+
+  function setStatus(message, isError) {
+    var node = $('status');
+    node.textContent = message;
+    node.className = isError ? 'status error' : 'status';
+  }
+
+  function reportFailure(failure) {
+    if (failure && failure.auth) { return; }
+    setStatus((failure && ERRORS[failure.code]) || '操作失敗，請稍後再試。', true);
+  }
+
+  function setBusy(value) {
+    busy = value;
+    $('more').disabled = value;
+    updateSelection();
+  }
+
+  function formatSize(bytes) {
+    if (bytes < 1024) { return bytes + ' B'; }
+    if (bytes < 1048576) { return (bytes / 1024).toFixed(1) + ' KB'; }
+    return (bytes / 1048576).toFixed(1) + ' MB';
+  }
+
+  function formatDate(iso) {
+    var date = new Date(iso);
+    return isNaN(date.getTime()) ? iso : date.toLocaleString('zh-TW', { hour12: false });
+  }
+
+  function timeZone() {
+    try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch (e) { return 'UTC'; }
+  }
+
+  function updateSelection() {
+    var count = selected.size;
+    $('delete').textContent = count ? '刪除選取 (' + count + ')' : '刪除選取';
+    $('delete').disabled = busy || count === 0;
+    $('clear').disabled = count === 0;
+    $('select-all').disabled = cards.size === 0;
+  }
+
+  function select(name, on) {
+    var card = cards.get(name);
+    if (!card) { return; }
+    if (on) { selected.add(name); } else { selected.delete(name); }
+    card.box.checked = on;
+    card.li.classList.toggle('selected', on);
+    updateSelection();
+  }
+
+  var observer = 'IntersectionObserver' in window
+    ? new IntersectionObserver(function (entries) {
+        entries.forEach(function (entry) {
+          if (entry.isIntersecting) {
+            observer.unobserve(entry.target);
+            loadThumb(entry.target.dataset.name);
+          }
+        });
+      }, { rootMargin: '200px' })
+    : null;
+
+  function loadThumb(name) {
+    var card = cards.get(name);
+    if (!card) { return; }
+    api('/api/url?name=' + encodeURIComponent(name)).then(function (data) {
+      card.img.src = data.url;
+    }).catch(function () { markBroken(card); });
+  }
+
+  function markBroken(card) {
+    card.thumb.textContent = '無法預覽';
+  }
+
+  function addCard(item) {
+    if (cards.has(item.name)) { return; }
+    var li = document.createElement('li');
+    li.className = 'card';
+    li.dataset.name = item.name;
+
+    var pick = document.createElement('label');
+    pick.className = 'pick';
+    var box = document.createElement('input');
+    box.type = 'checkbox';
+    var pickText = document.createElement('span');
+    pickText.className = 'sr';
+    pickText.textContent = '選取 ' + item.name;
+    pick.append(box, pickText);
+
+    var thumb = document.createElement('div');
+    thumb.className = 'thumb';
+    var img = document.createElement('img');
+    img.alt = item.name;
+    img.decoding = 'async';
+    img.referrerPolicy = 'no-referrer';
+    thumb.append(img);
+
+    var meta = document.createElement('div');
+    meta.className = 'meta';
+    var nameLine = document.createElement('div');
+    nameLine.className = 'name';
+    nameLine.textContent = item.name;
+    var kindLine = document.createElement('div');
+    kindLine.textContent = (item.kind === 'translated' ? '翻譯圖片' : '使用者原圖') + ' · ' + formatSize(item.size);
+    var dateLine = document.createElement('div');
+    dateLine.textContent = formatDate(item.lastModified);
+    meta.append(nameLine, kindLine, dateLine);
+
+    li.append(pick, thumb, meta);
+    $('grid').append(li);
+
+    var card = { li: li, box: box, img: img, thumb: thumb, retried: false };
+    cards.set(item.name, card);
+    box.addEventListener('change', function () { select(item.name, box.checked); });
+    img.addEventListener('error', function () {
+      if (card.retried) { markBroken(card); return; }
+      card.retried = true;
+      loadThumb(item.name);
+    });
+    if (observer) { observer.observe(li); } else { loadThumb(item.name); }
+  }
+
+  function clearGrid() {
+    if (observer) { observer.disconnect(); }
+    $('grid').textContent = '';
+    cards.clear();
+    selected.clear();
+    updateSelection();
+  }
+
+  function load(reset) {
+    if (busy) { return Promise.resolve(); }
+    if (reset) { cursor = null; clearGrid(); setStatus('載入中…'); }
+    setBusy(true);
+    var params = new URLSearchParams();
+    params.set('kind', $('kind').value);
+    if ($('from').value) { params.set('from', $('from').value); }
+    if ($('to').value) { params.set('to', $('to').value); }
+    params.set('tz', timeZone());
+    params.set('limit', String(PAGE_SIZE));
+    if (cursor) { params.set('cursor', cursor); }
+    return api('/api/list?' + params.toString()).then(function (data) {
+      data.items.forEach(addCard);
+      cursor = data.nextCursor || null;
+      $('more').hidden = !cursor;
+      setStatus(cards.size ? '已載入 ' + cards.size + ' 張圖片。' : '沒有符合條件的圖片。');
+    }).catch(reportFailure).then(function () { setBusy(false); });
+  }
+
+  function removeCard(name) {
+    var card = cards.get(name);
+    if (!card) { return; }
+    if (observer) { observer.unobserve(card.li); }
+    card.li.remove();
+    cards.delete(name);
+    selected.delete(name);
+  }
+
+  function deleteSelected() {
+    var names = Array.from(selected);
+    if (!names.length || busy) { return; }
+    if (!window.confirm('確定要刪除選取的 ' + names.length + ' 張圖片嗎？此動作無法復原。')) { return; }
+    setBusy(true);
+    var deleted = 0;
+    var failed = 0;
+    var chain = Promise.resolve();
+    for (var i = 0; i < names.length; i += DELETE_BATCH) {
+      (function (chunk) {
+        chain = chain.then(function () {
+          return api('/api/delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ names: chunk })
+          }).then(function (data) {
+            var rejected = new Set(data.failed || []);
+            deleted += data.deleted;
+            failed += rejected.size;
+            chunk.forEach(function (name) { if (!rejected.has(name)) { removeCard(name); } });
+          });
+        });
+      })(names.slice(i, i + DELETE_BATCH));
+    }
+    chain.then(function () {
+      setStatus('已刪除 ' + deleted + ' 張' + (failed ? '，另有 ' + failed + ' 張刪除失敗' : '') + '。', failed > 0);
+    }).catch(reportFailure).then(function () { setBusy(false); });
+  }
+
+  $('login-form').addEventListener('submit', function (event) {
+    event.preventDefault();
+    var value = $('token').value.trim();
+    if (!value) { return; }
+    saveToken(value);
+    showApp();
+    load(true);
+  });
+  $('filters').addEventListener('submit', function (event) {
+    event.preventDefault();
+    load(true);
+  });
+  $('more').addEventListener('click', function () { load(false); });
+  $('select-all').addEventListener('click', function () {
+    cards.forEach(function (card, name) { select(name, true); });
+  });
+  $('clear').addEventListener('click', function () {
+    Array.from(selected).forEach(function (name) { select(name, false); });
+  });
+  $('delete').addEventListener('click', deleteSelected);
+  $('logout').addEventListener('click', function () {
+    clearToken();
+    clearGrid();
+    showLogin('');
+  });
+
+  updateSelection();
+  if (readToken()) {
+    showApp();
+    load(true);
+  } else {
+    showLogin('');
+  }
+})();
+</script>
+</body>
+</html>

@@ -15,6 +15,8 @@
 
 `/actuator/health/liveness` 只代表程序存活；`/actuator/health/readiness` 會檢查 LINE 設定、MongoDB、MinIO、OCR 與 OpenRouter 設定。必要依賴失敗時回 `DOWN`/HTTP 503；MinIO 或 OCR 等 optional dependency 失敗時回 `DEGRADED`/HTTP 200，因此不會造成部署 rollback。回應只公開 component status，不公開 details。
 
+Image 預設 `JAVA_TOOL_OPTIONS=-XX:MaxRAMPercentage=75.0 -XX:+ExitOnOutOfMemoryError`：heap 上限依容器記憶體（未設 `--memory` 時為主機記憶體）計算，OOM 時程序直接結束並由 `--restart unless-stopped` 重啟；與 MongoDB/MinIO 共用小主機時，可用 Actions Variable `JAVA_TOOL_OPTIONS` 改成固定 `-Xmx`。
+
 ## 測試與 quality gate
 
 `./mvnw clean verify -B` 是 PR 與 `master` 的必要 gate：
@@ -51,7 +53,8 @@ Self-hosted runner 必須：
 依功能設定：
 
 - `OCR_ENABLED`
-- `ADMIN_USERS`
+- `ADMIN_USERS`：管理員清單的 bootstrap seed。管理員以 `/admin add`、`/admin remove` 變更後，清單保存於 MongoDB `runtime_settings`；清單一旦保存，修改此環境變數不會覆蓋它
+- `ADMIN_WEB_TOKEN`，啟用 `/admin/images` 圖片管理頁時才需要
 - `MINIO_ENDPOINT`、`MINIO_ACCESS_KEY`、`MINIO_SECRET_KEY`、`MINIO_BUCKET_NAME`
 - `DWZ_API_TOKEN`，當管理員啟用木雷短網址時必要
 - `LANGUAGE_DETECTION_USE_AI`、`LANGUAGE_DETECTION_DEFAULT_CHINESE`
@@ -80,6 +83,7 @@ Secrets 只作為容器環境變數傳入，不會寫入 image、Repository 或 
 | `CONTAINER_NAME` | `linebot-translator` | 正式容器名稱 |
 | `DOCKER_NETWORK` | `host` | 與既有 MongoDB/MinIO 相容的 Docker network |
 | `IMAGE_PROXY_PUBLIC_BASE_URL` | 選填 | 需要獨立 preview proxy 時才設；留空時直接使用 MinIO/木雷 URL 傳送 LINE 圖片。 |
+| `IMAGE_PROXY_CONTENT_CACHE_MAX_BYTES` | `67108864` | `/i/{token}` proxy 快取保留的 original + preview 位元組上限（64 MiB）；取代已不再生效的 `IMAGE_PROXY_CONTENT_CACHE_ENTRIES`。 |
 | `DWZ_API_BASE_URL` | 短網址啟用時必填 | 木雷 API base。host network 可用固定 loopback port；也可用公開 HTTPS domain。 |
 | `DWZ_SHORT_DOMAIN` | 選填 | 指定木雷短域名；留空使用木雷預設 domain。 |
 | `DWZ_WORKSPACE_ID` | 選填 | 木雷 workspace ID。 |
@@ -87,6 +91,7 @@ Secrets 只作為容器環境變數傳入，不會寫入 image、Repository 或 
 | `SERVER_PORT` | `4040` | 容器內服務 port |
 | `HOST_PORT` | `4040` | 非 host network 時的宿主機 port |
 | `HEALTH_TIMEOUT_SECONDS` | `120` | 等待 readiness 的最長秒數 |
+| `JAVA_TOOL_OPTIONS` | `-XX:MaxRAMPercentage=75.0 -XX:+ExitOnOutOfMemoryError` | 容器 JVM 參數；覆寫時應保留 heap 上限與 OOM 結束設定 |
 | `OPEN_ROUTE_MODEL_NAME` | `openai/gpt-4o-mini` | OpenRouter 全域預設模型 slug |
 | `OPEN_ROUTE_API_URL` | `https://openrouter.ai/api/v1` | OpenRouter API base URL |
 | `TRANSLATION_ACTION_CLAIM_LEASE` | `PT5M` | 翻譯 action claim 處理中的租約；逾期仍未完成時由下一次點擊原子接手重試，需長於一次翻譯的最長耗時 |
@@ -95,12 +100,23 @@ Secrets 只作為容器環境變數傳入，不會寫入 image、Repository 或 
 | `MONGODB_SERVER_SELECTION_TIMEOUT_MS` | `3000` | 每次操作等待可用 Mongo 節點的上限 |
 | `MONGODB_HEARTBEAT_FREQUENCY_MS` | `5000` | Mongo background topology recheck 間隔 |
 | `MONGODB_MIN_HEARTBEAT_FREQUENCY_MS` | `500` | Mongo background recheck 的最小間隔 |
+| `TRANSLATION_RECORD_RETENTION` | `P90D` | `translation_records` 保留期（ISO-8601 duration）。設為 `PT0S` 停用；GitHub 變數留空會回到預設值。 |
+| `TRANSLATION_ACTION_CLAIM_RETENTION` | `P7D` | `translation_action_claims` 保留期；超過後同一按鈕再次點擊會視為新操作。 |
+| `AI_USAGE_EVENT_RETENTION` | `P730D` | `ai_usage_events` 保留期，約 24 個月；用量與成本報表只涵蓋仍保留的事件。 |
 | `MINIO_ENABLED` | `true` | 是否啟用 optional MinIO 圖片儲存 |
 | `MINIO_RETRY_INTERVAL_MS` | `30000` | MinIO outage 後再次 probe 的間隔 |
 | `MINIO_CONNECT_TIMEOUT_MS` | `3000` | MinIO 連線 timeout |
 | `MINIO_WRITE_TIMEOUT_MS` | `5000` | MinIO 上傳 timeout |
 | `MINIO_READ_TIMEOUT_MS` | `5000` | MinIO API 讀取 timeout |
+| `LINE_PUSH_FALLBACK_ENABLED` | `true` | reply token 過期時是否改用 push 傳送答案；push 消耗官方帳號每月訊息額度，reply 不消耗 |
+| `LINE_PUSH_FALLBACK_DAILY_LIMIT` | `100` | 每日（UTC+8）最多備援 push 次數，重啟後歸零；可用 `/admin quota` 查看額度與今日用量 |
 | `GOOGLE_VISION_TIMEOUT_MS` | `60000` | 單次 Google Vision OCR 呼叫（含重試）的總時間上限 |
+
+### MongoDB 資料保留
+
+應用程式啟動完成後，`RetentionIndexInitializer` 為 `translation_records`（索引 `translation_record_created_at`）、`translation_action_claims`（`translation_action_claim_ttl`）與 `ai_usage_events`（`ai_usage_event_ttl`）建立或更新 TTL index，重複啟動不會改變結果；MongoDB 約每分鐘清除一次過期文件。已存在的同鍵非 TTL 索引（例如統計查詢索引）在 MongoDB 5.1 以上以 `collMod` 就地轉為 TTL，較舊版本會改為刪除後重建；CI 使用 `mongo:7`。
+
+保留期設為 `PT0S`（環境變數留空亦同）只代表不再建立或更新索引，已建立的 TTL index 不會被移除，需要時請手動 `dropIndex`。數值無法解析或建立失敗只記錄 WARN，不影響啟動。`webhook_event_receipts` 沿用 `WEBHOOK_RECEIPT_TTL`；`user_profiles` 與 `runtime_settings` 不設保留期。
 
 ### 同機木雷連線
 
@@ -121,6 +137,10 @@ Translate production 預設使用 `DOCKER_NETWORK=host`，因此不能用 `dwz-s
 
 木雷需先在後台建立 Bearer API Token。`DWZ_SHORT_DOMAIN` 可留空使用預設
 domain。啟用指令：`/admin config short-url on`；停用使用 `off`。
+
+## 圖片管理頁
+
+使用者原圖會永久保留在 MinIO，不會自動刪除。設定 Secret `ADMIN_WEB_TOKEN`（建議 `openssl rand -hex 32`）後，開啟 `https://<host>/admin/images`，在登入欄輸入該 token（只存在該分頁的 `sessionStorage`，不會出現在 URL），即可依類型與日期篩選、預覽並批次刪除圖片。所有 `/admin/images/api/*` 請求都必須帶 `Authorization: Bearer <token>`，錯誤時回 `401`；頁面本身只是不含任何資料的靜態外殼（瀏覽器導覽無法附加 Authorization header），因此不需要 token。未設定或留空時不會註冊任何 `/admin/images` 路由（回 `404`）。更換 token 需重新部署；請經由 HTTPS reverse proxy 對外提供，並避免把 token 貼進 Issue、PR 或日誌。
 
 ## 手動部署
 

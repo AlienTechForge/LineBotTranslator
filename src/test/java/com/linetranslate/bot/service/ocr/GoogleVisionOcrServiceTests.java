@@ -3,6 +3,8 @@ package com.linetranslate.bot.service.ocr;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 import java.io.ByteArrayInputStream;
@@ -139,6 +141,52 @@ class GoogleVisionOcrServiceTests {
             assertThat(region.compactLabel()).isTrue();
             assertThat(region.confidenceKnown()).isTrue();
         });
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void imageWithoutTextCostsOneDocumentRequest() {
+        ImageAnnotatorClient client = mock(ImageAnnotatorClient.class);
+        ObjectProvider<ImageAnnotatorClient> provider = mock(ObjectProvider.class);
+        when(provider.getIfAvailable()).thenReturn(client);
+        when(client.batchAnnotateImages(anyList())).thenReturn(BatchAnnotateImagesResponse.newBuilder()
+                .addResponses(AnnotateImageResponse.getDefaultInstance()).build());
+
+        OcrRecognition recognition = new GoogleVisionOcrService(provider)
+                .recognize(new ByteArrayInputStream(new byte[] {1}));
+
+        assertThat(recognition.text()).isEmpty();
+        assertThat(recognition.regions()).isEmpty();
+        assertSingleDocumentRequest(client);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void textWithoutParagraphRegionsComesBackPlainFromTheSameRequest() {
+        ImageAnnotatorClient client = mock(ImageAnnotatorClient.class);
+        ObjectProvider<ImageAnnotatorClient> provider = mock(ObjectProvider.class);
+        when(provider.getIfAvailable()).thenReturn(client);
+        when(client.batchAnnotateImages(anyList())).thenReturn(BatchAnnotateImagesResponse.newBuilder()
+                .addResponses(AnnotateImageResponse.newBuilder()
+                        .setFullTextAnnotation(TextAnnotation.newBuilder().setText("SALE 50%\n")))
+                .build());
+
+        OcrRecognition recognition = new GoogleVisionOcrService(provider)
+                .recognize(new ByteArrayInputStream(new byte[] {1}));
+
+        assertThat(recognition.text()).isEqualTo("SALE 50%");
+        assertThat(recognition.regions()).isEmpty();
+        assertSingleDocumentRequest(client);
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static void assertSingleDocumentRequest(ImageAnnotatorClient client) {
+        org.mockito.ArgumentCaptor<List<com.google.cloud.vision.v1.AnnotateImageRequest>> request =
+                (org.mockito.ArgumentCaptor) org.mockito.ArgumentCaptor.forClass(List.class);
+        verify(client).batchAnnotateImages(request.capture());
+        verifyNoMoreInteractions(client);
+        assertThat(request.getValue().get(0).getFeatures(0).getType())
+                .isEqualTo(Feature.Type.DOCUMENT_TEXT_DETECTION);
     }
 
     @Test

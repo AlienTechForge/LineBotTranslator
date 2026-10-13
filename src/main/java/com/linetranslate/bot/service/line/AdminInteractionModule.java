@@ -3,6 +3,7 @@ package com.linetranslate.bot.service.line;
 import java.util.List;
 import java.util.Map;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import com.linecorp.bot.messaging.model.Message;
@@ -11,6 +12,7 @@ import com.linetranslate.bot.service.AdminService;
 import com.linetranslate.bot.service.BroadcastResult;
 import com.linetranslate.bot.service.ai.AiModelPage;
 import com.linetranslate.bot.service.line.intent.AdminIntent;
+import com.linetranslate.bot.service.webhook.PushFallbackModule;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -24,10 +26,21 @@ public class AdminInteractionModule {
 
     private final AdminService adminService;
     private final AdminCardRenderer renderer;
+    private final PushFallbackModule pushFallback;
 
-    public AdminInteractionModule(AdminService adminService, AdminCardRenderer renderer) {
+    @Autowired
+    public AdminInteractionModule(
+            AdminService adminService,
+            AdminCardRenderer renderer,
+            PushFallbackModule pushFallback) {
         this.adminService = adminService;
         this.renderer = renderer;
+        this.pushFallback = pushFallback;
+    }
+
+    /** Compatibility seam for focused tests that do not exercise the push quota command. */
+    public AdminInteractionModule(AdminService adminService, AdminCardRenderer renderer) {
+        this(adminService, renderer, null);
     }
 
     public Message execute(String userId, AdminIntent intent) {
@@ -44,6 +57,7 @@ public class AdminInteractionModule {
             case BROADCAST -> broadcast(userId, intent.value());
             case STATS -> renderer.info("系統統計", adminService.getSystemStats());
             case TODAY -> renderer.info("今日狀態", adminService.getTodayStats());
+            case QUOTA -> pushQuota();
             case USERS -> users(userId);
             case USER -> user(userId, intent.value());
             case NICKNAME -> renderer.info(
@@ -64,6 +78,8 @@ public class AdminInteractionModule {
             case CONFIG_OCR -> configResult(adminService.setOcrEnabled(intent.value(), userId));
             case CONFIG_SHORT_URL -> configResult(
                     adminService.setShortUrlEnabled(intent.value(), userId));
+            case CONFIG_IMAGE_TEXT_REPLY -> configResult(
+                    adminService.setImageTextReplyEnabled(intent.value(), userId));
             case USAGE_CURRENT_MONTH -> renderer.info("本月 API 用量", adminService.getApiUsageStats());
             case USAGE_DAY -> renderer.info("每日 API 用量", adminService.getApiUsageStatsByDay(intent.value()));
             case USAGE_MONTH -> renderer.info(
@@ -75,8 +91,10 @@ public class AdminInteractionModule {
             case USAGE_TYPE -> renderer.info(
                     "內容類型 API 用量", adminService.getApiUsageStatsByContentKind(intent.value()));
             case USAGE_SUMMARY -> renderer.info("API 用量總覽", adminService.getApiUsageSummary());
-            case ADD_ADMIN -> renderer.info("新增管理員", adminService.addAdmin(intent.value()));
-            case REMOVE_ADMIN -> renderer.info("移除管理員", adminService.removeAdmin(intent.value()));
+            case ADD_ADMIN -> renderer.info(
+                    "新增管理員", adminService.addAdmin(intent.value(), userId));
+            case REMOVE_ADMIN -> renderer.info(
+                    "移除管理員", adminService.removeAdmin(intent.value(), userId));
             case UNKNOWN_CONFIG -> renderer.error(
                     "未知的設定命令",
                     "無法識別：" + intent.value() + "\n請使用 /admin config 查看可用指令。");
@@ -106,6 +124,18 @@ public class AdminInteractionModule {
         } catch (Exception exception) {
             log.error("廣播訊息失敗: failure={}", SafeLog.failure(exception));
             return renderer.error("廣播失敗", "廣播訊息未能送出，請稍後再試。");
+        }
+    }
+
+    private Message pushQuota() {
+        if (pushFallback == null) {
+            return renderer.error("推播額度", "此環境未提供推播額度監控。");
+        }
+        try {
+            return renderer.info("推播額度", PushQuotaReport.render(pushFallback.quotaStatus()));
+        } catch (RuntimeException exception) {
+            log.error("取得推播額度失敗: failure={}", SafeLog.failure(exception));
+            return renderer.error("推播額度失敗", "無法取得 LINE 推播額度，請稍後再試。");
         }
     }
 
@@ -173,7 +203,8 @@ public class AdminInteractionModule {
                 + "/admin config lang [lang]\n"
                 + "/admin config model [OpenRouter slug]\n"
                 + "/admin config ocr [on|off]\n"
-                + "/admin config short-url [on|off]";
+                + "/admin config short-url [on|off]\n"
+                + "/admin config image-text [on|off]";
     }
 
     private Message models(String query) {

@@ -108,6 +108,27 @@ class CiQualityGateContractTests {
     }
 
     @Test
+    void deploymentPassesImageProxyAndJvmMemoryBoundsIntoTheRuntimeContainer() throws IOException {
+        String workflow = Files.readString(Path.of(".github", "workflows", "ci-cd.yml"));
+        String deployScript = Files.readString(Path.of("scripts", "deploy.sh"));
+        String dockerfile = Files.readString(Path.of("Dockerfile"));
+
+        assertThat(workflow)
+                .contains("IMAGE_PROXY_CONTENT_CACHE_MAX_BYTES: "
+                        + "${{ vars.IMAGE_PROXY_CONTENT_CACHE_MAX_BYTES || '67108864' }}")
+                .contains("JAVA_TOOL_OPTIONS: ${{ vars.JAVA_TOOL_OPTIONS || "
+                        + "'-XX:MaxRAMPercentage=75.0 -XX:+ExitOnOutOfMemoryError' }}")
+                .doesNotContain("IMAGE_PROXY_CONTENT_CACHE_ENTRIES");
+        assertThat(deployScript)
+                .contains("IMAGE_PROXY_CONTENT_CACHE_MAX_BYTES")
+                .contains("JAVA_TOOL_OPTIONS")
+                .doesNotContain("IMAGE_PROXY_CONTENT_CACHE_ENTRIES");
+        assertThat(dockerfile)
+                .contains("JAVA_TOOL_OPTIONS=\"-XX:MaxRAMPercentage=75.0 -XX:+ExitOnOutOfMemoryError\"")
+                .contains("ENTRYPOINT [\"java\", \"-jar\", \"/app/app.jar\"]");
+    }
+
+    @Test
     void deploymentPassesBoundedVisionTimeoutIntoTheRuntimeContainer() throws IOException {
         String workflow = Files.readString(Path.of(".github", "workflows", "ci-cd.yml"));
         String deployScript = Files.readString(Path.of("scripts", "deploy.sh"));
@@ -115,6 +136,19 @@ class CiQualityGateContractTests {
         assertThat(workflow)
                 .contains("GOOGLE_VISION_TIMEOUT_MS: ${{ vars.GOOGLE_VISION_TIMEOUT_MS || '60000' }}");
         assertThat(deployScript).contains("GOOGLE_VISION_TIMEOUT_MS");
+    }
+
+    @Test
+    void deploymentPassesPushFallbackPolicyIntoTheRuntimeContainer() throws IOException {
+        String workflow = Files.readString(Path.of(".github", "workflows", "ci-cd.yml"));
+        String deployScript = Files.readString(Path.of("scripts", "deploy.sh"));
+
+        assertThat(workflow)
+                .contains("LINE_PUSH_FALLBACK_ENABLED: ${{ vars.LINE_PUSH_FALLBACK_ENABLED || 'true' }}")
+                .contains("LINE_PUSH_FALLBACK_DAILY_LIMIT: ${{ vars.LINE_PUSH_FALLBACK_DAILY_LIMIT || '100' }}");
+        assertThat(deployScript)
+                .contains("LINE_PUSH_FALLBACK_ENABLED")
+                .contains("LINE_PUSH_FALLBACK_DAILY_LIMIT");
     }
 
     @Test

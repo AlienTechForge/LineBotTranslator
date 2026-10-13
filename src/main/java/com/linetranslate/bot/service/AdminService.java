@@ -54,6 +54,7 @@ public class AdminService {
 
     private static final ZoneId REPORTING_ZONE = ZoneId.of("Asia/Taipei");
 
+    // 部署時的管理員清單，只作為 bootstrap seed；管理員透過指令做的變更保存在 runtime settings
     @Value("${admin.users:}")
     private List<String> adminUsers;
     
@@ -120,7 +121,7 @@ public class AdminService {
      * @return 是否是管理員
      */
     public boolean isAdmin(String userId) {
-        return adminUsers.contains(userId);
+        return userId != null && effectiveAdminUsers().contains(userId);
     }
     
     /**
@@ -129,16 +130,43 @@ public class AdminService {
      * @return 管理員用戶列表
      */
     public List<String> getAdminUsers() {
-        return adminUsers;
+        return effectiveAdminUsers();
+    }
+
+    /**
+     * 有效的管理員清單：已保存的清單非空時使用它，否則使用部署設定的 seed。
+     */
+    private List<String> effectiveAdminUsers() {
+        return adminUsersFrom(runtimeSettingsModule.current());
+    }
+
+    private List<String> adminUsersFrom(RuntimeSettings settings) {
+        List<String> persisted = settings.adminUserIds();
+        return persisted.isEmpty() ? RuntimeSettings.normalizeAdminUserIds(adminUsers) : persisted;
+    }
+
+    /** 保存管理員清單；成功回傳 null，失敗回傳可直接顯示的錯誤訊息。 */
+    private String saveAdminUsers(List<String> updatedAdmins, String operatorId, String failurePrefix) {
+        try {
+            runtimeSettingsModule.updateAdminUserIds(updatedAdmins, operatorId);
+            return null;
+        } catch (InvalidRuntimeSettingException failure) {
+            log.warn("管理員清單未通過驗證: failure={}", SafeLog.failure(failure));
+            return failurePrefix + "無效的用戶 ID 或操作者";
+        } catch (RuntimeSettingsPersistenceException failure) {
+            log.error("持久化管理員清單失敗: failure={}", SafeLog.failure(failure));
+            return failurePrefix + "設置未能保存，請稍後再試";
+        }
     }
     
     /**
      * 添加管理員
      *
      * @param userId 要添加為管理員的用戶 ID
+     * @param operatorId 執行此操作的管理員用戶 ID
      * @return 操作結果訊息
      */
-    public String addAdmin(String userId) {
+    public synchronized String addAdmin(String userId, String operatorId) {
         log.info("嘗試添加管理員: user={}", SafeLog.user(userId));
         
         // 檢查用戶 ID 是否有效
@@ -149,13 +177,19 @@ public class AdminService {
         }
         
         // 檢查用戶是否已經是管理員
-        if (adminUsers.contains(userId)) {
+        List<String> admins = effectiveAdminUsers();
+        if (admins.contains(userId)) {
             log.info("用戶已經是管理員: user={}", SafeLog.user(userId));
             return "用戶 " + userId + " 已經是管理員";
         }
         
-        // 添加到管理員列表
-        adminUsers.add(userId);
+        // 添加到管理員列表並保存（首次保存時會一併帶入部署 seed）
+        List<String> updatedAdmins = new ArrayList<>(admins);
+        updatedAdmins.add(userId);
+        String failure = saveAdminUsers(updatedAdmins, operatorId, "添加管理員失敗：");
+        if (failure != null) {
+            return failure;
+        }
         log.info("成功添加管理員: user={}", SafeLog.user(userId));
         
         UserProfile user = userOpt.get();
@@ -168,9 +202,10 @@ public class AdminService {
      * 移除管理員
      *
      * @param userId 要移除管理員權限的用戶 ID
+     * @param operatorId 執行此操作的管理員用戶 ID
      * @return 操作結果訊息
      */
-    public String removeAdmin(String userId) {
+    public synchronized String removeAdmin(String userId, String operatorId) {
         log.info("嘗試移除管理員: user={}", SafeLog.user(userId));
         
         // 檢查用戶 ID 是否有效
@@ -181,19 +216,25 @@ public class AdminService {
         }
         
         // 檢查用戶是否為管理員
-        if (!adminUsers.contains(userId)) {
+        List<String> admins = effectiveAdminUsers();
+        if (!admins.contains(userId)) {
             log.info("用戶不是管理員: user={}", SafeLog.user(userId));
             return "用戶 " + userId + " 不是管理員";
         }
         
         // 檢查是否為最後一個管理員
-        if (adminUsers.size() <= 1) {
+        if (admins.size() <= 1) {
             log.warn("無法移除最後一個管理員");
             return "移除管理員失敗：無法移除最後一個管理員";
         }
         
-        // 從管理員列表中移除
-        adminUsers.remove(userId);
+        // 從管理員列表中移除並保存
+        List<String> updatedAdmins = new ArrayList<>(admins);
+        updatedAdmins.remove(userId);
+        String failure = saveAdminUsers(updatedAdmins, operatorId, "移除管理員失敗：");
+        if (failure != null) {
+            return failure;
+        }
         log.info("成功移除管理員: user={}", SafeLog.user(userId));
         
         UserProfile user = userOpt.get();
@@ -454,6 +495,9 @@ public class AdminService {
         configBuilder.append("• OCR 功能: ").append(runtime.ocrEnabled() ? "已啟用" : "已禁用").append("\n\n");
         configBuilder.append("• 圖片短網址直接輸出: ")
                 .append(runtime.shortUrlEnabled() ? "已啟用" : "已禁用")
+                .append("\n");
+        configBuilder.append("• 圖片翻譯附帶文字譯文: ")
+                .append(runtime.imageTextReplyEnabled() ? "已啟用" : "已禁用")
                 .append("\n\n");
         
         configBuilder.append("【OpenRouter 設定】\n");
@@ -464,10 +508,11 @@ public class AdminService {
         
         // 管理員設定
         configBuilder.append("【管理員設定】\n");
-        configBuilder.append("• 管理員數量: ").append(adminUsers.size()).append("\n");
+        List<String> admins = adminUsersFrom(runtime);
+        configBuilder.append("• 管理員數量: ").append(admins.size()).append("\n");
         configBuilder.append("• 管理員列表: \n");
         
-        for (String adminId : adminUsers) {
+        for (String adminId : admins) {
             Optional<UserProfile> userOpt = userProfileRepository.findByUserId(adminId);
             String displayName = userOpt.map(UserProfile::getDisplayName).orElse("未知用戶");
             configBuilder.append("  - ").append(displayName).append(" (ID: ").append(adminId).append(")\n");
@@ -549,6 +594,20 @@ public class AdminService {
             return "❌ 無效的設定值，請使用 on 或 off";
         } catch (RuntimeSettingsPersistenceException failure) {
             log.error("持久化短網址設定失敗: failure={}", SafeLog.failure(failure));
+            return "❌ 設置未能保存，請稍後再試";
+        }
+    }
+
+    public String setImageTextReplyEnabled(String enabled, String operatorId) {
+        try {
+            RuntimeSettings updated = runtimeSettingsModule.update(
+                    RuntimeSettingKey.IMAGE_TEXT_REPLY_ENABLED, enabled, operatorId);
+            return "✅ 已" + (updated.imageTextReplyEnabled() ? "啟用" : "禁用")
+                    + "圖片翻譯附帶文字譯文";
+        } catch (InvalidRuntimeSettingException failure) {
+            return "❌ 無效的設定值，請使用 on 或 off";
+        } catch (RuntimeSettingsPersistenceException failure) {
+            log.error("持久化圖片文字譯文設定失敗: failure={}", SafeLog.failure(failure));
             return "❌ 設置未能保存，請稍後再試";
         }
     }
