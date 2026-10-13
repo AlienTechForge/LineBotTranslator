@@ -209,6 +209,21 @@ class AdminInteractionModuleTests {
         assertThat(module.execute("admin", broadcast("系統通知"))).isSameAs(card);
     }
 
+    @Test
+    void interruptedBroadcastReportsHowFarItGotAndThatTheRestIsNotRetried() {
+        Message card = new TextMessage("interrupted");
+        when(adminService.isAdmin("admin")).thenReturn(true);
+        when(adminService.broadcastMessage("系統通知"))
+                .thenReturn(new BroadcastResult(1, 1, 0, false, 2));
+        when(renderer.error(
+                "廣播中斷",
+                "廣播已中斷，未處理的用戶不會自動重送。\n"
+                        + "已送達 1 位，失敗 0 位，未處理 2 位（共 3 位）。\n\n系統通知"))
+                .thenReturn(card);
+
+        assertThat(module.execute("admin", broadcast("系統通知"))).isSameAs(card);
+    }
+
     private static AdminIntent broadcast(String message) {
         return AdminIntent.action(AdminIntent.Action.BROADCAST, message, "");
     }
