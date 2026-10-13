@@ -356,14 +356,22 @@ public class OcrRegionSegmenter {
     /**
      * Splits a top-to-bottom paragraph into one region per item. Columns come first, then each
      * column is cut at its vertical gaps so a run of characters forming one label stays together.
+     *
+     * <p>Children are emitted in reading order, and that order is what the translation request and
+     * the plain-text reply follow. Vertical CJK is read from the rightmost column to the leftmost,
+     * while Latin stacked in a column keeps the left-to-right order of the page. The suffix counts
+     * columns in the emitted order, so ids stay unique and follow the order they were emitted in.
      */
     private static List<OcrRegion> splitVerticalColumns(
             OcrRegion region, LocalFrame frame, List<WordBox> readingOrder) {
         List<VisualColumn> columns = visualColumns(readingOrder);
         if (columns.size() < 2) return List.of();
+        boolean rightToLeft = isMostlyCjk(readingOrder);
         Rectangle paragraph = frame.bounds();
         List<OcrRegion> children = new ArrayList<>();
-        for (int columnIndex = 0; columnIndex < columns.size(); columnIndex++) {
+        for (int position = 0; position < columns.size(); position++) {
+            // columnIndex is the visual position, which is what the cell bounds depend on.
+            int columnIndex = rightToLeft ? columns.size() - 1 - position : position;
             VisualColumn column = columns.get(columnIndex);
             int left = columnIndex == 0
                     ? paragraph.x
@@ -380,12 +388,38 @@ public class OcrRegionSegmenter {
                 int bottom = itemIndex == items.size() - 1
                         ? paragraph.y + paragraph.height
                         : midpoint(item.bottom(), items.get(itemIndex + 1).top());
-                children.add(child(region, frame, ".v" + (columnIndex + 1) + "." + (itemIndex + 1),
+                children.add(child(region, frame, ".v" + (position + 1) + "." + (itemIndex + 1),
                         item.words(), left, top, right, bottom, false));
             }
         }
         return children.size() < 2 || children.size() > MAX_DENSE_CHILDREN
                 ? List.of() : List.copyOf(children);
+    }
+
+    /**
+     * Whether a strict majority of the paragraph's letters are CJK, judged over all of its words.
+     * Common-script letters such as the prolonged sound mark in katakana are not evidence for
+     * either script, so they are left out of the count. A tie, or text with no letters at all,
+     * is not mostly CJK and keeps the page's left-to-right order.
+     */
+    private static boolean isMostlyCjk(List<WordBox> boxes) {
+        long cjk = 0;
+        long letters = 0;
+        for (WordBox box : boxes) {
+            for (int codePoint : box.word().text().codePoints().toArray()) {
+                if (!Character.isLetter(codePoint)) continue;
+                Character.UnicodeScript script = Character.UnicodeScript.of(codePoint);
+                if (script == Character.UnicodeScript.COMMON
+                        || script == Character.UnicodeScript.INHERITED) continue;
+                letters++;
+                if (script == Character.UnicodeScript.HAN
+                        || script == Character.UnicodeScript.HIRAGANA
+                        || script == Character.UnicodeScript.KATAKANA
+                        || script == Character.UnicodeScript.HANGUL
+                        || script == Character.UnicodeScript.BOPOMOFO) cjk++;
+            }
+        }
+        return letters > 0 && cjk * 2 > letters;
     }
 
     private static List<WordSegment> verticalSegments(VisualColumn column) {

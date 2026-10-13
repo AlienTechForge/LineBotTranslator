@@ -500,6 +500,52 @@ class ImageTranslationPipelineIntegrationTests {
                         org.assertj.core.groups.Tuple.tuple("date", false));
     }
 
+    @Test
+    void verticalCjkColumnsReachTheCodecAndTheWorkflowRightToLeft() throws Exception {
+        image("message-vertical", png(120, 210), "image/png");
+        when(minioStorageService.uploadImage(any(byte[].class), anyString()))
+                .thenReturn(ImageStorageResult.notStored());
+        // Vision lists the left column first; the segmenter has to turn that into reading order.
+        List<OcrWord> words = List.of(
+                glyph("澎", 10, 10), glyph("湃", 10, 34), glyph("飯", 10, 58),
+                glyph("風", 10, 110), glyph("味", 10, 134), glyph("飯", 10, 158),
+                glyph("香", 60, 10), glyph("酥", 60, 34), glyph("飯", 60, 58),
+                glyph("經", 60, 110), glyph("典", 60, 134), glyph("飯", 60, 158));
+        OcrRegion card = new OcrRegion("card", "澎湃飯 風味飯 香酥飯 經典飯", List.of(
+                new OcrPoint(5, 5), new OcrPoint(95, 5), new OcrPoint(95, 190), new OcrPoint(5, 190)),
+                words, .98f, true, OcrBlockType.TEXT, List.of(new OcrDetectedLanguage("zh", .98f)), 0);
+        when(ocrService.recognizeRegions(any(InputStream.class)))
+                .thenReturn(new OcrRegionSegmenter().segment(List.of(card)));
+        when(workflowModule.execute(any())).thenReturn(success("香酥飯", "stub"));
+
+        pipeline.execute(request("message-vertical"));
+
+        ArgumentCaptor<TranslationWorkflowRequest> workflow =
+                ArgumentCaptor.forClass(TranslationWorkflowRequest.class);
+        verify(workflowModule).execute(workflow.capture());
+        assertThat(workflow.getValue().sourceText()).isEqualTo("香酥飯\n經典飯\n澎湃飯\n風味飯");
+        var regions = workflow.getValue().imageRegions();
+        assertThat(regions).extracting(
+                com.linetranslate.bot.service.translation.ImageRegionTranslationInput::regionId)
+                .containsExactly("card.v1.1", "card.v1.2", "card.v2.1", "card.v2.2");
+        assertThat(regions).extracting(
+                com.linetranslate.bot.service.translation.ImageRegionTranslationInput::readingOrder)
+                .containsExactly(0, 1, 2, 3);
+        // The request the model receives lists the regions in the same order.
+        var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        var wire = mapper.readTree(
+                new com.linetranslate.bot.service.translation.StructuredImageTranslationCodec(mapper)
+                        .encode(regions, "en", false));
+        assertThat(wire.get("regions")).extracting(node -> node.get("sourceText").asText())
+                .containsExactly("香酥飯", "經典飯", "澎湃飯", "風味飯");
+    }
+
+    private static OcrWord glyph(String text, int x, int y) {
+        return new OcrWord(text, List.of(
+                new OcrPoint(x, y), new OcrPoint(x + 22, y),
+                new OcrPoint(x + 22, y + 22), new OcrPoint(x, y + 22)), .98f, true);
+    }
+
     private TrackingInputStream image(String messageId, byte[] bytes) throws Exception {
         return image(messageId, bytes, null);
     }
