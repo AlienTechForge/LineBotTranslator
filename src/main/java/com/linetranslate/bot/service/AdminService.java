@@ -205,60 +205,42 @@ public class AdminService {
      * 向所有用戶廣播消息
      * 
      * @param message 消息內容
-     * @return 發送成功的用戶數量
+     * @return 嘗試、送達與失敗的用戶數；測試模式下模擬發送計為送達
      */
-    public int broadcastMessage(String message) {
-        log.info("開始廣播消息: content={}", SafeLog.content(message));
-        log.info("廣播測試模式: {}", broadcastTestMode ? "已啟用" : "未啟用");
-        
+    public BroadcastResult broadcastMessage(String message) {
         // 獲取所有用戶
         List<UserProfile> allUsers = userProfileRepository.findAll();
-        log.info("總用戶數: {}", allUsers.size());
-        
-        // 只輸出不可逆的使用者指紋與顯示名稱長度
-        log.info("所有用戶列表：");
-        for (UserProfile user : allUsers) {
-            log.info("- user={}, displayName={}",
-                    SafeLog.user(user.getUserId()), SafeLog.content(user.getDisplayName()));
-        }
-        
+
         // 過濾掉無效的用戶 ID
         List<UserProfile> validUsers = allUsers.stream()
                 .filter(user -> user.getUserId() != null && !user.getUserId().isEmpty())
                 .collect(Collectors.toList());
-        log.info("有效用戶數: {}", validUsers.size());
-        
-        int successCount = 0;
+
+        int sentCount = 0;
+        int failedCount = 0;
         TextMessage textMessage = new TextMessage(message);
-        
+
         for (UserProfile user : validUsers) {
             try {
-                log.info("嘗試發送廣播消息: user={}, displayName={}",
-                        SafeLog.user(user.getUserId()), SafeLog.content(user.getDisplayName()));
-                
-                if (broadcastTestMode) {
-                    // 測試模式，不實際發送消息
-                    log.info("測試模式啟用，模擬廣播成功: user={}", SafeLog.user(user.getUserId()));
-                    successCount++;
-                } else {
-                    // 使用 LINE Messaging API 實際發送消息
+                if (!broadcastTestMode) {
+                    // 使用 LINE Messaging API 實際發送消息；測試模式不實際發送
                     PushMessageRequest pushMessage = new PushMessageRequest.Builder(
                             user.getUserId(), List.of(textMessage))
                             .notificationDisabled(false)
                             .build();
                     messagingApiClient.pushMessage(UUID.randomUUID(), pushMessage).get();
-                    log.info("廣播消息發送成功: user={}", SafeLog.user(user.getUserId()));
-                    successCount++;
                 }
+                sentCount++;
             } catch (Exception e) {
-                log.error("廣播消息發送失敗: user={}, failure={}",
+                failedCount++;
+                log.warn("廣播消息發送失敗: user={}, failure={}",
                         SafeLog.user(user.getUserId()), SafeLog.failure(e));
             }
         }
-        
-        // 返回實際的用戶數量
-        log.info("廣播消息完成，成功發送給 {} 個用戶，共 {} 個有效用戶", successCount, validUsers.size());
-        return validUsers.size(); // 返回有效用戶數，而不是成功發送數
+
+        log.info("廣播消息完成: testMode={}, attempted={}, sent={}, failed={}",
+                broadcastTestMode, validUsers.size(), sentCount, failedCount);
+        return new BroadcastResult(validUsers.size(), sentCount, failedCount, broadcastTestMode);
     }
     
     /**
