@@ -94,7 +94,6 @@ class OverlayWordWrapTests {
                 "洗髮剪髮頭皮隔離染髮日本三劑式結構護髮",
                 "他說：「你好……」——然後離開了。",
                 "コーヒー・ラテ（特製）をどうぞ。",
-                "한국어포장지설명서",
                 "第一段\n第二段文字\r\n\n第三段");
 
         for (String sample : samples) {
@@ -103,6 +102,86 @@ class OverlayWordWrapTests {
                         .as("%s at width=%s", sample, width)
                         .isEqualTo(legacyWrap(sample, metrics, width));
             }
+        }
+    }
+
+    @Test
+    void koreanWordMovesToTheNextLineWholeInsteadOfSplittingBetweenSyllables() {
+        String text = "안녕하세요 반갑습니다";
+        int width = metrics.stringWidth("안녕하세요 반갑");
+
+        assertThat(legacyWrap(text, metrics, width))
+                .as("the per-glyph wrap this replaces")
+                .containsExactly("안녕하세요 반갑", "습니다");
+        assertThat(wrap(text, width)).containsExactly("안녕하세요", "반갑습니다");
+    }
+
+    @Test
+    void koreanSentenceBreaksOnlyAtSpacesAndFillsEachLineGreedily() {
+        String sentence = "샴푸 커트 두피 격리 염색 일본 삼제식 구조 케어 남양 그린 카레 치킨 라이스";
+        List<String> words = Arrays.asList(sentence.split(" "));
+        int widest = words.stream().mapToInt(metrics::stringWidth).max().orElseThrow();
+
+        for (int width = widest; width <= metrics.stringWidth(sentence) + 1; width++) {
+            int limit = width;
+            List<String> lines = wrap(sentence, limit);
+
+            assertThat(lines).as("width=%s", limit).allSatisfy(line -> {
+                assertThat(line).isEqualTo(line.strip());
+                assertThat(metrics.stringWidth(line)).isLessThanOrEqualTo(limit);
+            });
+            assertThat(lines.stream().flatMap(line -> Arrays.stream(line.split(" "))).toList())
+                    .as("every word stays whole at width=%s: %s", limit, lines)
+                    .isEqualTo(words);
+            for (int index = 0; index + 1 < lines.size(); index++) {
+                String nextWord = lines.get(index + 1).split(" ")[0];
+                assertThat(metrics.stringWidth(lines.get(index) + " " + nextWord))
+                        .as("line %s could have taken '%s' at width=%s", index, nextWord, limit)
+                        .isGreaterThan(limit);
+            }
+        }
+    }
+
+    @Test
+    void koreanWordKeepsItsAttachedPunctuationAndHyphensAreNotBreakPoints() {
+        String punctuated = "안녕하세요, 반갑습니다!";
+        int width = metrics.stringWidth("안녕하세요, 반갑");
+        assertThat(legacyWrap(punctuated, metrics, width))
+                .containsExactly("안녕하세요, 반갑", "습니다!");
+        assertThat(wrap(punctuated, width)).containsExactly("안녕하세요,", "반갑습니다!");
+
+        String hyphenated = "한국어-영어 사전";
+        width = metrics.stringWidth("한국어-영어 사");
+        assertThat(legacyWrap(hyphenated, metrics, width)).containsExactly("한국어-영어 사", "전");
+        assertThat(wrap(hyphenated, width)).containsExactly("한국어-영어", "사전");
+    }
+
+    @Test
+    void koreanWordWiderThanTheLineStillBreaksBySyllablesAsALastResort() {
+        for (String word : List.of("한국어포장지설명서", "한국어-영어포장지설명서")) {
+            for (int width = 1; width <= metrics.stringWidth(word) + 2; width++) {
+                assertThat(wrap(word, width))
+                        .as("%s at width=%s", word, width)
+                        .isEqualTo(legacyWrap(word, metrics, width));
+            }
+        }
+        int width = metrics.stringWidth("한국어포");
+        List<String> lines = wrap("가 한국어포장지설명서", width);
+        assertThat(lines.get(0)).isEqualTo("가");
+        assertThat(String.join("", lines.subList(1, lines.size())))
+                .isEqualTo("한국어포장지설명서");
+    }
+
+    @Test
+    void hanAndKanaNextToKoreanStillBreakBetweenGlyphs() {
+        for (String text : List.of("한국어漢字", "한국어のテ")) {
+            int width = metrics.stringWidth(text.substring(0, text.length() - 1));
+
+            assertThat(wrap(text, width))
+                    .as("%s at width=%s", text, width)
+                    .containsExactly(text.substring(0, text.length() - 1),
+                            text.substring(text.length() - 1))
+                    .isEqualTo(legacyWrap(text, metrics, width));
         }
     }
 
