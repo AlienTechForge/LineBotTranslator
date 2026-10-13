@@ -79,4 +79,23 @@ class AdminInteractionModuleTests {
 
         verify(adminService).setShortUrlEnabled("on", "admin");
     }
+
+    @Test
+    void administratorMembershipChangesCarryTheActingAdministrator() {
+        Message added = new TextMessage("added");
+        Message removed = new TextMessage("removed");
+        when(adminService.isAdmin("admin")).thenReturn(true);
+        when(adminService.addAdmin("U-new", "admin")).thenReturn("成功添加管理員");
+        when(adminService.removeAdmin("U-old", "admin")).thenReturn("成功移除管理員");
+        when(renderer.info("新增管理員", "成功添加管理員")).thenReturn(added);
+        when(renderer.info("移除管理員", "成功移除管理員")).thenReturn(removed);
+
+        assertThat(module.execute("admin", AdminIntent.action(
+                AdminIntent.Action.ADD_ADMIN, "U-new", ""))).isSameAs(added);
+        assertThat(module.execute("admin", AdminIntent.action(
+                AdminIntent.Action.REMOVE_ADMIN, "U-old", ""))).isSameAs(removed);
+
+        verify(adminService).addAdmin("U-new", "admin");
+        verify(adminService).removeAdmin("U-old", "admin");
+    }
 }

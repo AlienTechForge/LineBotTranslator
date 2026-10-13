@@ -40,7 +40,7 @@
 | **Target Language** | 本次 Translation Request 實際要輸出的語言；可由命令指定或由 User Preferences 推導。 | 不一定等於全域 fallback。 |
 | **User Profile** | MongoDB 中的使用者 identity、LINE profile metadata、活動時間與翻譯計數。 | 不應被當成所有設定規則的 Interface。 |
 | **User Preferences** | `UserPreferencesModule` 對外提供的 immutable effective preferences：target language、中文目標語言、OpenRouter model、預設 Translation Style Preset 與最近語言。 | 不包含 API keys，也不等同原始 `UserProfile` document。 |
-| **Runtime Settings** | 管理員可動態變更、MongoDB versioned persistence 的非敏感全域設定；包含翻譯 defaults、OCR 與木雷短網址輸出開關；讀取失敗時使用 deployment defaults。 | 不可保存 credential、token、API key 或 connection secret。 |
+| **Runtime Settings** | 管理員可動態變更、MongoDB versioned persistence 的非敏感全域設定；包含翻譯 defaults、OCR 與木雷短網址輸出開關，以及管理員 LINE user ID 清單（`ADMIN_USERS` 只是清單尚未保存時的 bootstrap seed）；讀取失敗時使用 deployment defaults。 | 不可保存 credential、token、API key 或 connection secret；管理員 user ID 是個人識別碼，日誌只能使用 `SafeLog.user(...)` 指紋。 |
 | **AI Provider** | 應用程式直接串接的外部 AI gateway；目前且唯一為 OpenRouter。 | OpenRouter catalog 內的模型廠商不是應用程式的直接 provider。 |
 | **Provider Adapter** | `AiProviderAdapter` Interface 的唯一 Implementation `OpenRouterService`，封裝 Chat Completions request/response/error。 | 不包含 Google Cloud Vision OCR，也不在 caller 暴露 wire payload。 |
 | **AI Model Catalog** | `AiModelCatalog` 提供的 OpenRouter model/capability/pricing snapshot，具有 TTL cache 與 stale fallback。 | 不是寫死的模型 allowlist，也不包含非文字輸出模型。 |

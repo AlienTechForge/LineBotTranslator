@@ -4,6 +4,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
 import java.util.Locale;
+import java.util.function.BiFunction;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.mongodb.core.FindAndModifyOptions;
@@ -23,14 +24,19 @@ import lombok.extern.slf4j.Slf4j;
 
 /**
  * Deep Module for validated, versioned administrator settings. Schema v3 adds
- * administrator-controlled 木雷 short-URL output.
+ * administrator-controlled 木雷 short-URL output; schema v4 adds the persisted
+ * administrator list.
  */
 @Service
 @Slf4j
 public class RuntimeSettingsModule implements RuntimeSettingsSource {
 
     public static final String DOCUMENT_ID = "global";
-    public static final int SCHEMA_VERSION = 3;
+    public static final int SCHEMA_VERSION = 4;
+
+    private static final String ADMIN_USER_IDS_KEY = "ADMIN_USER_IDS";
+    private static final String ADMIN_USER_IDS_FIELD = "adminUserIds";
+    private static final int MAX_USER_ID_LENGTH = 128;
 
     private final MongoTemplate mongoTemplate;
     private final AppConfig appConfig;
@@ -83,6 +89,29 @@ public class RuntimeSettingsModule implements RuntimeSettingsSource {
         }
         String operator = requireOperator(operatorId);
         Object value = validate(key, rawValue);
+        return persist(key.name(), key.fieldName(), value, operator,
+                (existing, defaults) -> valueOf(existing, defaults, key));
+    }
+
+    /**
+     * Replaces the persisted administrator list. The list is never empty: an empty or
+     * absent persisted list means "use the deployment bootstrap list", so callers copy
+     * the bootstrap list in on their first change.
+     */
+    public RuntimeSettings updateAdminUserIds(List<String> adminUserIds, String operatorId) {
+        String operator = requireOperator(operatorId);
+        List<String> value = requireAdminUserIds(adminUserIds);
+        return persist(ADMIN_USER_IDS_KEY, ADMIN_USER_IDS_FIELD, value, operator,
+                (existing, defaults) -> existing == null
+                        ? List.of() : merge(existing, defaults).adminUserIds());
+    }
+
+    private RuntimeSettings persist(
+            String changeKey,
+            String fieldName,
+            Object value,
+            String operator,
+            BiFunction<RuntimeSettingsDocument, RuntimeSettings, Object> previousValueOf) {
         Instant now = clock.instant();
 
         try {
@@ -91,13 +120,13 @@ public class RuntimeSettingsModule implements RuntimeSettingsSource {
                 requireSupportedSchema(existing);
             }
             RuntimeSettings defaults = deploymentDefaults();
-            Object previousValue = valueOf(existing, defaults, key);
+            Object previousValue = previousValueOf.apply(existing, defaults);
             RuntimeSettingsDocument.Change change = new RuntimeSettingsDocument.Change(
-                    key.name(), previousValue, value, operator, now);
+                    changeKey, previousValue, value, operator, now);
 
             Update update = new Update()
                     .set("schemaVersion", SCHEMA_VERSION)
-                    .set(key.fieldName(), value)
+                    .set(fieldName, value)
                     .set("updatedAt", now)
                     .set("updatedBy", operator)
                     .inc("revision", 1)
@@ -115,7 +144,7 @@ public class RuntimeSettingsModule implements RuntimeSettingsSource {
             }
             RuntimeSettings result = merge(persisted, defaults);
             log.info("Runtime setting updated: key={}, operator={}, revision={}",
-                    key, SafeLog.user(operator), result.revision());
+                    changeKey, SafeLog.user(operator), result.revision());
             return result;
         } catch (InvalidRuntimeSettingException | RuntimeSettingsPersistenceException failure) {
             throw failure;
@@ -164,6 +193,7 @@ public class RuntimeSettingsModule implements RuntimeSettingsSource {
                 stored.getOcrEnabled() == null ? defaults.ocrEnabled() : stored.getOcrEnabled(),
                 stored.getShortUrlEnabled() == null
                         ? defaults.shortUrlEnabled() : stored.getShortUrlEnabled(),
+                stored.getAdminUserIds(),
                 SCHEMA_VERSION,
                 stored.getRevision() == null ? 0 : stored.getRevision(),
                 stored.getUpdatedAt(),
@@ -209,6 +239,17 @@ public class RuntimeSettingsModule implements RuntimeSettingsSource {
         throw new InvalidRuntimeSettingException("OCR value must be on or off");
     }
 
+    private static List<String> requireAdminUserIds(List<String> rawValue) {
+        List<String> userIds = RuntimeSettings.normalizeAdminUserIds(rawValue);
+        if (userIds.isEmpty()) {
+            throw new InvalidRuntimeSettingException("At least one administrator is required");
+        }
+        if (userIds.stream().anyMatch(userId -> userId.length() > MAX_USER_ID_LENGTH)) {
+            throw new InvalidRuntimeSettingException("Administrator ID is too long");
+        }
+        return userIds;
+    }
+
     private static String requireOperator(String operatorId) {
         if (operatorId == null || operatorId.isBlank()) {
             throw new InvalidRuntimeSettingException("Operator ID is required");
@@ -218,7 +259,8 @@ public class RuntimeSettingsModule implements RuntimeSettingsSource {
 
     private static void requireSupportedSchema(RuntimeSettingsDocument document) {
         Integer schema = document.getSchemaVersion();
-        if (schema == null || (schema != 1 && schema != 2 && schema != SCHEMA_VERSION)) {
+        if (schema == null
+                || (schema != 1 && schema != 2 && schema != 3 && schema != SCHEMA_VERSION)) {
             throw new RuntimeSettingsPersistenceException("Unsupported runtime settings schema");
         }
     }

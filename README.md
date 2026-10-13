@@ -78,6 +78,8 @@ MINIO_REGION=us-east-1
 ADMIN_USERS=U123456789abcdef,U987654321abcdef
 ```
 
+`ADMIN_USERS` 只是管理員清單的 bootstrap seed：MongoDB `runtime_settings` 尚未保存管理員清單時才會使用。管理員以 `/admin add`、`/admin remove` 做的變更會保存在 MongoDB，重啟或重新部署後仍有效；清單一旦保存，之後修改 `ADMIN_USERS` 不會覆蓋它。最後一位管理員無法被移除。
+
 翻譯快取採 `expire-after-write` TTL；超過 `TRANSLATION_CACHE_MAX_ENTRIES` 時，Caffeine 會依使用頻率與近期性淘汰項目。失敗、safety blocked 與 model mismatch 不會寫入；實際使用的 style preset ID、prompt version 與 glossary version 都納入 cache identity。
 
 Webhook 先驗證 LINE signature，再以 `webhookEventId` 建立 MongoDB TTL receipt 並交給 bounded executor。重送事件不重複處理；queue 已滿或 receipt store 暫時不可用時回傳 `503`，讓 LINE 稍後 redeliver。receipt 僅保存事件 ID、時間與處理狀態，不保存訊息內容或 reply token。
@@ -151,6 +153,8 @@ java -jar target/linebot-translator-0.0.1-SNAPSHOT.jar
 - `/admin users` - 顯示最近活躍用戶
 - `/admin config` - 查看或變更非敏感 runtime settings
 - `/admin usage` - 查看 provider attempt 使用量與成本報表
+- `/admin add [用戶 ID]` - 新增管理員（保存於 MongoDB，重啟後仍有效）
+- `/admin remove [用戶 ID]` - 移除管理員（保存於 MongoDB，無法移除最後一位管理員）
 - `/admin config model [完整模型 slug]` - 設置全域 OpenRouter 默認模型
 
 ## 貢獻與支持
