@@ -155,13 +155,20 @@ public class OpenRouterModelCatalog implements AiModelCatalog {
     }
 
     private void runRefresh(CompletableFuture<Snapshot> flight) {
+        Snapshot refreshed = null;
         try {
-            flight.complete(refreshNow());
+            refreshed = refreshNow();
         } finally {
-            if (!flight.isDone()) {
+            // Release the slot before completing the flight. Completing first wakes the callers
+            // waiting on it, and one of them can look up the snapshot again before this thread
+            // clears the slot; if that snapshot is already expired the lookup would join this
+            // finished flight instead of starting the next refresh, and that refresh is lost.
+            inFlight.compareAndSet(flight, null);
+            if (refreshed != null) {
+                flight.complete(refreshed);
+            } else {
                 flight.completeExceptionally(new IllegalStateException("OpenRouter model catalog refresh aborted"));
             }
-            inFlight.compareAndSet(flight, null);
         }
     }
 
