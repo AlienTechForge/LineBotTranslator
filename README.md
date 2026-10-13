@@ -68,6 +68,8 @@ LINE_PUSH_FALLBACK_DAILY_LIMIT=100
 OPEN_ROUTE_API_KEY=your_openrouter_api_key
 OPEN_ROUTE_MODEL_NAME=openai/gpt-4o-mini
 OPEN_ROUTE_API_URL=https://openrouter.ai/api/v1
+# 啟動完成後在背景預先載入 OpenRouter 模型清單，第一次查詢不必等候；設為 false 則維持首次查詢時才載入
+OPEN_ROUTE_CATALOG_WARMUP=true
 
 # Google Cloud Vision API 配置 (OCR)
 # 指向 Google service account JSON；正式環境改由 GOOGLE_CREDENTIALS_JSON secret 傳入（見 deployment-guide.md）
