@@ -141,15 +141,14 @@ public class ImageTranslationOverlayRenderer {
 
             prepared = normalizeGroupFontSizes(graphics, prepared);
 
-            Area combinedMask = new Area();
-            for (PreparedOverlay item : prepared) combinedMask.add(new Area(item.modifiedMask()));
+            List<Area> approvedMasks = prepared.stream().map(PreparedOverlay::modifiedMask).toList();
             for (PreparedOverlay item : prepared) {
                 for (Area cleanupArea : item.cleanupAreas()) {
                     graphics.setColor(ImageTranslationStyleEstimator.localBackground(
                             pristine, cleanupArea, item.style().background(), item.style().foreground()));
                     graphics.fill(cleanupArea);
                 }
-                restoreOutsideMask(output, pristine, combinedMask, item.modifiedMask().getBounds());
+                restoreOutsideMask(output, pristine, approvedMasks, item.modifiedMask().getBounds());
                 logResidualInk(output, item);
             }
 
@@ -213,13 +212,18 @@ public class ImageTranslationOverlayRenderer {
 
     /** Restores the one-pixel rasterization fringe outside the approved overlay geometry. */
     private static void restoreOutsideMask(BufferedImage output, BufferedImage pristine, Area mask) {
-        restoreOutsideMask(output, pristine, mask, mask.getBounds());
+        restoreOutsideMask(output, pristine, List.of(mask), mask.getBounds());
     }
 
+    /**
+     * Pixels inside no approved mask return to their source value. The masks are rasterised over
+     * the bounds instead of testing each pixel against their union, whose outline grows with every
+     * region and made this step quadratic in the region count.
+     */
     private static void restoreOutsideMask(
             BufferedImage output,
             BufferedImage pristine,
-            Area mask,
+            List<Area> masks,
             java.awt.Rectangle localBounds) {
         java.awt.Rectangle bounds = new java.awt.Rectangle(localBounds);
         bounds.grow(1, 1);
@@ -227,9 +231,13 @@ public class ImageTranslationOverlayRenderer {
         int top = Math.max(0, bounds.y);
         int right = Math.min(output.getWidth(), bounds.x + bounds.width);
         int bottom = Math.min(output.getHeight(), bounds.y + bounds.height);
+        if (left >= right || top >= bottom) return;
+        int width = right - left;
+        boolean[] inside = OverlaySafetyPolicy.coverage(
+                masks, new java.awt.Rectangle(left, top, width, bottom - top));
         for (int y = top; y < bottom; y++) {
             for (int x = left; x < right; x++) {
-                if (!mask.contains(x + .5, y + .5)) output.setRGB(x, y, pristine.getRGB(x, y));
+                if (!inside[(y - top) * width + x - left]) output.setRGB(x, y, pristine.getRGB(x, y));
             }
         }
     }
