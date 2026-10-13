@@ -33,6 +33,7 @@ import com.linetranslate.bot.service.ocr.ImageTranslationPipeline;
 import com.linetranslate.bot.service.ocr.ImageTranslationPipelineResult;
 import com.linetranslate.bot.service.ocr.ImageTranslationReply;
 import com.linetranslate.bot.service.ocr.ImageTranslationService;
+import com.linetranslate.bot.service.preference.UserPreferencesModule;
 import com.linetranslate.bot.service.settings.RuntimeSettings;
 import com.linetranslate.bot.service.settings.RuntimeSettingsSource;
 import com.linetranslate.bot.service.storage.ImageStorageResult;
@@ -256,8 +257,8 @@ class LineMessageRendererTests {
     void veryLongRecognizedTextIsCutBeforeTheImageTranslation() {
         ImageTranslationPipeline pipeline = mock(ImageTranslationPipeline.class);
         UserProfileRepository profiles = mock(UserProfileRepository.class);
-        when(profiles.findByUserId("U-long"))
-                .thenReturn(Optional.of(UserProfile.builder().userId("U-long").build()));
+        UserPreferencesModule preferences = mock(UserPreferencesModule.class);
+        when(preferences.profile("U-long")).thenReturn(UserProfile.builder().userId("U-long").build());
         when(profiles.save(any(UserProfile.class))).thenAnswer(invocation -> invocation.getArgument(0));
         String recognized = "字".repeat(50_000);
         ImageTranslationContext context = new ImageTranslationContext(
@@ -268,7 +269,7 @@ class LineMessageRendererTests {
                 20, TranslationRequestKind.IMAGE_OCR, "507f1f77bcf86cd799439011");
         when(pipeline.execute(any())).thenReturn(new ImageTranslationOutcome.Success(
                 new ImageTranslationPipelineResult(context, translation)));
-        ImageTranslationReply reply = new ImageTranslationService(pipeline, profiles)
+        ImageTranslationReply reply = new ImageTranslationService(pipeline, profiles, preferences)
                 .processImageTranslationReply("U-long", "message");
 
         TextMessage rendered = (TextMessage) renderer.imageResult(reply);
