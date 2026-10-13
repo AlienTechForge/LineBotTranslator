@@ -16,16 +16,10 @@ public interface UserProfileRepository
 
     Optional<UserProfile> findByUserId(String userId);
 
-    boolean existsByUserId(String userId);
-
-    List<UserProfile> findTop10ByOrderByTotalTranslationsDesc();
-
     long countByLastInteractionAtAfter(LocalDateTime dateTime);
 
     List<UserProfile> findByLastInteractionAtNotNullOrderByLastInteractionAtDesc(Limit limit);
 
     /** Profiles without a completed translation; their last activity is firstInteractionAt. */
     List<UserProfile> findByLastInteractionAtIsNullOrderByFirstInteractionAtDesc(Limit limit);
-
-    long countByLastInteractionAtBetween(LocalDateTime start, LocalDateTime end);
 }

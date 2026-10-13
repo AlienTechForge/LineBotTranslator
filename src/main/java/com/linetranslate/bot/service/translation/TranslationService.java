@@ -71,10 +71,6 @@ public class TranslationService {
      * @param text 用戶輸入的文本
      * @return 翻譯結果
      */
-    public String processTranslationRequest(String userId, String text) {
-        return processTranslationResponse(userId, text).displayText();
-    }
-
     public TranslationResponse processTranslationResponse(String userId, String text) {
         Instant start = Instant.now();
         log.info("收到翻譯請求: user={}, content={}",
@@ -366,10 +362,6 @@ public class TranslationService {
      * @param targetLanguageCode 目標語言代碼
      * @return 翻譯結果
      */
-    public String quickTranslate(String userId, String text, String targetLanguageCode) {
-        return quickTranslateResponse(userId, text, targetLanguageCode).displayText();
-    }
-
     public TranslationResponse quickTranslateResponse(
             String userId,
             String text,

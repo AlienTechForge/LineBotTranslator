@@ -17,7 +17,6 @@ import com.linecorp.bot.client.base.Result;
 import com.linecorp.bot.messaging.client.MessagingApiClient;
 import com.linecorp.bot.messaging.model.UserProfileResponse;
 import com.linetranslate.bot.model.UserProfile;
-import com.linetranslate.bot.repository.TranslationRecordRepository;
 import com.linetranslate.bot.repository.UserProfileRepository;
 import com.linetranslate.bot.service.preference.UserPreferencesModule;
 
@@ -29,9 +28,6 @@ class LineUserProfileServiceSdkContractTests {
 
     @Mock
     private UserProfileRepository userProfileRepository;
-
-    @Mock
-    private TranslationRecordRepository translationRecordRepository;
 
     @Mock
     private UserPreferencesModule userPreferencesModule;
@@ -46,8 +42,7 @@ class LineUserProfileServiceSdkContractTests {
         when(userPreferencesModule.profile(userId)).thenReturn(UserProfile.builder().userId(userId).build());
 
         new LineUserProfileService(
-                messagingApiClient, userProfileRepository, translationRecordRepository,
-                userPreferencesModule)
+                messagingApiClient, userProfileRepository, userPreferencesModule)
                 .syncUserProfile(userId);
 
         verify(userPreferencesModule).profile(userId);

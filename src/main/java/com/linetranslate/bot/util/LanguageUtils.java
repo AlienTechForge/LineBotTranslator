@@ -18,38 +18,38 @@ public class LanguageUtils {
 
     static {
         // 初始化常見語言的映射
-        addLanguageMapping("中文", "zh", "Chinese");
-        addLanguageMapping("英文", "en", "English");
-        addLanguageMapping("日文", "ja", "Japanese");
-        addLanguageMapping("韓文", "ko", "Korean");
-        addLanguageMapping("法文", "fr", "French");
-        addLanguageMapping("德文", "de", "German");
-        addLanguageMapping("西班牙文", "es", "Spanish");
-        addLanguageMapping("葡萄牙文", "pt", "Portuguese");
-        addLanguageMapping("義大利文", "it", "Italian");
-        addLanguageMapping("俄文", "ru", "Russian");
-        addLanguageMapping("阿拉伯文", "ar", "Arabic");
-        addLanguageMapping("泰文", "th", "Thai");
-        addLanguageMapping("越南文", "vi", "Vietnamese");
-        addLanguageMapping("印尼文", "id", "Indonesian");
-        addLanguageMapping("馬來文", "ms", "Malay");
-        addLanguageMapping("繁體中文", "zh-TW", "Traditional Chinese");
-        addLanguageMapping("簡體中文", "zh-CN", "Simplified Chinese");
-        addLanguageMapping("荷蘭文", "nl", "Dutch");
-        addLanguageMapping("希臘文", "el", "Greek");
-        addLanguageMapping("波蘭文", "pl", "Polish");
-        addLanguageMapping("土耳其文", "tr", "Turkish");
-        addLanguageMapping("捷克文", "cs", "Czech");
-        addLanguageMapping("瑞典文", "sv", "Swedish");
-        addLanguageMapping("丹麥文", "da", "Danish");
-        addLanguageMapping("芬蘭文", "fi", "Finnish");
-        addLanguageMapping("印地文", "hi", "Hindi");
-        addLanguageMapping("挪威文", "nb", "Norwegian Bokmal");
-        addLanguageMapping("烏克蘭文", "uk", "Ukrainian");
-        addLanguageMapping("匈牙利文", "hu", "Hungarian");
-        addLanguageMapping("希伯來文", "he", "Hebrew");
-        addLanguageMapping("菲律賓文", "tl", "Filipino");
-        addLanguageMapping("冰島文", "is", "Icelandic");
+        addLanguageMapping("中文", "zh");
+        addLanguageMapping("英文", "en");
+        addLanguageMapping("日文", "ja");
+        addLanguageMapping("韓文", "ko");
+        addLanguageMapping("法文", "fr");
+        addLanguageMapping("德文", "de");
+        addLanguageMapping("西班牙文", "es");
+        addLanguageMapping("葡萄牙文", "pt");
+        addLanguageMapping("義大利文", "it");
+        addLanguageMapping("俄文", "ru");
+        addLanguageMapping("阿拉伯文", "ar");
+        addLanguageMapping("泰文", "th");
+        addLanguageMapping("越南文", "vi");
+        addLanguageMapping("印尼文", "id");
+        addLanguageMapping("馬來文", "ms");
+        addLanguageMapping("繁體中文", "zh-TW");
+        addLanguageMapping("簡體中文", "zh-CN");
+        addLanguageMapping("荷蘭文", "nl");
+        addLanguageMapping("希臘文", "el");
+        addLanguageMapping("波蘭文", "pl");
+        addLanguageMapping("土耳其文", "tr");
+        addLanguageMapping("捷克文", "cs");
+        addLanguageMapping("瑞典文", "sv");
+        addLanguageMapping("丹麥文", "da");
+        addLanguageMapping("芬蘭文", "fi");
+        addLanguageMapping("印地文", "hi");
+        addLanguageMapping("挪威文", "nb");
+        addLanguageMapping("烏克蘭文", "uk");
+        addLanguageMapping("匈牙利文", "hu");
+        addLanguageMapping("希伯來文", "he");
+        addLanguageMapping("菲律賓文", "tl");
+        addLanguageMapping("冰島文", "is");
 
         // 添加別名
         LANGUAGE_NAME_TO_CODE.put("英語", "en");
@@ -186,9 +186,8 @@ public class LanguageUtils {
      *
      * @param chineseName 中文名稱
      * @param code 語言代碼
-     * @param englishName 英文名稱
      */
-    private static void addLanguageMapping(String chineseName, String code, String englishName) {
+    private static void addLanguageMapping(String chineseName, String code) {
         LANGUAGE_NAME_TO_CODE.put(chineseName, code);
         LANGUAGE_CODE_TO_NAME.put(code, chineseName);
     }

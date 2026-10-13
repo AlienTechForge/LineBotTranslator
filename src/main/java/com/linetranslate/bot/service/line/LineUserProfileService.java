@@ -9,7 +9,6 @@ import com.linecorp.bot.client.base.Result;
 import com.linecorp.bot.messaging.client.MessagingApiClient;
 import com.linecorp.bot.messaging.model.UserProfileResponse;
 import com.linetranslate.bot.model.UserProfile;
-import com.linetranslate.bot.repository.TranslationRecordRepository;
 import com.linetranslate.bot.repository.UserProfileRepository;
 import com.linetranslate.bot.logging.SafeLog;
 import com.linetranslate.bot.service.preference.UserPreferences;
@@ -24,18 +23,15 @@ public class LineUserProfileService {
 
     private final MessagingApiClient messagingApiClient;
     private final UserProfileRepository userProfileRepository;
-    private final TranslationRecordRepository translationRecordRepository;
     private final UserPreferencesModule userPreferencesModule;
 
     @Autowired
     public LineUserProfileService(
             MessagingApiClient messagingApiClient,
             UserProfileRepository userProfileRepository,
-            TranslationRecordRepository translationRecordRepository,
             UserPreferencesModule userPreferencesModule) {
         this.messagingApiClient = messagingApiClient;
         this.userProfileRepository = userProfileRepository;
-        this.translationRecordRepository = translationRecordRepository;
         this.userPreferencesModule = userPreferencesModule;
     }
 
