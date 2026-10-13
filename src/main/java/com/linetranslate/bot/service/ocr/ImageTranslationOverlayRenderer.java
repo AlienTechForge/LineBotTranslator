@@ -507,24 +507,92 @@ public class ImageTranslationOverlayRenderer {
         return new Layout(font, lines, lines.size() <= allowed);
     }
 
-    private static List<String> wrap(String text, FontMetrics metrics, int width) {
+    /**
+     * Greedy line filling. CJK, kana and Hangul may break between any two glyphs, but a word in a
+     * space-separated script may only break at a space, so it moves to the next line whole. Only a
+     * word wider than a line on its own is broken glyph by glyph. A space at a break hangs off the
+     * end of the line and is dropped there, so the next line never starts with it.
+     */
+    static List<String> wrap(String text, FontMetrics metrics, int width) {
         List<String> lines = new ArrayList<>();
         for (String paragraph : text.replace('\r', '\n').split("\\n+", -1)) {
             StringBuilder line = new StringBuilder();
-            int[] codePoints = paragraph.codePoints().toArray();
-            for (int codePoint : codePoints) {
-                String glyph = new String(Character.toChars(codePoint));
-                if (!line.isEmpty() && metrics.stringWidth(line + glyph) > width) {
+            for (String token : wrapTokens(paragraph)) {
+                if (Character.isWhitespace(token.codePointAt(0)) && !line.toString().isBlank()) {
+                    line.append(token);
+                    continue;
+                }
+                if (!line.isEmpty() && metrics.stringWidth(line + token) > width) {
                     lines.add(line.toString().stripTrailing());
                     line.setLength(0);
                 }
-                line.append(glyph);
+                if (!line.isEmpty() || metrics.stringWidth(token) <= width) {
+                    line.append(token);
+                    continue;
+                }
+                for (int codePoint : token.codePoints().toArray()) {
+                    String glyph = new String(Character.toChars(codePoint));
+                    if (!line.isEmpty() && metrics.stringWidth(line + glyph) > width) {
+                        lines.add(line.toString().stripTrailing());
+                        line.setLength(0);
+                    }
+                    line.append(glyph);
+                }
             }
             if (!line.isEmpty() || paragraph.isEmpty()) {
                 lines.add(line.toString().strip());
             }
         }
         return lines.isEmpty() ? List.of("") : lines;
+    }
+
+    /**
+     * Units a line may not break inside: each space, each CJK, kana or Hangul glyph, and each run
+     * of anything else, which is a word together with its punctuation. A run holding no letter or
+     * digit protects no word, so it falls apart into glyphs; that keeps ellipses, dashes and
+     * quotes between CJK glyphs breakable exactly as before.
+     */
+    private static List<String> wrapTokens(String paragraph) {
+        List<String> tokens = new ArrayList<>();
+        int[] codePoints = paragraph.codePoints().toArray();
+        int start = 0;
+        while (start < codePoints.length) {
+            int end = start + 1;
+            boolean word = Character.isLetterOrDigit(codePoints[start]);
+            if (!Character.isWhitespace(codePoints[start]) && !breaksAtEveryGlyph(codePoints[start])) {
+                while (end < codePoints.length && !Character.isWhitespace(codePoints[end])
+                        && !breaksAtEveryGlyph(codePoints[end])) {
+                    word |= Character.isLetterOrDigit(codePoints[end]);
+                    end++;
+                }
+            }
+            if (word) {
+                tokens.add(new String(codePoints, start, end - start));
+            } else {
+                for (int index = start; index < end; index++) {
+                    tokens.add(new String(Character.toChars(codePoints[index])));
+                }
+            }
+            start = end;
+        }
+        return tokens;
+    }
+
+    private static boolean breaksAtEveryGlyph(int codePoint) {
+        Character.UnicodeScript script = Character.UnicodeScript.of(codePoint);
+        if (script == Character.UnicodeScript.HAN || script == Character.UnicodeScript.HIRAGANA
+                || script == Character.UnicodeScript.KATAKANA || script == Character.UnicodeScript.HANGUL
+                || script == Character.UnicodeScript.BOPOMOFO) {
+            return true;
+        }
+        // Shared punctuation and marks such as 。，「」ー・ live in CJK blocks under the common script.
+        Character.UnicodeBlock block = Character.UnicodeBlock.of(codePoint);
+        return block == Character.UnicodeBlock.CJK_SYMBOLS_AND_PUNCTUATION
+                || block == Character.UnicodeBlock.HALFWIDTH_AND_FULLWIDTH_FORMS
+                || block == Character.UnicodeBlock.CJK_COMPATIBILITY_FORMS
+                || block == Character.UnicodeBlock.VERTICAL_FORMS
+                || block == Character.UnicodeBlock.HIRAGANA
+                || block == Character.UnicodeBlock.KATAKANA;
     }
 
     private static String ellipsize(String value, FontMetrics metrics, int width) {
