@@ -100,7 +100,10 @@ public class OpenRouterModelCatalog implements AiModelCatalog {
      * joined, and a snapshot that is still fresh is left alone, so repeated calls never start
      * a second fetch. A failed fetch is handled and logged by that path and leaves the
      * fallback snapshot, exactly as a failed first lookup would. Unlike a lookup, a warm-up
-     * the executor refuses (it is shut down) never runs the fetch on the calling thread.
+     * the executor refuses (it is shut down) never runs the fetch on the calling thread. A
+     * failure of the hand-off itself leaves the catalog lazy as well; it throws no
+     * {@link RuntimeException}, and only an {@link Error} from it (the worker thread could not
+     * be started) propagates, after the slot is freed.
      */
     @Override
     public void warmUp() {
@@ -150,7 +153,9 @@ public class OpenRouterModelCatalog implements AiModelCatalog {
     /**
      * @param runInlineWhenRejected a lookup needs an answer, so when the executor refuses the task
      *        (it is shut down) the fetch runs on the calling thread; a warm-up must never block its
-     *        caller and gives the slot up instead
+     *        caller and gives the slot up instead. Any other failure of the submit itself (a wrapping
+     *        executor's {@link RuntimeException}, an {@link Error} from starting the worker thread)
+     *        gives the slot up for both, and an {@link Error} is rethrown after that
      */
     private CompletableFuture<Snapshot> refresh(boolean runInlineWhenRejected) {
         while (true) {
@@ -177,6 +182,15 @@ public class OpenRouterModelCatalog implements AiModelCatalog {
                 } else {
                     abandon(flight, shutDown);
                 }
+            } catch (RuntimeException | Error unexpected) {
+                // The task was never handed over, so nothing will ever finish this flight. Anyone who
+                // joined it, and every later lookup, would wait for it forever and the catalog would
+                // never refresh again. A lookup is answered from what is known instead of being
+                // retried inline: the executor is misbehaving, not shut down.
+                abandonUnscheduled(flight, unexpected);
+                if (unexpected instanceof Error error) {
+                    throw error;
+                }
             }
             return flight;
         }
@@ -186,11 +200,35 @@ public class OpenRouterModelCatalog implements AiModelCatalog {
     private void abandon(CompletableFuture<Snapshot> flight, RejectedExecutionException shutDown) {
         log.info("OpenRouter model catalog warm-up skipped, the refresh executor is shut down: failure={}",
                 SafeLog.failure(shutDown));
+        release(flight);
+    }
+
+    /** Gives up a claimed refresh the executor failed to accept for a reason other than a shutdown. */
+    private void abandonUnscheduled(CompletableFuture<Snapshot> flight, Throwable failure) {
+        try {
+            log.warn("OpenRouter model catalog refresh could not be scheduled, serving what is known: failure={}",
+                    SafeLog.failure(failure));
+        } finally {
+            release(flight);
+        }
+    }
+
+    private void release(CompletableFuture<Snapshot> flight) {
         // Same order as runRefresh: free the slot first, then wake whoever joined the flight with
         // what is known now. Nothing is stored, so the next lookup starts a refresh of its own.
         inFlight.compareAndSet(flight, null);
-        Snapshot current = snapshot;
-        flight.complete(current != null ? current : fallback(clock.instant()));
+        try {
+            Snapshot current = snapshot;
+            flight.complete(current != null ? current : fallback(clock.instant()));
+        } catch (RuntimeException | Error unbuildable) {
+            // The default page cannot be built (an invalid configured model id). Whoever joined the
+            // flight is still woken, with that failure, so nobody waits on a flight nothing finishes.
+            // A lookup sees it through the flight; a warm-up has no caller to hand it to.
+            flight.completeExceptionally(unbuildable);
+            if (unbuildable instanceof Error error) {
+                throw error;
+            }
+        }
     }
 
     private void runRefresh(CompletableFuture<Snapshot> flight) {

@@ -2,6 +2,7 @@ package com.linetranslate.bot.service.ai;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -77,6 +78,17 @@ class OpenRouterModelCatalogWarmUpTests {
                     .doesNotContain("sk-or-v1-secret", "key=abc");
             assertThat(event.getThrowableProxy()).isNull();
         });
+    }
+
+    @Test
+    void anErrorFromTheCatalogIsNotSwallowedAndNothingIsLogged() {
+        doThrow(new OutOfMemoryError("unable to create native thread")).when(catalog).warmUp();
+
+        assertThatThrownBy(() -> new OpenRouterModelCatalogWarmUp(catalog, true).warmUp())
+                .isInstanceOf(OutOfMemoryError.class);
+
+        verify(catalog, times(1)).warmUp();
+        assertThat(logs.list).isEmpty();
     }
 
     @Test

@@ -14,7 +14,8 @@ import lombok.extern.slf4j.Slf4j;
  * Without it nothing loads the catalog until the first lookup, which then waits
  * for the whole OpenRouter round trip and, if that fetch fails, sees the default
  * model unpriced. The fetch runs on the catalog's own refresh executor, so
- * startup never waits for it, and a failure is logged and leaves the catalog lazy.
+ * startup never waits for it, and a {@link RuntimeException} is logged and leaves the
+ * catalog lazy. An {@link Error} is not swallowed, as {@link AiModelCatalog#warmUp()} documents.
  * {@code app.openrouter.catalog.warm-up=false} (env {@code OPEN_ROUTE_CATALOG_WARMUP})
  * turns it off.
  */

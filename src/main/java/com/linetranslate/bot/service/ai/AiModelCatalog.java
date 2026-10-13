@@ -12,8 +12,10 @@ public interface AiModelCatalog {
 
     /**
      * Hints that lookups are coming, so an implementation may load its snapshot
-     * in the background. Must return without waiting and never throw; the default
-     * does nothing, which leaves the catalog lazy.
+     * in the background. Must return without waiting. Does not throw a
+     * {@link RuntimeException}; an {@link Error} from the executor hand-off (for example
+     * a worker thread that cannot be started) propagates. The default does nothing,
+     * which leaves the catalog lazy.
      */
     default void warmUp() {
     }
