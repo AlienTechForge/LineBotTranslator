@@ -98,6 +98,7 @@ Secrets 只作為容器環境變數傳入，不會寫入 image、Repository 或 
 | `MINIO_CONNECT_TIMEOUT_MS` | `3000` | MinIO 連線 timeout |
 | `MINIO_WRITE_TIMEOUT_MS` | `5000` | MinIO 上傳 timeout |
 | `MINIO_READ_TIMEOUT_MS` | `5000` | MinIO API 讀取 timeout |
+| `GOOGLE_VISION_TIMEOUT_MS` | `60000` | 單次 Google Vision OCR 呼叫（含重試）的總時間上限 |
 
 ### 同機木雷連線
 

@@ -94,6 +94,16 @@ class CiQualityGateContractTests {
     }
 
     @Test
+    void deploymentPassesBoundedVisionTimeoutIntoTheRuntimeContainer() throws IOException {
+        String workflow = Files.readString(Path.of(".github", "workflows", "ci-cd.yml"));
+        String deployScript = Files.readString(Path.of("scripts", "deploy.sh"));
+
+        assertThat(workflow)
+                .contains("GOOGLE_VISION_TIMEOUT_MS: ${{ vars.GOOGLE_VISION_TIMEOUT_MS || '60000' }}");
+        assertThat(deployScript).contains("GOOGLE_VISION_TIMEOUT_MS");
+    }
+
+    @Test
     void deploymentUsesOnlyTheAuthorizedOpenRouterSecretAndValidatesItBeforeMutation()
             throws IOException {
         String workflow = Files.readString(Path.of(".github", "workflows", "ci-cd.yml"));
