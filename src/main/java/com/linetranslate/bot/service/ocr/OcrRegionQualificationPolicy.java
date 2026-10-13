@@ -43,17 +43,6 @@ public class OcrRegionQualificationPolicy {
         return new OcrRegionDecision(region, OcrQualification.TRANSLATE, "eligible", protectedTokens(text));
     }
 
-    public boolean preservesTokens(OcrRegionDecision decision, String translatedText) {
-        if (decision == null || translatedText == null) return false;
-        int cursor = 0;
-        for (String token : decision.protectedTokens()) {
-            int found = translatedText.indexOf(token, cursor);
-            if (found < 0) return false;
-            cursor = found + token.length();
-        }
-        return true;
-    }
-
     private static List<String> protectedTokens(String text) {
         List<String> result = new ArrayList<>();
         Matcher matcher = PROTECTED.matcher(text);

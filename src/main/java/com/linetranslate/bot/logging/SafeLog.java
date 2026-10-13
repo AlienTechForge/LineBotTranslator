@@ -81,6 +81,26 @@ public final class SafeLog {
         return types.toString();
     }
 
+    /**
+     * A copy of {@code failure} that is safe to hand to a logger as its throwable: it keeps the
+     * exception types, the cause chain (bounded like {@link #failure(Throwable)}) and every stack
+     * frame, so a defect can be located, and drops each message and suppressed exception, which
+     * can carry user text, URLs or payloads. Use it only for unexpected internal errors; expected
+     * failures stay on {@link #failure(Throwable)}.
+     */
+    public static Throwable redacted(Throwable failure) {
+        return failure == null ? null : redact(failure, 1);
+    }
+
+    private static Throwable redact(Throwable failure, int depth) {
+        Throwable cause = failure.getCause();
+        RedactedFailure copy = new RedactedFailure(
+                failure.getClass().getName(),
+                cause == null || depth >= MAX_CAUSE_DEPTH ? null : redact(cause, depth + 1));
+        copy.setStackTrace(failure.getStackTrace());
+        return copy;
+    }
+
     public static int httpStatus(int status) {
         return status;
     }
@@ -95,5 +115,13 @@ public final class SafeLog {
         }
         String normalized = value.replaceAll("[^a-zA-Z0-9._:-]", "_");
         return normalized.length() <= 100 ? normalized : normalized.substring(0, 100);
+    }
+
+    /** Carries only the original exception's class name as its message. */
+    private static final class RedactedFailure extends RuntimeException {
+
+        private RedactedFailure(String type, Throwable cause) {
+            super(type, cause, false, true);
+        }
     }
 }

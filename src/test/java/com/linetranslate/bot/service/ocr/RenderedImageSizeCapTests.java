@@ -83,11 +83,11 @@ class RenderedImageSizeCapTests {
 
         assertThatThrownBy(() -> renderer.render(
                 validated(noise(300, 300, BufferedImage.TYPE_INT_ARGB)), null))
-                .isInstanceOf(IllegalStateException.class)
+                .isInstanceOf(RenderedImageEncodingException.class)
                 .hasMessage("Translated image could not be encoded");
         assertThatThrownBy(() -> renderer.render(
                 validated(noise(400, 400, BufferedImage.TYPE_INT_RGB)), null))
-                .isInstanceOf(IllegalStateException.class)
+                .isInstanceOf(RenderedImageEncodingException.class)
                 .hasMessage("Translated image could not be encoded");
     }
 

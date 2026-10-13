@@ -767,7 +767,7 @@ public class ImageTranslationOverlayRenderer {
                     String.format(java.util.Locale.ROOT, "%.3f", scale), maxOutputBytes);
             throw new IOException("Translated image exceeds the output cap");
         } catch (IOException failure) {
-            throw new IllegalStateException("Translated image could not be encoded", failure);
+            throw new RenderedImageEncodingException("Translated image could not be encoded", failure);
         }
     }
 

@@ -2,11 +2,15 @@ package com.linetranslate.bot.service.ocr;
 
 import java.io.InputStream;
 import java.util.Base64;
+import java.util.EnumMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.stream.IntStream;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Service;
 
 import com.linecorp.bot.client.base.BlobContent;
@@ -14,11 +18,13 @@ import com.linecorp.bot.client.base.Result;
 import com.linecorp.bot.messaging.client.MessagingApiBlobClient;
 import com.linetranslate.bot.logging.SafeLog;
 import com.linetranslate.bot.service.ai.AiExecutionResult;
+import com.linetranslate.bot.service.ai.AiProviderException;
 import com.linetranslate.bot.service.ai.AiProviderExecutionModule;
 import com.linetranslate.bot.service.storage.ImageStorageResult;
 import com.linetranslate.bot.service.storage.MinioStorageService;
 import com.linetranslate.bot.service.preference.UserPreferencesModule;
 import com.linetranslate.bot.service.translation.TranslationRequestKind;
+import com.linetranslate.bot.service.translation.StructuredTranslationException;
 import com.linetranslate.bot.service.translation.TranslationWorkflowModule;
 import com.linetranslate.bot.service.translation.TranslationWorkflowOutcome;
 import com.linetranslate.bot.service.translation.TranslationWorkflowRequest;
@@ -27,6 +33,9 @@ import com.linetranslate.bot.service.translation.ImageRegionTranslationInput;
 import com.linetranslate.bot.service.translation.ImageRegionLayout;
 import com.linetranslate.bot.service.translation.TranslationPromptFactory;
 
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import lombok.extern.slf4j.Slf4j;
 
 /**
@@ -44,6 +53,15 @@ public class ImageTranslationPipeline {
     private static final int MAX_OCR_REGIONS = 200;
     private static final int MAX_OCR_TEXT_CHARS = 50_000;
 
+    /** Where a defect was caught; the lower-case name is the {@code stage} tag of the counter. */
+    private enum UnexpectedStage {
+        RECOGNITION, STORAGE, TRANSLATION, RENDERING;
+
+        String tag() {
+            return name().toLowerCase(Locale.ROOT);
+        }
+    }
+
     private final OcrService ocrService;
     private final TranslationWorkflowModule translationWorkflowModule;
     private final AiProviderExecutionModule aiProviderExecutionModule;
@@ -58,6 +76,7 @@ public class ImageTranslationPipeline {
     private final OverlaySafetyPolicy overlaySafetyPolicy;
     private final TranslationPromptFactory promptFactory;
     private final OverlayContentClassifier contentClassifier = new OverlayContentClassifier();
+    private final Map<UnexpectedStage, Counter> unexpectedFailures = new EnumMap<>(UnexpectedStage.class);
 
     @Autowired
     public ImageTranslationPipeline(
@@ -73,7 +92,8 @@ public class ImageTranslationPipeline {
             OcrRegionQualificationPolicy qualificationPolicy,
             OcrSourceLanguageResolver sourceLanguageResolver,
             OverlaySafetyPolicy overlaySafetyPolicy,
-            TranslationPromptFactory promptFactory) {
+            TranslationPromptFactory promptFactory,
+            MeterRegistry meterRegistry) {
         this.ocrService = ocrServiceProvider.getIfAvailable();
         this.translationWorkflowModule = translationWorkflowModule;
         this.aiProviderExecutionModule = aiProviderExecutionModule;
@@ -87,6 +107,12 @@ public class ImageTranslationPipeline {
         this.sourceLanguageResolver = sourceLanguageResolver;
         this.overlaySafetyPolicy = overlaySafetyPolicy;
         this.promptFactory = promptFactory;
+        for (UnexpectedStage stage : UnexpectedStage.values()) {
+            unexpectedFailures.put(stage, Counter.builder("image.translation.unexpected")
+                    .description("Unexpected exceptions caught inside the image translation pipeline")
+                    .tag("stage", stage.tag())
+                    .register(meterRegistry));
+        }
     }
 
     public ImageTranslationPipeline(
@@ -106,7 +132,7 @@ public class ImageTranslationPipeline {
                 userPreferencesModule, messagingApiBlobClient, minioStorageService,
                 imageInputValidator, overlayRenderer, properties, qualificationPolicy,
                 sourceLanguageResolver, overlaySafetyPolicy,
-                new TranslationPromptFactory());
+                new TranslationPromptFactory(), new SimpleMeterRegistry());
     }
 
     /** Compatibility constructor retained for focused tests. */
@@ -176,8 +202,12 @@ public class ImageTranslationPipeline {
         try {
             recognition = recognize(request, image);
         } catch (RuntimeException failure) {
-            log.warn("Image recognition failed: user={}, failure={}",
-                    SafeLog.user(request.userProfile().getUserId()), SafeLog.failure(failure));
+            if (isExpectedFailure(failure)) {
+                log.warn("Image recognition failed: user={}, failure={}",
+                        SafeLog.user(request.userProfile().getUserId()), SafeLog.failure(failure));
+            } else {
+                logUnexpected(UnexpectedStage.RECOGNITION, failure);
+            }
             return new ImageTranslationOutcome.Failure(ImageTranslationFailureStage.RECOGNITION);
         }
         long recognitionMillis = elapsedMillis(stageStarted);
@@ -245,8 +275,12 @@ public class ImageTranslationPipeline {
                     sourceLanguage,
                     structuredRegions));
         } catch (RuntimeException failure) {
-            log.warn("Image translation workflow failed: user={}, failure={}",
-                    SafeLog.user(request.userProfile().getUserId()), SafeLog.failure(failure));
+            if (isExpectedFailure(failure)) {
+                log.warn("Image translation workflow failed: user={}, failure={}",
+                        SafeLog.user(request.userProfile().getUserId()), SafeLog.failure(failure));
+            } else {
+                logUnexpected(UnexpectedStage.TRANSLATION, failure);
+            }
             return new ImageTranslationOutcome.Failure(ImageTranslationFailureStage.TRANSLATION);
         }
         if (workflowOutcome instanceof TranslationWorkflowOutcome.Failure failure) {
@@ -329,6 +363,31 @@ public class ImageTranslationPipeline {
         return decision.region().text().length();
     }
 
+    /**
+     * The failures a stage is known to end in: the OCR, provider, structured-mapping, renderer
+     * and data-store exceptions that report an unavailable or unusable service, not a bug. They
+     * degrade the image as they always did. Anything else thrown by a stage is a defect of the
+     * pipeline; it degrades the image the same way but is reported by {@link #logUnexpected}.
+     */
+    private static boolean isExpectedFailure(RuntimeException failure) {
+        return failure instanceof OcrProcessingException
+                || failure instanceof InvalidImageException
+                || failure instanceof AiProviderException
+                || failure instanceof StructuredTranslationException
+                || failure instanceof RenderedImageEncodingException
+                || failure instanceof DataAccessException;
+    }
+
+    /**
+     * Records a defect once, at ERROR, with its stack frames and without any message (see
+     * {@link SafeLog#redacted}), and counts it so a bug is told apart from an outage.
+     */
+    private void logUnexpected(UnexpectedStage stage, RuntimeException failure) {
+        unexpectedFailures.get(stage).increment();
+        log.error("Image translation stage failed unexpectedly: stage={}, failure={}",
+                stage.tag(), SafeLog.failure(failure), SafeLog.redacted(failure));
+    }
+
     private static long elapsedMillis(long startedAt) {
         return java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt);
     }
@@ -360,7 +419,11 @@ public class ImageTranslationPipeline {
                     image.bytes(), image.contentType());
             return result == null ? ImageStorageResult.notStored() : result;
         } catch (RuntimeException failure) {
-            log.warn("Image storage degraded: failure={}", SafeLog.failure(failure));
+            if (isExpectedFailure(failure)) {
+                log.warn("Image storage degraded: failure={}", SafeLog.failure(failure));
+            } else {
+                logUnexpected(UnexpectedStage.STORAGE, failure);
+            }
             return ImageStorageResult.notStored();
         }
     }
@@ -464,7 +527,11 @@ public class ImageTranslationPipeline {
                             ? OverlayDegradationSummary.none()
                             : OverlayDegradationSummary.single(OverlayDegradationReason.STORAGE, 1)));
         } catch (RuntimeException failure) {
-            log.warn("Translated image rendering degraded to text: failure={}", SafeLog.failure(failure));
+            if (isExpectedFailure(failure)) {
+                log.warn("Translated image rendering degraded to text: failure={}", SafeLog.failure(failure));
+            } else {
+                logUnexpected(UnexpectedStage.RENDERING, failure);
+            }
             return new OverlayOutcome(ImageStorageResult.notStored(), 0,
                     ImageOverlayDisposition.SAFETY_DEGRADED,
                     OverlayDegradationSummary.single(OverlayDegradationReason.OTHER, 1));
