@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
 # 第一階段：構建應用程式
-FROM eclipse-temurin:17-jdk AS build
+FROM eclipse-temurin:25-jdk AS build
 WORKDIR /workspace/app
 
 # 複製 Maven 包裝器和 POM 文件
@@ -22,7 +22,7 @@ COPY src src
 RUN --mount=type=cache,target=/root/.m2 ./mvnw clean package -B -DskipTests -Pprod
 
 # 第二階段：運行應用程式
-FROM eclipse-temurin:17-jre
+FROM eclipse-temurin:25-jre
 WORKDIR /app
 
 # 設置時區與容器健康檢查工具
