@@ -71,6 +71,9 @@ class AdminStatsIntegrationTests {
                 .contains(AdminStatsIndexInitializer.RECORD_CREATED_AT_INDEX_NAME);
         assertThat(indexNames(UserProfile.class))
                 .contains(AdminStatsIndexInitializer.PROFILE_LAST_INTERACTION_INDEX_NAME);
+        assertThat(indexNames(TranslationRecord.class)).contains(
+                AdminStatsIndexInitializer.RECORD_AI_PROVIDER_INDEX_NAME,
+                AdminStatsIndexInitializer.RECORD_IMAGE_TRANSLATION_INDEX_NAME);
 
         Date now = new Date();
         Document recordPlan = mongoTemplate.getCollection(RECORDS)
@@ -82,6 +85,26 @@ class AdminStatsIntegrationTests {
                 .explain();
         assertThat(profilePlan.toJson())
                 .contains(AdminStatsIndexInitializer.PROFILE_LAST_INTERACTION_INDEX_NAME);
+    }
+
+    @Test
+    void equalityCountsOfTheSystemStatsAreAnsweredFromTheirIndexes() {
+        saveRecord(LocalDateTime.now(), true, "openrouter", 1_000);
+        saveRecord(LocalDateTime.now(), false, "gemini", 1_000);
+
+        String imagePlan = explainCount(new Document("isImageTranslation", true)).toJson();
+        assertThat(imagePlan)
+                .contains("COUNT_SCAN")
+                .contains(AdminStatsIndexInitializer.RECORD_IMAGE_TRANSLATION_INDEX_NAME)
+                .doesNotContain("COLLSCAN");
+        String providerPlan = explainCount(new Document("aiProvider", "openrouter")).toJson();
+        assertThat(providerPlan)
+                .contains("COUNT_SCAN")
+                .contains(AdminStatsIndexInitializer.RECORD_AI_PROVIDER_INDEX_NAME)
+                .doesNotContain("COLLSCAN");
+
+        assertThat(translationRecordRepository.countByIsImageTranslation(true)).isEqualTo(1);
+        assertThat(translationRecordRepository.countByAiProvider("openrouter")).isEqualTo(1);
     }
 
     @Test
@@ -225,6 +248,12 @@ class AdminStatsIntegrationTests {
                 .isImageTranslation(image)
                 .processingTimeMs(processingTimeMs)
                 .build());
+    }
+
+    private Document explainCount(Document query) {
+        return mongoTemplate.getDb().runCommand(new Document("explain",
+                new Document("count", RECORDS).append("query", query))
+                .append("verbosity", "queryPlanner"));
     }
 
     private List<String> indexNames(Class<?> documentType) {

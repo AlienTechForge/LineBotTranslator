@@ -5,13 +5,16 @@ import java.util.Collection;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.function.Function;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 
 import com.linetranslate.bot.config.AppConfig;
+import com.linetranslate.bot.logging.SafeLog;
 import com.linetranslate.bot.model.UserProfile;
+import com.linetranslate.bot.repository.UserProfileAtomicUpdates;
 import com.linetranslate.bot.repository.UserProfileRepository;
 import com.linetranslate.bot.service.ai.AiProviderAdapter;
 import com.linetranslate.bot.service.ai.AiProviderRequest;
@@ -20,14 +23,17 @@ import com.linetranslate.bot.service.settings.RuntimeSettingsSource;
 import com.linetranslate.bot.service.translation.TranslationStylePreset;
 import com.linetranslate.bot.util.LanguageUtils;
 
+import lombok.extern.slf4j.Slf4j;
+
 /**
  * Deep Module for effective user preferences. Model discovery stays dynamic at
  * the OpenRouter catalog Seam; only a validated model slug is persisted.
  */
 @Service
+@Slf4j
 public class UserPreferencesModule {
 
-    private static final int MAX_RECENT_LANGUAGES = 5;
+    private static final int MAX_RECENT_LANGUAGES = UserProfileAtomicUpdates.RECENT_LIMIT;
 
     private final UserProfileRepository repository;
     private final RuntimeSettingsSource runtimeSettingsSource;
@@ -99,20 +105,12 @@ public class UserPreferencesModule {
 
     public UserPreferenceChange updateTargetLanguage(String userId, String language) {
         String normalized = requireLanguage(language);
-        UserProfile profile = profile(userId);
-        UserPreferences previous = resolve(profile);
-        profile.setPreferredLanguage(normalized);
-        repository.save(profile);
-        return new UserPreferenceChange(previous, resolve(profile));
+        return change(userId, id -> repository.setPreferredLanguage(id, normalized));
     }
 
     public UserPreferenceChange updateChineseTargetLanguage(String userId, String language) {
         String normalized = requireLanguage(language);
-        UserProfile profile = profile(userId);
-        UserPreferences previous = resolve(profile);
-        profile.setPreferredChineseTargetLanguage(normalized);
-        repository.save(profile);
-        return new UserPreferenceChange(previous, resolve(profile));
+        return change(userId, id -> repository.setPreferredChineseTargetLanguage(id, normalized));
     }
 
     public UserPreferenceChange updateModel(String userId, String modelName) {
@@ -120,42 +118,46 @@ public class UserPreferencesModule {
         if (model == null || !adapter.supports(AiProviderRequest.translate(model, "validation", "en"))) {
             throw new InvalidUserPreferenceException(InvalidUserPreferenceException.Kind.MODEL, modelName);
         }
-        UserProfile profile = profile(userId);
-        UserPreferences previous = resolve(profile);
-        profile.setPreferredModel(model);
-        repository.save(profile);
-        return new UserPreferenceChange(previous, resolve(profile));
+        return change(userId, id -> repository.setPreferredModel(id, model));
     }
 
     public UserPreferenceChange updateTranslationStyle(String userId, String presetId) {
         TranslationStylePreset preset = TranslationStylePreset.find(presetId)
                 .orElseThrow(() -> new InvalidUserPreferenceException(
                         InvalidUserPreferenceException.Kind.STYLE, presetId));
-        UserProfile profile = profile(userId);
-        UserPreferences previous = resolve(profile);
-        profile.setPreferredTranslationStyle(preset.id());
-        repository.save(profile);
-        return new UserPreferenceChange(previous, resolve(profile));
+        return change(userId, id -> repository.setPreferredTranslationStyle(id, preset.id()));
     }
 
-    public void persistTranslationActivity(UserProfile profile, String targetLanguage) {
-        if (profile == null) {
-            throw new IllegalArgumentException("User profile is required");
-        }
-        LinkedHashSet<String> recent = new LinkedHashSet<>();
+    /**
+     * Records one successful translation for the user: activity time, counters, recent
+     * translated texts and recent target languages, as one atomic update that cannot overwrite
+     * a concurrent change of the same profile.
+     */
+    public void recordTranslationActivity(
+            String userId, String targetLanguage, String translatedText, boolean imageTranslation) {
+        requireUserId(userId);
         String normalized = normalizeLanguage(targetLanguage);
-        if (isSupportedLanguage(normalized)) {
-            recent.add(normalized);
+        boolean recorded = repository.recordTranslation(
+                userId,
+                LocalDateTime.now(),
+                translatedText,
+                isSupportedLanguage(normalized) ? normalized : null,
+                imageTranslation);
+        if (!recorded) {
+            log.warn("Translation activity not recorded, profile is missing: user={}", SafeLog.user(userId));
         }
-        recent.addAll(validRecentLanguages(profile.getRecentLanguages()));
-        profile.setRecentLanguages(recent.stream()
-                .limit(MAX_RECENT_LANGUAGES)
-                .collect(LinkedHashSet::new, LinkedHashSet::add, LinkedHashSet::addAll));
-        repository.save(profile);
     }
 
     public java.util.Set<String> availableModels() {
         return adapter.availableModels();
+    }
+
+    /** Creates the profile when missing, applies one atomic field update and resolves both states. */
+    private UserPreferenceChange change(String userId, Function<String, Optional<UserProfile>> update) {
+        UserPreferences previous = resolve(profile(userId));
+        UserProfile updated = update.apply(userId)
+                .orElseThrow(() -> new IllegalStateException("User profile disappeared during update"));
+        return new UserPreferenceChange(previous, resolve(updated));
     }
 
     private String effectiveModel(String requested, RuntimeSettings settings) {

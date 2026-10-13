@@ -234,6 +234,83 @@ class LineMessageRendererTests {
         assertThat(unshortened.originalContentUrl().toString()).isEqualTo(signed);
     }
 
+    private static final String SIGNED_PREVIEW = "https://s3.azndev.com/line-bot/translated-images/1/image-preview.jpg"
+            + "?X-Amz-Algorithm=AWS4-HMAC-SHA256"
+            + "&X-Amz-Credential=test%2F20260812%2Fus-east-1%2Fs3%2Faws4_request"
+            + "&X-Amz-Date=20260812T071753Z&X-Amz-Expires=3600"
+            + "&X-Amz-SignedHeaders=host&X-Amz-Signature=" + "c".repeat(64);
+
+    @Test
+    void withoutTheProxyTheStoredPreviewRenditionIsLinePreviewAndOriginalStaysFull() {
+        RuntimeSettingsSource settings = mock(RuntimeSettingsSource.class);
+        ImageProxyLinkService proxy = mock(ImageProxyLinkService.class);
+        DwzShortLinkService shortLinks = mock(DwzShortLinkService.class);
+        ImageTranslationReply reply = new ImageTranslationReply(
+                TranslationResponse.plain("fallback"), Optional.of(SIGNED_IMAGE), Optional.of(SIGNED_PREVIEW));
+        when(settings.current()).thenReturn(new RuntimeSettings(
+                "en", "zh-TW", "openai/gpt-4o-mini", true, true,
+                3, 1, null, null, RuntimeSettings.Source.PERSISTED));
+        when(proxy.register(SIGNED_IMAGE)).thenReturn(Optional.empty());
+        when(shortLinks.shortenSignedImage(java.net.URI.create(SIGNED_IMAGE)))
+                .thenReturn(Optional.of(java.net.URI.create("https://s.azndev.com/abc")));
+        LineMessageRenderer directRenderer = new LineMessageRenderer(
+                mock(AiModelCatalog.class), settings, proxy, shortLinks);
+
+        ImageMessage shortened = (ImageMessage) directRenderer.imageResult(reply);
+
+        assertThat(shortened.originalContentUrl().toString()).isEqualTo("https://s.azndev.com/abc");
+        assertThat(shortened.previewImageUrl().toString()).isEqualTo(SIGNED_PREVIEW);
+        org.mockito.Mockito.verify(shortLinks, org.mockito.Mockito.never())
+                .shortenSignedImage(java.net.URI.create(SIGNED_PREVIEW));
+
+        when(settings.current()).thenReturn(new RuntimeSettings(
+                "en", "zh-TW", "openai/gpt-4o-mini", true, false,
+                3, 2, null, null, RuntimeSettings.Source.PERSISTED));
+        ImageMessage unshortened = (ImageMessage) directRenderer.imageResult(reply);
+        assertThat(unshortened.originalContentUrl().toString()).isEqualTo(SIGNED_IMAGE);
+        assertThat(unshortened.previewImageUrl().toString()).isEqualTo(SIGNED_PREVIEW);
+        assertThat(unshortened.previewImageUrl()).isNotEqualTo(unshortened.originalContentUrl());
+    }
+
+    @Test
+    void withoutAStoredPreviewTheOriginalIsItsOwnPreviewAsBefore() {
+        LineMessageRenderer directRenderer = imageRenderer(true);
+
+        ImageMessage image = (ImageMessage) directRenderer.imageResult(overlayReply());
+
+        assertThat(image.previewImageUrl()).isEqualTo(image.originalContentUrl());
+    }
+
+    @Test
+    void anInsecureStoredPreviewIsIgnored() {
+        ImageTranslationReply reply = new ImageTranslationReply(
+                overlayReply().response(), Optional.of(SIGNED_IMAGE),
+                Optional.of("http://user:secret@s3.azndev.com/preview.jpg"));
+
+        ImageMessage image = (ImageMessage) imageRenderer(true).imageResult(reply);
+
+        assertThat(image.previewImageUrl().toString()).isEqualTo(SIGNED_IMAGE);
+    }
+
+    @Test
+    void proxyLinksKeepTheirOwnBoundedPreviewInsteadOfTheStoredRendition() {
+        RuntimeSettingsSource settings = () -> null;
+        ImageProxyLinkService proxy = mock(ImageProxyLinkService.class);
+        when(proxy.register(SIGNED_IMAGE)).thenReturn(Optional.of(new ImageProxyLinks(
+                java.net.URI.create("https://translate.azndev.com/i/0123456789abcdefghij-_"),
+                java.net.URI.create("https://translate.azndev.com/i/0123456789abcdefghij-_/preview"))));
+        ImageTranslationReply reply = new ImageTranslationReply(
+                overlayReply().response(), Optional.of(SIGNED_IMAGE), Optional.of(SIGNED_PREVIEW));
+
+        ImageMessage image = (ImageMessage) new LineMessageRenderer(
+                mock(AiModelCatalog.class), settings, proxy, null).imageResult(reply);
+
+        assertThat(image.originalContentUrl().toString())
+                .isEqualTo("https://translate.azndev.com/i/0123456789abcdefghij-_");
+        assertThat(image.previewImageUrl().toString())
+                .isEqualTo("https://translate.azndev.com/i/0123456789abcdefghij-_/preview");
+    }
+
     private static final String SIGNED_IMAGE = "https://s3.azndev.com/line-bot/translated-images/1/image.png"
             + "?X-Amz-Algorithm=AWS4-HMAC-SHA256"
             + "&X-Amz-Credential=test%2F20260812%2Fus-east-1%2Fs3%2Faws4_request"
@@ -358,7 +435,6 @@ class LineMessageRendererTests {
         UserProfileRepository profiles = mock(UserProfileRepository.class);
         UserPreferencesModule preferences = mock(UserPreferencesModule.class);
         when(preferences.profile("U-long")).thenReturn(UserProfile.builder().userId("U-long").build());
-        when(profiles.save(any(UserProfile.class))).thenAnswer(invocation -> invocation.getArgument(0));
         String recognized = "字".repeat(50_000);
         ImageTranslationContext context = new ImageTranslationContext(
                 new DownloadedImage(new byte[] {1}, "image/png"),

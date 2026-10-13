@@ -4,9 +4,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.TreeSet;
 
 import org.junit.jupiter.api.Test;
 
@@ -62,6 +64,47 @@ class LanguageUtilsTests {
         });
 
         assertThat(unsupported).isEmpty();
+    }
+
+    @Test
+    void everySupportedCodeHasAChineseDisplayNameThatResolvesBackToIt() {
+        // A code without a name made replies show the bare code ("hu") next to Chinese names.
+        List<String> problems = new ArrayList<>();
+        new TreeSet<>(LanguageUtils.languageNameToCode().values()).forEach(code -> {
+            String name = LanguageUtils.toChineseName(code);
+            if (name.equals(code) || !isHan(name)) {
+                problems.add(code + " has no Chinese display name: " + name);
+            } else if (!LanguageUtils.toLanguageCode(name).equals(code)) {
+                problems.add(name + " does not resolve back to " + code);
+            }
+        });
+
+        assertThat(problems).isEmpty();
+    }
+
+    @Test
+    void hungarianHebrewFilipinoAndIcelandicHaveChineseNamesAndAliases() {
+        Map<String, List<String>> namesByCode = new LinkedHashMap<>();
+        namesByCode.put("hu", List.of("匈牙利文", "匈牙利語"));
+        namesByCode.put("he", List.of("希伯來文", "希伯來語"));
+        namesByCode.put("tl", List.of("菲律賓文", "菲律賓語", "他加祿文", "他加祿語"));
+        namesByCode.put("is", List.of("冰島文", "冰島語"));
+
+        namesByCode.forEach((code, names) -> {
+            assertThat(LanguageUtils.toChineseName(code)).as(code).isEqualTo(names.get(0));
+            assertThat(LanguageUtils.toChineseName(code.toUpperCase(Locale.ROOT)))
+                    .as(code + " upper case").isEqualTo(names.get(0));
+            assertThat(LanguageUtils.toLanguageCode(code)).as(code).isEqualTo(code);
+            for (String name : names) {
+                assertThat(LanguageUtils.isSupported(name)).as(name).isTrue();
+                assertThat(LanguageUtils.toLanguageCode(name)).as(name).isEqualTo(code);
+                assertThat(LanguageUtils.leadingChineseName(name + "你好")).as(name).isEqualTo(name);
+            }
+        });
+        // The country-style shorthands for these languages keep resolving to them.
+        assertThat(LanguageUtils.toLanguageCode("ph")).isEqualTo("tl");
+        assertThat(LanguageUtils.toLanguageCode("il")).isEqualTo("he");
+        assertThat(LanguageUtils.toLanguageCode("ice")).isEqualTo("is");
     }
 
     @Test
@@ -152,6 +195,11 @@ class LanguageUtilsTests {
         assertThatThrownBy(() -> aliases.put("ar", "es"))
                 .isInstanceOf(IllegalStateException.class);
         assertThat(aliases).containsEntry("ar", "ar").containsEntry("br", "pt");
+    }
+
+    private static boolean isHan(String text) {
+        return !text.isEmpty() && text.codePoints()
+                .allMatch(codePoint -> Character.UnicodeScript.of(codePoint) == Character.UnicodeScript.HAN);
     }
 
     private static String language(String languageTag) {

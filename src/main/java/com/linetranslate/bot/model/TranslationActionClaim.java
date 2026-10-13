@@ -31,6 +31,13 @@ public class TranslationActionClaim {
     private String targetLanguage;
     private String stylePresetId;
     private Status status;
+    /**
+     * Fencing token: incremented by every acquisition of this claim (the insert starts at 1,
+     * each lease takeover adds one). Only the worker holding the current value may finalise
+     * it. Absent on documents written before the field existed, which a takeover counts
+     * from zero.
+     */
+    private Integer attempt;
     private String resultRecordId;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;

@@ -228,9 +228,10 @@ public class ImageTranslationOverlayRenderer {
             Font font = item.layout().font().deriveFont((float) target);
             graphics.setFont(font);
             FontMetrics metrics = graphics.getFontMetrics();
-            List<String> lines = wrap(item.overlay().replacement(), metrics,
-                    Math.max(1, item.localBounds().width() - 2));
-            if (textHeight(metrics, lines.size()) > item.localBounds().height()) {
+            int lineWidth = Math.max(1, item.localBounds().width() - 2);
+            List<String> lines = wrap(item.overlay().replacement(), metrics, lineWidth);
+            if (textHeight(metrics, lines.size()) > item.localBounds().height()
+                    || widestLine(metrics, lines) > lineWidth) {
                 result.add(item);
                 continue;
             }
@@ -315,6 +316,8 @@ public class ImageTranslationOverlayRenderer {
                     graphics, text, bounds, baseFont, compactFloor - 1, READABLE_LABEL_FLOOR);
             if (smaller != null) return smaller;
         }
+        // Nothing fit at any size, condensed or not, by height or by width: the caller keeps the
+        // source pixels (text-fit) rather than drawing this layout.
         Font font = condensed(baseFont, MIN_FONT_SIZE, CONDENSE_STEPS[CONDENSE_STEPS.length - 1]);
         graphics.setFont(font);
         List<String> lines = wrap(text, graphics.getFontMetrics(), Math.max(1, bounds.width() - 2));
@@ -416,7 +419,9 @@ public class ImageTranslationOverlayRenderer {
      * Largest layout that fits within a closed size range, or null when nothing in the range fits.
      * A fixed-width cell is limited by width, not height, and a translation usually needs more
      * characters than its source. Narrowing glyphs keeps their height, which shrinking does not,
-     * so every condensing step is tried at a size before the next smaller size is.
+     * so every condensing step is tried at a size before the next smaller size is. A layout fits
+     * only when it is short enough and its widest line is no wider than the cell: wrapping cannot
+     * split a single glyph, so in a cell thinner than a glyph the height alone is no evidence.
      */
     private static Layout fitBetween(
             Graphics2D graphics,
@@ -431,13 +436,24 @@ public class ImageTranslationOverlayRenderer {
                 Font font = condensed(baseFont, size, widthScale);
                 graphics.setFont(font);
                 FontMetrics metrics = graphics.getFontMetrics();
-                List<String> lines = wrap(text, metrics, Math.max(1, bounds.width() - 2));
-                if (textHeight(metrics, lines.size()) <= bounds.height()) {
+                int lineWidth = Math.max(1, bounds.width() - 2);
+                List<String> lines = wrap(text, metrics, lineWidth);
+                if (textHeight(metrics, lines.size()) <= bounds.height()
+                        && widestLine(metrics, lines) <= lineWidth) {
                     return new Layout(font, lines, true);
                 }
             }
         }
         return null;
+    }
+
+    /** Width of the widest line as it is drawn, which is what has to fit inside the cell. */
+    private static int widestLine(FontMetrics metrics, List<String> lines) {
+        int widest = 0;
+        for (String line : lines) {
+            widest = Math.max(widest, metrics.stringWidth(line));
+        }
+        return widest;
     }
 
     /**
@@ -553,10 +569,11 @@ public class ImageTranslationOverlayRenderer {
     }
 
     /**
-     * Greedy line filling. CJK, kana and Hangul may break between any two glyphs, but a word in a
-     * space-separated script may only break at a space, so it moves to the next line whole. Only a
-     * word wider than a line on its own is broken glyph by glyph. A space at a break hangs off the
-     * end of the line and is dropped there, so the next line never starts with it.
+     * Greedy line filling. Han and kana may break between any two glyphs, but a word in a
+     * space-separated script, Hangul included, may only break at a space, so it moves to the next
+     * line whole. Only a word wider than a line on its own is broken glyph by glyph. A space at a
+     * break hangs off the end of the line and is dropped there, so the next line never starts with
+     * it.
      */
     static List<String> wrap(String text, FontMetrics metrics, int width) {
         List<String> lines = new ArrayList<>();
@@ -592,10 +609,11 @@ public class ImageTranslationOverlayRenderer {
     }
 
     /**
-     * Units a line may not break inside: each space, each CJK, kana or Hangul glyph, and each run
-     * of anything else, which is a word together with its punctuation. A run holding no letter or
-     * digit protects no word, so it falls apart into glyphs; that keeps ellipses, dashes and
-     * quotes between CJK glyphs breakable exactly as before.
+     * Units a line may not break inside: each space, each Han or kana glyph, and each run of
+     * anything else, which is a word together with its punctuation. A Hangul syllable is part of
+     * such a run, so a Korean word keeps together exactly as a Latin one does and a hyphen is not
+     * a break point. A run holding no letter or digit protects no word, so it falls apart into
+     * glyphs; that keeps ellipses, dashes and quotes between CJK glyphs breakable exactly as before.
      */
     private static List<String> wrapTokens(String paragraph) {
         List<String> tokens = new ArrayList<>();
@@ -625,8 +643,13 @@ public class ImageTranslationOverlayRenderer {
 
     private static boolean breaksAtEveryGlyph(int codePoint) {
         Character.UnicodeScript script = Character.UnicodeScript.of(codePoint);
+        // Korean is written with spaces and, like CSS word-break: keep-all, breaks only at them.
+        // Checked first so the half-width jamo in the forms block below are not split either.
+        if (script == Character.UnicodeScript.HANGUL) {
+            return false;
+        }
         if (script == Character.UnicodeScript.HAN || script == Character.UnicodeScript.HIRAGANA
-                || script == Character.UnicodeScript.KATAKANA || script == Character.UnicodeScript.HANGUL
+                || script == Character.UnicodeScript.KATAKANA
                 || script == Character.UnicodeScript.BOPOMOFO) {
             return true;
         }

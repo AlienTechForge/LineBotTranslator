@@ -72,6 +72,14 @@ public class ImageProxyLinkService {
         this.tokenSupplier = tokenSupplier;
     }
 
+    /**
+     * True when a valid public base and MinIO public endpoint are configured, i.e. when
+     * {@link #register} can hand out proxy links whose preview the proxy resizes itself.
+     */
+    public boolean isEnabled() {
+        return publicBaseUri != null && minioPublicUri != null;
+    }
+
     public Optional<ImageProxyLinks> register(String signedImageUrl) {
         Optional<URI> validated = validatedTarget(signedImageUrl);
         if (publicBaseUri == null || validated.isEmpty()) {

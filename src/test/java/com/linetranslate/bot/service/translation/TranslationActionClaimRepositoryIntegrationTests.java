@@ -2,28 +2,42 @@ package com.linetranslate.bot.service.translation;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.when;
 
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.bson.Document;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
+import org.springframework.data.mongodb.core.query.Update;
 import org.springframework.test.context.ActiveProfiles;
 
 import com.linetranslate.bot.model.TranslationActionClaim;
+import com.linetranslate.bot.model.TranslationRecord;
 import com.linetranslate.bot.repository.TranslationActionClaimRepository;
+import com.linetranslate.bot.repository.TranslationRecordRepository;
 
 @SpringBootTest
 @ActiveProfiles("test")
@@ -131,6 +145,203 @@ class TranslationActionClaimRepositoryIntegrationTests {
                 .isNull();
         assertThat(repository.findById("claim-completed").orElseThrow().getStatus())
                 .isEqualTo(TranslationActionClaim.Status.COMPLETED);
+    }
+
+    @Test
+    void staleWorkerCannotFinaliseTheClaimWhileTheFreshWorkerStillRunsIt() throws Exception {
+        TranslationResponse staleResult = new TranslationResponse(
+                "こんにちは", "こんにちは", "result-stale", "en", "ja");
+        TranslationResponse freshResult = new TranslationResponse(
+                "こんばんは", "こんばんは", "result-fresh", "en", "ja");
+        try (StaleHandover handover = new StaleHandover(staleResult, freshResult)) {
+            handover.startStaleWorkerAndHandOverToFreshWorker();
+
+            handover.finishStaleWorker();
+
+            TranslationActionClaim afterStale = onlyClaim();
+            assertThat(afterStale.getStatus())
+                    .isEqualTo(TranslationActionClaim.Status.PROCESSING);
+            assertThat(afterStale.getResultRecordId()).isNull();
+            assertThat(afterStale.getAttempt()).isEqualTo(2);
+
+            handover.finishFreshWorker();
+
+            TranslationActionClaim afterFresh = onlyClaim();
+            assertThat(afterFresh.getStatus())
+                    .isEqualTo(TranslationActionClaim.Status.COMPLETED);
+            assertThat(afterFresh.getResultRecordId()).isEqualTo("result-fresh");
+            assertThat(afterFresh.getAttempt()).isEqualTo(2);
+        }
+    }
+
+    @Test
+    void staleWorkerCannotOverwriteTheCompletedStateOfTheFreshWorker() throws Exception {
+        TranslationResponse staleFailure = TranslationResponse.plain("重新翻譯未完成");
+        TranslationResponse freshResult = new TranslationResponse(
+                "こんばんは", "こんばんは", "result-fresh", "en", "ja");
+        try (StaleHandover handover = new StaleHandover(staleFailure, freshResult)) {
+            handover.startStaleWorkerAndHandOverToFreshWorker();
+            handover.finishFreshWorker();
+
+            handover.finishStaleWorker();
+
+            TranslationActionClaim claim = onlyClaim();
+            assertThat(claim.getStatus()).isEqualTo(TranslationActionClaim.Status.COMPLETED);
+            assertThat(claim.getResultRecordId()).isEqualTo("result-fresh");
+            assertThat(claim.getAttempt()).isEqualTo(2);
+            assertThat(handover.staleResponse().get(10, TimeUnit.SECONDS)).isEqualTo(staleFailure);
+        }
+    }
+
+    @Test
+    void claimStoredWithoutAFencingTokenIsTakenOverAndFinalisedByItsNewWorker() {
+        AdjustableClock clock = new AdjustableClock();
+        TranslationResponse first = new TranslationResponse(
+                "こんにちは", "こんにちは", "result-1", "en", "ja");
+        TranslationResponse second = new TranslationResponse(
+                "こんばんは", "こんばんは", "result-2", "en", "ja");
+        TranslationService provider = Mockito.mock(TranslationService.class);
+        when(provider.translateExisting("U-user", "hello", "ja")).thenReturn(first, second);
+        TranslationActionModule actions = actionModule(provider, clock);
+        actions.execute("U-user", "record-1", "ja");
+        TranslationActionClaim written = onlyClaim();
+        assertThat(written.getAttempt()).isEqualTo(1);
+        // Rewrite the document the way a build without the fencing token left it behind.
+        mongoTemplate.updateFirst(
+                Query.query(Criteria.where("_id").is(written.getId())),
+                new Update()
+                        .unset("attempt")
+                        .unset("resultRecordId")
+                        .set("status", TranslationActionClaim.Status.PROCESSING),
+                TranslationActionClaim.class);
+        Document legacy = mongoTemplate.getCollection(COLLECTION)
+                .find(new Document("_id", written.getId()))
+                .first();
+        assertThat(legacy).isNotNull().doesNotContainKey("attempt");
+        clock.advance(Duration.ofMinutes(10));
+
+        assertThat(actions.execute("U-user", "record-1", "ja")).isEqualTo(second);
+
+        TranslationActionClaim claim = onlyClaim();
+        assertThat(claim.getStatus()).isEqualTo(TranslationActionClaim.Status.COMPLETED);
+        assertThat(claim.getResultRecordId()).isEqualTo("result-2");
+        assertThat(claim.getAttempt()).isEqualTo(1);
+    }
+
+    private TranslationActionClaim onlyClaim() {
+        List<TranslationActionClaim> claims = mongoTemplate.findAll(TranslationActionClaim.class);
+        assertThat(claims).hasSize(1);
+        return claims.get(0);
+    }
+
+    private TranslationActionModule actionModule(TranslationService provider, Clock clock) {
+        TranslationRecordRepository records = Mockito.mock(TranslationRecordRepository.class);
+        when(records.findByIdAndUserId("record-1", "U-user")).thenReturn(Optional.of(
+                TranslationRecord.builder()
+                        .id("record-1")
+                        .userId("U-user")
+                        .sourceText("hello")
+                        .sourceLanguage("en")
+                        .targetLanguage("zh-TW")
+                        .translatedText("你好")
+                        .build()));
+        TranslationActionProperties properties = new TranslationActionProperties();
+        properties.setActionClaimLease(Duration.ofMinutes(5));
+        return new TranslationActionModule(
+                records, repository, provider, mongoTemplate, properties, clock);
+    }
+
+    /**
+     * Two workers for the same action: the first stalls inside the provider call past its
+     * lease, a second click then takes the claim over, and each is released on demand.
+     */
+    private final class StaleHandover implements AutoCloseable {
+
+        private final AdjustableClock clock = new AdjustableClock();
+        private final TranslationActionModule actions;
+        private final ExecutorService pool = Executors.newFixedThreadPool(2);
+        private final CountDownLatch staleInProvider = new CountDownLatch(1);
+        private final CountDownLatch freshInProvider = new CountDownLatch(1);
+        private final CountDownLatch releaseStale = new CountDownLatch(1);
+        private final CountDownLatch releaseFresh = new CountDownLatch(1);
+        private Future<TranslationResponse> stale;
+        private Future<TranslationResponse> fresh;
+
+        StaleHandover(TranslationResponse staleOutcome, TranslationResponse freshOutcome) {
+            AtomicInteger providerCalls = new AtomicInteger();
+            TranslationService provider = Mockito.mock(TranslationService.class);
+            when(provider.translateExisting("U-user", "hello", "ja")).thenAnswer(invocation -> {
+                if (providerCalls.incrementAndGet() == 1) {
+                    staleInProvider.countDown();
+                    awaitRelease(releaseStale);
+                    return staleOutcome;
+                }
+                freshInProvider.countDown();
+                awaitRelease(releaseFresh);
+                return freshOutcome;
+            });
+            actions = actionModule(provider, clock);
+        }
+
+        void startStaleWorkerAndHandOverToFreshWorker() throws InterruptedException {
+            stale = pool.submit(() -> actions.execute("U-user", "record-1", "ja"));
+            assertThat(staleInProvider.await(10, TimeUnit.SECONDS)).isTrue();
+            clock.advance(Duration.ofMinutes(10));
+            fresh = pool.submit(() -> actions.execute("U-user", "record-1", "ja"));
+            assertThat(freshInProvider.await(10, TimeUnit.SECONDS)).isTrue();
+        }
+
+        void finishStaleWorker() throws Exception {
+            releaseStale.countDown();
+            stale.get(10, TimeUnit.SECONDS);
+        }
+
+        void finishFreshWorker() throws Exception {
+            releaseFresh.countDown();
+            fresh.get(10, TimeUnit.SECONDS);
+        }
+
+        Future<TranslationResponse> staleResponse() {
+            return stale;
+        }
+
+        @Override
+        public void close() {
+            releaseStale.countDown();
+            releaseFresh.countDown();
+            pool.shutdownNow();
+        }
+
+        private static void awaitRelease(CountDownLatch latch) throws InterruptedException {
+            if (!latch.await(10, TimeUnit.SECONDS)) {
+                throw new IllegalStateException("worker was never released");
+            }
+        }
+    }
+
+    private static final class AdjustableClock extends Clock {
+
+        private final AtomicReference<Instant> now =
+                new AtomicReference<>(Instant.now().truncatedTo(ChronoUnit.MILLIS));
+
+        void advance(Duration amount) {
+            now.updateAndGet(current -> current.plus(amount));
+        }
+
+        @Override
+        public ZoneId getZone() {
+            return ZoneId.systemDefault();
+        }
+
+        @Override
+        public Clock withZone(ZoneId zone) {
+            return this;
+        }
+
+        @Override
+        public Instant instant() {
+            return now.get();
+        }
     }
 
     private static TranslationActionClaim claim(

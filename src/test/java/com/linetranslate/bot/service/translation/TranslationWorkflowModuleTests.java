@@ -2,6 +2,7 @@ package com.linetranslate.bot.service.translation;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -63,10 +64,7 @@ class TranslationWorkflowModuleTests {
 
     @ParameterizedTest
     @MethodSource("translationKinds")
-    void everyTranslationKindUsesTheSameSinglePassWorkflow(
-            TranslationRequestKind kind,
-            int expectedTextCount,
-            int expectedImageCount) {
+    void everyTranslationKindUsesTheSameSinglePassWorkflow(TranslationRequestKind kind) {
         UserProfile profile = profile();
         when(languageDetection.detectLanguage("hello")).thenReturn("en");
         when(translationAdapter.translate(preferences, "hello", "zh-TW"))
@@ -89,11 +87,11 @@ class TranslationWorkflowModuleTests {
         verify(languageDetection).detectLanguage("hello");
         verify(translationAdapter).translate(preferences, "hello", "zh-TW");
         verify(recordRepository).save(any(TranslationRecord.class));
-        verify(userPreferencesModule).persistTranslationActivity(profile, "zh-TW");
-        assertThat(profile.getTotalTranslations()).isEqualTo(1);
-        assertThat(profile.getTextTranslations()).isEqualTo(expectedTextCount);
-        assertThat(profile.getImageTranslations()).isEqualTo(expectedImageCount);
-        assertThat(profile.getRecentTranslations()).containsExactly("你好");
+        // Counters, recent texts and languages are one atomic repository update behind the
+        // preferences Module; the workflow never mutates or rewrites its profile snapshot.
+        verify(userPreferencesModule).recordTranslationActivity("U-test", "zh-TW", "你好", kind.isImage());
+        assertThat(profile.getTotalTranslations()).isZero();
+        assertThat(profile.getRecentTranslations()).isEmpty();
     }
 
     @Test
@@ -144,7 +142,7 @@ class TranslationWorkflowModuleTests {
         // The adapter renders the provider prompt, so no prompt ever carries the requested text.
         verifyNoInteractions(translationAdapter, languageDetection);
         verify(recordRepository, never()).save(any());
-        verify(userPreferencesModule, never()).persistTranslationActivity(any(), any());
+        verify(userPreferencesModule, never()).recordTranslationActivity(any(), any(), any(), anyBoolean());
         assertThat(profile.getTotalTranslations()).isZero();
     }
 
@@ -224,7 +222,7 @@ class TranslationWorkflowModuleTests {
         assertThat(((TranslationWorkflowOutcome.Failure) outcome).failure().outcome())
                 .isEqualTo(AiProviderException.Outcome.QUOTA_EXCEEDED);
         verify(recordRepository, never()).save(any());
-        verify(userPreferencesModule, never()).persistTranslationActivity(any(), any());
+        verify(userPreferencesModule, never()).recordTranslationActivity(any(), any(), any(), anyBoolean());
         assertThat(profile.getTotalTranslations()).isZero();
         assertThat(profile.getRecentTranslations()).isEmpty();
     }
@@ -302,10 +300,10 @@ class TranslationWorkflowModuleTests {
 
     private static Stream<Arguments> translationKinds() {
         return Stream.of(
-                Arguments.of(TranslationRequestKind.STANDARD_TEXT, 1, 0),
-                Arguments.of(TranslationRequestKind.QUICK_TEXT, 1, 0),
-                Arguments.of(TranslationRequestKind.BATCH_TEXT, 1, 0),
-                Arguments.of(TranslationRequestKind.IMAGE_OCR, 0, 1));
+                Arguments.of(TranslationRequestKind.STANDARD_TEXT),
+                Arguments.of(TranslationRequestKind.QUICK_TEXT),
+                Arguments.of(TranslationRequestKind.BATCH_TEXT),
+                Arguments.of(TranslationRequestKind.IMAGE_OCR));
     }
 
     private static UserProfile profile() {

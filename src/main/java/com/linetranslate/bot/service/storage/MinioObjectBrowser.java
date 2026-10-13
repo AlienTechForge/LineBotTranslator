@@ -105,7 +105,10 @@ public class MinioObjectBrowser {
                                 .build());
                 for (Result<Item> result : objects) {
                     Item item = result.get();
-                    if (item.isDir() || !isManagedName(item.objectName())) {
+                    // A preview rendition is derived from the translated image listed beside it, so it
+                    // is not listed on its own; deleting the image also deletes it.
+                    if (item.isDir() || !isManagedName(item.objectName())
+                            || MinioStorageService.isTranslatedPreview(item.objectName())) {
                         continue;
                     }
                     Entry entry = toEntry(kind, item);
@@ -173,10 +176,29 @@ public class MinioObjectBrowser {
                 failed.add(name);
                 log.warn("Admin image gallery could not delete an object: object={}, failure={}",
                         name, MinioStorageService.safeFailure(failure));
+                continue;
+            }
+            if (name.startsWith(Kind.TRANSLATED.prefix()) && !MinioStorageService.isTranslatedPreview(name)) {
+                deletePreviewRendition(client, name);
             }
         }
         log.info("Admin image gallery deleted objects: deleted={}, failed={}", deleted, failed.size());
         return new DeleteOutcome(deleted, List.copyOf(failed));
+    }
+
+    /**
+     * Removes the LINE preview stored beside a deleted translated image, so an operator's delete
+     * leaves no downscaled copy behind. Removing a key that does not exist succeeds, and a failure
+     * is only logged: the retention job removes the preview with its folder.
+     */
+    private void deletePreviewRendition(MinioClient client, String translatedName) {
+        String previewName = MinioStorageService.previewObjectName(translatedName);
+        try {
+            client.removeObject(RemoveObjectArgs.builder().bucket(bucketName).object(previewName).build());
+        } catch (Exception failure) {
+            log.warn("Admin image gallery could not delete a preview rendition: object={}, failure={}",
+                    previewName, MinioStorageService.safeFailure(failure));
+        }
     }
 
     /** True for keys under a known prefix whose remainder is a plain, traversal-free path. */

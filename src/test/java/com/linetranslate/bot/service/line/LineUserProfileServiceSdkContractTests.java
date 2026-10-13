@@ -1,6 +1,7 @@
 package com.linetranslate.bot.service.line;
 
-import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -9,7 +10,6 @@ import java.util.concurrent.CompletableFuture;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -50,11 +50,10 @@ class LineUserProfileServiceSdkContractTests {
                 userPreferencesModule)
                 .syncUserProfile(userId);
 
-        ArgumentCaptor<UserProfile> captor = ArgumentCaptor.forClass(UserProfile.class);
-        verify(userProfileRepository).save(captor.capture());
-        assertThat(captor.getValue())
-                .extracting(UserProfile::getUserId, UserProfile::getDisplayName,
-                        UserProfile::getPictureUrl, UserProfile::getStatusMessage)
-                .containsExactly(userId, "Jason", "https://example.com/avatar.jpg", "Available");
+        verify(userPreferencesModule).profile(userId);
+        verify(userProfileRepository).setLineProfile(
+                userId, "Jason", "https://example.com/avatar.jpg", "Available");
+        // Only the LINE fields are written, so a concurrent preference change is never overwritten.
+        verify(userProfileRepository, never()).save(any(UserProfile.class));
     }
 }

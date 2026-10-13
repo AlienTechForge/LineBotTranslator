@@ -276,13 +276,137 @@ class OpenRouterServiceContractTests {
                 .isEqualTo("你好");
     }
 
+    @Test
+    void errorFinishReasonWithoutChoiceErrorIsAProviderFailureEvenWhenContentIsPresent()
+            throws IOException {
+        OpenRouterService adapter = adapterReturning("""
+                {"model":"openai/gpt-4o-mini",
+                 "choices":[{"message":{"content":"partial-upstream-text"},
+                             "finish_reason":"error","native_finish_reason":"error"}],
+                 "usage":{"prompt_tokens":40,"completion_tokens":7,"total_tokens":47}}
+                """, Set.of("text"));
+
+        assertThatThrownBy(() -> adapter.execute(AiProviderRequest.translate(
+                "openai/gpt-4o-mini", "hello", "zh-TW")))
+                .isInstanceOfSatisfying(AiProviderException.class, failure -> {
+                    assertThat(failure.getOutcome()).isEqualTo(AiProviderException.Outcome.HTTP_ERROR);
+                    assertThat(failure.getReason()).isEqualTo("PROVIDER_ERROR");
+                    assertThat(failure.getModel()).isEqualTo("openai/gpt-4o-mini");
+                    assertThat(failure.getTokenUsage()).isEqualTo(new AiTokenUsage(40, 7, 47));
+                    assertThat(failure.getMessage()).doesNotContain("partial-upstream-text");
+                });
+    }
+
+    @Test
+    void errorFinishReasonWithoutContentIsReportedAsProviderErrorNotEmptyResponse()
+            throws IOException {
+        OpenRouterService adapter = adapterReturning("""
+                {"model":"openai/gpt-4o-mini",
+                 "choices":[{"message":{"content":""},"finish_reason":"error"}]}
+                """, Set.of("text"));
+
+        assertThatThrownBy(() -> adapter.execute(AiProviderRequest.translate(
+                "openai/gpt-4o-mini", "hello", "zh-TW")))
+                .isInstanceOfSatisfying(AiProviderException.class, failure -> {
+                    assertThat(failure.getOutcome()).isEqualTo(AiProviderException.Outcome.HTTP_ERROR);
+                    assertThat(failure.getReason()).isEqualTo("PROVIDER_ERROR");
+                });
+    }
+
+    @Test
+    void nativeErrorFinishReasonIsUsedWhenTheNormalizedOneIsMissing() throws IOException {
+        OpenRouterService adapter = adapterReturning("""
+                {"model":"openai/gpt-4o-mini",
+                 "choices":[{"message":{"content":"partial-upstream-text"},"finish_reason":null,
+                             "native_finish_reason":"ERROR"}]}
+                """, Set.of("text"));
+
+        assertThatThrownBy(() -> adapter.execute(AiProviderRequest.translate(
+                "openai/gpt-4o-mini", "hello", "zh-TW")))
+                .isInstanceOfSatisfying(AiProviderException.class, failure -> {
+                    assertThat(failure.getOutcome()).isEqualTo(AiProviderException.Outcome.HTTP_ERROR);
+                    assertThat(failure.getReason()).isEqualTo("PROVIDER_ERROR");
+                });
+    }
+
+    @Test
+    void errorFinishReasonWithChoiceErrorKeepsTheEmbeddedFailureClassification() throws IOException {
+        OpenRouterService adapter = adapterReturning("""
+                {"model":"openai/gpt-4o-mini",
+                 "choices":[{"message":{"content":""},"finish_reason":"error",
+                             "error":{"code":429,"message":"upstream secret detail",
+                                      "metadata":{"error_type":"rate_limit_exceeded"}}}]}
+                """, Set.of("text"));
+
+        assertThatThrownBy(() -> adapter.execute(AiProviderRequest.translate(
+                "openai/gpt-4o-mini", "hello", "zh-TW")))
+                .isInstanceOfSatisfying(AiProviderException.class, failure -> {
+                    assertThat(failure.getOutcome()).isEqualTo(AiProviderException.Outcome.RATE_LIMITED);
+                    assertThat(failure.getHttpStatus()).isEqualTo(429);
+                    assertThat(failure.getReason()).isEqualTo("rate_limit_exceeded");
+                    assertThat(failure.getMessage()).doesNotContain("upstream secret detail");
+                });
+    }
+
+    @Test
+    void errorFinishReasonOfARoutedRequestIsPricedUnderTheModelThatRan() throws IOException {
+        OpenRouterService adapter = adapterReturning("openrouter/auto", """
+                {"model":"anthropic/claude-3.5-haiku",
+                 "choices":[{"message":{"content":"partial-upstream-text"},"finish_reason":"error"}],
+                 "usage":{"prompt_tokens":40,"completion_tokens":7,"total_tokens":47}}
+                """, Set.of("text"));
+
+        assertThatThrownBy(() -> adapter.execute(AiProviderRequest.translate(
+                "openrouter/auto", "hello", "zh-TW")))
+                .isInstanceOfSatisfying(AiProviderException.class, failure -> {
+                    assertThat(failure.getOutcome()).isEqualTo(AiProviderException.Outcome.HTTP_ERROR);
+                    assertThat(failure.getReason()).isEqualTo("PROVIDER_ERROR");
+                    assertThat(failure.getModel()).isEqualTo("anthropic/claude-3.5-haiku");
+                    assertThat(failure.getTokenUsage()).isEqualTo(new AiTokenUsage(40, 7, 47));
+                });
+    }
+
+    @Test
+    void truncatedCompletionOfARoutedRequestIsPricedUnderTheModelThatRan() throws IOException {
+        OpenRouterService adapter = adapterReturning("openrouter/auto", """
+                {"model":"anthropic/claude-3.5-haiku",
+                 "choices":[{"message":{"content":"partial-text"},"finish_reason":"length"}],
+                 "usage":{"prompt_tokens":900,"completion_tokens":1024,"total_tokens":1924}}
+                """, Set.of("text"));
+
+        assertThatThrownBy(() -> adapter.execute(AiProviderRequest.translate(
+                "openrouter/auto", "hello", "zh-TW")))
+                .isInstanceOfSatisfying(AiProviderException.class, failure -> {
+                    assertThat(failure.getReason()).isEqualTo("TRUNCATED_OUTPUT");
+                    assertThat(failure.getModel()).isEqualTo("anthropic/claude-3.5-haiku");
+                    assertThat(failure.getTokenUsage()).isEqualTo(new AiTokenUsage(900, 1024, 1924));
+                });
+    }
+
+    @Test
+    void finishReasonFailureFallsBackToTheRequestedModelWhenTheResponseNamesNone() throws IOException {
+        OpenRouterService adapter = adapterReturning("""
+                {"choices":[{"message":{"content":""},"finish_reason":"error"}]}
+                """, Set.of("text"));
+
+        assertThatThrownBy(() -> adapter.execute(AiProviderRequest.translate(
+                "openai/gpt-4o-mini", "hello", "zh-TW")))
+                .isInstanceOfSatisfying(AiProviderException.class,
+                        failure -> assertThat(failure.getModel()).isEqualTo("openai/gpt-4o-mini"));
+    }
+
     private OpenRouterService adapterReturning(String body, Set<String> inputModalities) throws IOException {
+        return adapterReturning("openai/gpt-4o-mini", body, inputModalities);
+    }
+
+    private OpenRouterService adapterReturning(
+            String requestedModel, String body, Set<String> inputModalities) throws IOException {
         OkHttpClient httpClient = mock(OkHttpClient.class);
         Call call = mock(Call.class);
         when(httpClient.newCall(any(Request.class))).thenReturn(call);
         when(call.execute()).thenReturn(response(200, body));
         return new OpenRouterService(
-                config(), httpClient, objectMapper, catalog("openai/gpt-4o-mini", inputModalities));
+                config(), httpClient, objectMapper, catalog(requestedModel, inputModalities));
     }
 
     private void assertFailure(

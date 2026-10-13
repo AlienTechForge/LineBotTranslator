@@ -152,7 +152,10 @@ class RetentionIndexInitializerIntegrationTests {
 
         assertThat(logs.list).extracting(ILoggingEvent::getLevel).doesNotContain(Level.WARN);
         assertThat(ttl(RECORDS, RECORD_INDEX)).contains(Duration.ofDays(90));
-        assertThat(indexNames(RECORDS)).containsExactlyInAnyOrder("_id_", RECORD_INDEX);
+        // Besides the createdAt index the statistics initializer owns the two
+        // equality-count indexes, which stay plain.
+        assertThat(indexNames(RECORDS)).containsExactlyInAnyOrder("_id_", RECORD_INDEX,
+                "translation_record_ai_provider", "translation_record_is_image_translation");
     }
 
     @Test
