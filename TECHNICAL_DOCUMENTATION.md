@@ -337,7 +337,7 @@ public interface TranslationRecordRepository extends MongoRepository<Translation
 
 ### 緩存策略
 
-`CachedTranslationAdapter` 使用 Caffeine bounded cache。Identity 包含 source digest、target、planned provider/model、實際 Translation Style Preset ID、該 preset 的 prompt version 與 glossary version；只保存 model identity 一致的成功結果，failure 與 safety blocked 不寫入。TTL 與 maximum entries 由部署 variables 控制。
+`CachedTranslationAdapter` 使用 Caffeine bounded cache。Identity 包含 source digest、target、planned provider/model、實際 Translation Style Preset ID、該 preset 的 prompt version 與 glossary version；只保存成功且 provider 與規劃路由一致、未使用 fallback、通過目標語言驗證（中文目標會檢查繁簡字集）或 structured schema 驗證的結果，failure、safety blocked 與無效回應不寫入；語言偵測另有 `LanguageDetectionCache`，`unknown` 不寫入。TTL 與 maximum entries 由部署 variables 控制。
 
 ### 異步處理
 
