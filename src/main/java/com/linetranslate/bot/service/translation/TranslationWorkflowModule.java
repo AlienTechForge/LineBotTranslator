@@ -11,10 +11,13 @@ import com.linetranslate.bot.logging.SafeLog;
 import com.linetranslate.bot.model.TranslationRecord;
 import com.linetranslate.bot.model.UserProfile;
 import com.linetranslate.bot.repository.TranslationRecordRepository;
+import com.linetranslate.bot.service.ai.AiExecutionFailure;
 import com.linetranslate.bot.service.ai.AiExecutionOutcome;
 import com.linetranslate.bot.service.ai.AiExecutionResult;
+import com.linetranslate.bot.service.ai.AiProviderException;
 import com.linetranslate.bot.service.preference.UserPreferences;
 import com.linetranslate.bot.service.preference.UserPreferencesModule;
+import com.linetranslate.bot.util.LanguageUtils;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -69,13 +72,21 @@ public class TranslationWorkflowModule {
     }
 
     public TranslationWorkflowOutcome execute(TranslationWorkflowRequest request) {
+        String requestedTarget = request.requestedTargetLanguage();
+        if (requestedTarget != null && !LanguageUtils.isSupported(requestedTarget)) {
+            // The target is injected into the provider prompt, so only an allowlisted language may
+            // pass; reject before detection so no Provider Attempt is spent on the request.
+            return new TranslationWorkflowOutcome.Failure(new AiExecutionFailure(
+                    AiProviderException.Outcome.CONFIGURATION_ERROR,
+                    "none", "none", "UNSUPPORTED_TARGET_LANGUAGE", "target-validation", -1, null));
+        }
         String sourceLanguage = request.explicitSourceLanguage() == null
                 ? languageDetectionService.detectLanguage(request.sourceText())
                 : request.explicitSourceLanguage();
         UserPreferences preferences = userPreferencesModule.resolve(request.userProfile());
-        String targetLanguage = request.requestedTargetLanguage() == null
+        String targetLanguage = requestedTarget == null
                 ? defaultTargetLanguage(sourceLanguage, preferences)
-                : request.requestedTargetLanguage();
+                : LanguageUtils.toLanguageCode(requestedTarget);
         targetLanguage = localePolicy.resolve(targetLanguage).locale();
         TranslationStylePreset style = request.requestedStylePresetId() == null
                 ? preferences.translationStyle()

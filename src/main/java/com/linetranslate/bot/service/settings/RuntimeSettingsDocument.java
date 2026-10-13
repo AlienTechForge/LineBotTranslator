@@ -24,6 +24,7 @@ public class RuntimeSettingsDocument {
     private String openRouterDefaultModel;
     private Boolean ocrEnabled;
     private Boolean shortUrlEnabled;
+    private Boolean imageTextReplyEnabled;
     /** Persisted administrator LINE user IDs; absent until an administrator changes the list. */
     private List<String> adminUserIds;
     private Long revision;

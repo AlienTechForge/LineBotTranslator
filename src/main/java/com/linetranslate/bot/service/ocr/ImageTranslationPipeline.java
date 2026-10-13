@@ -3,8 +3,6 @@ package com.linetranslate.bot.service.ocr;
 import java.io.InputStream;
 import java.util.Base64;
 import java.util.List;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.ObjectProvider;
@@ -27,7 +25,6 @@ import com.linetranslate.bot.service.translation.TranslationWorkflowResult;
 import com.linetranslate.bot.service.translation.ImageRegionTranslationInput;
 import com.linetranslate.bot.service.translation.ImageRegionLayout;
 import com.linetranslate.bot.service.translation.TranslationPromptFactory;
-import com.linetranslate.bot.util.LanguageUtils;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -41,11 +38,6 @@ public class ImageTranslationPipeline {
 
     private static final int MAX_OCR_REGIONS = 200;
     private static final int MAX_OCR_TEXT_CHARS = 50_000;
-
-    private static final Pattern TRANSLATION_COMMAND_PATTERN_CN =
-            Pattern.compile("翻譯成([\\u4e00-\\u9fa5]+)\\s*(.*)");
-    private static final Pattern TRANSLATION_COMMAND_PATTERN_CODE =
-            Pattern.compile("翻譯成([a-zA-Z\\-]+)\\s*(.*)");
 
     private final OcrService ocrService;
     private final TranslationWorkflowModule translationWorkflowModule;
@@ -199,11 +191,13 @@ public class ImageTranslationPipeline {
             return new ImageTranslationOutcome.Failure(ImageTranslationFailureStage.NO_TEXT);
         }
 
+        // Recognized text is content, never a command: an image cannot choose its own
+        // target, so the workflow resolves it from User Preferences.
         ImageTranslationContext context = new ImageTranslationContext(
                 new DownloadedImage(image.bytes(), image.contentType()),
                 storage,
                 recognition.text(),
-                requestedTargetLanguage(translatableText));
+                null);
         TranslationWorkflowOutcome workflowOutcome;
         List<String> translatableRegionIds = List.of();
         long translationStarted = System.nanoTime();
@@ -217,8 +211,7 @@ public class ImageTranslationPipeline {
                             decision.region().id(), decision.region().text(),
                             decision.region().languages().stream().findFirst()
                                     .map(OcrDetectedLanguage::code).orElse(sourceLanguage),
-                            decision.qualification() == OcrQualification.PRESERVE
-                                    ? List.of(decision.region().text()) : decision.protectedTokens(),
+                            protectedTokens(decision),
                             decision.qualification() == OcrQualification.TRANSLATE,
                             decision.region().readingOrder(),
                             layout(decision.region())))
@@ -275,6 +268,22 @@ public class ImageTranslationPipeline {
                         overlay.degradation()));
     }
 
+    /**
+     * A preserved region is sent with translatable=false and its tokens are never encoded or
+     * checked, so it carries none. A translatable region's tokens are bounded to the input
+     * contract so a dense receipt or menu cannot fail the whole image.
+     */
+    private static List<String> protectedTokens(OcrRegionDecision decision) {
+        if (decision.qualification() != OcrQualification.TRANSLATE) return List.of();
+        List<String> derived = decision.protectedTokens();
+        List<String> bounded = ImageRegionTranslationInput.boundedProtectedTokens(derived);
+        if (bounded.size() < derived.size()) {
+            log.info("Image region protected tokens bounded: region={}, derived={}, kept={}",
+                    decision.region().id(), derived.size(), bounded.size());
+        }
+        return bounded;
+    }
+
     private static long elapsedMillis(long startedAt) {
         return java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt);
     }
@@ -314,22 +323,20 @@ public class ImageTranslationPipeline {
     private OcrRecognition recognize(ImageTranslationRequest request, ValidatedImage image) {
         if (ocrService != null) {
             try {
-                List<OcrRegion> regions;
+                OcrRecognition recognition;
                 try (InputStream stream = new java.io.ByteArrayInputStream(image.bytes())) {
-                    regions = ocrService.recognizeRegions(stream);
+                    recognition = ocrService.recognize(stream);
                 }
-                if (regions != null && !regions.isEmpty()) {
+                List<OcrRegion> regions = recognition.regions();
+                if (!regions.isEmpty()) {
                     int characters = regions.stream().mapToInt(region -> region.text().length()).sum();
                     long uniqueIds = regions.stream().map(OcrRegion::id).distinct().count();
                     if (regions.size() > MAX_OCR_REGIONS || characters > MAX_OCR_TEXT_CHARS
                             || uniqueIds != regions.size()) {
                         throw new InvalidImageException("OCR result exceeds processing limits");
                     }
-                    return OcrRecognition.structured(regions);
                 }
-                try (InputStream stream = new java.io.ByteArrayInputStream(image.bytes())) {
-                    return OcrRecognition.plain(ocrService.recognizeText(stream));
-                }
+                return recognition;
             } catch (OcrProcessingException failure) {
                 log.info("Primary OCR unavailable; using AI image recognition: failure={}",
                         SafeLog.failure(failure));
@@ -393,7 +400,7 @@ public class ImageTranslationPipeline {
             long rendererStarted = System.nanoTime();
             RenderedImage rendered = overlayRenderer.render(image, plan);
             long rendererMillis = elapsedMillis(rendererStarted);
-            byte[] renderedBytes = rendered.pngBytes();
+            byte[] renderedBytes = rendered.bytes();
             if (rendered.renderedBlockCount() == 0) {
                 log.info("Image overlay timing: rendererMs={}, uploadMs=0, renderedRegions=0, outputBytes={}",
                         rendererMillis, renderedBytes.length);
@@ -402,7 +409,8 @@ public class ImageTranslationPipeline {
                         ImageOverlayDisposition.SAFETY_DEGRADED, rendered.degradation().merge(unmapped));
             }
             long uploadStarted = System.nanoTime();
-            ImageStorageResult storage = minioStorageService.uploadTranslatedImage(renderedBytes);
+            ImageStorageResult storage = minioStorageService.uploadTranslatedImage(
+                    renderedBytes, rendered.contentType());
             long uploadMillis = elapsedMillis(uploadStarted);
             log.info("Image overlay timing: rendererMs={}, uploadMs={}, renderedRegions={}, outputBytes={}",
                     rendererMillis, uploadMillis, rendered.renderedBlockCount(), renderedBytes.length);
@@ -420,17 +428,6 @@ public class ImageTranslationPipeline {
                     ImageOverlayDisposition.SAFETY_DEGRADED,
                     OverlayDegradationSummary.single(OverlayDegradationReason.OTHER, 1));
         }
-    }
-
-    private String requestedTargetLanguage(String recognizedText) {
-        Matcher chineseName = TRANSLATION_COMMAND_PATTERN_CN.matcher(recognizedText);
-        if (chineseName.find()) {
-            return LanguageUtils.toLanguageCode(chineseName.group(1));
-        }
-        Matcher languageCode = TRANSLATION_COMMAND_PATTERN_CODE.matcher(recognizedText);
-        return languageCode.find()
-                ? languageCode.group(1).toLowerCase(java.util.Locale.ROOT)
-                : null;
     }
 
     static ImageRegionLayout layout(OcrRegion region) {

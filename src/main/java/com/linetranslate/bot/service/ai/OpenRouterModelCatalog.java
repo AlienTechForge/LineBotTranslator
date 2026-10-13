@@ -12,6 +12,13 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -22,6 +29,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.linetranslate.bot.config.OpenRouterConfig;
 import com.linetranslate.bot.logging.SafeLog;
 
+import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
@@ -31,6 +39,10 @@ import okhttp3.ResponseBody;
 /**
  * Deep Module for OpenRouter model discovery. Owns wire parsing, capability
  * filtering, bounded search and stale-cache fallback.
+ *
+ * <p>An expired snapshot is served as-is while one background refresh runs, so
+ * callers never wait on the provider once a snapshot exists. Only lookups made
+ * before any snapshot exists wait, and they all share a single fetch.
  */
 @Service
 @Slf4j
@@ -42,6 +54,8 @@ public class OpenRouterModelCatalog implements AiModelCatalog {
     private final OkHttpClient httpClient;
     private final ObjectMapper objectMapper;
     private final Clock clock;
+    private final ExecutorService refreshExecutor;
+    private final AtomicReference<CompletableFuture<Snapshot>> inFlight = new AtomicReference<>();
     private volatile Snapshot snapshot;
 
     @Autowired
@@ -57,10 +71,25 @@ public class OpenRouterModelCatalog implements AiModelCatalog {
             OkHttpClient httpClient,
             ObjectMapper objectMapper,
             Clock clock) {
+        this(config, httpClient, objectMapper, clock, newRefreshExecutor());
+    }
+
+    OpenRouterModelCatalog(
+            OpenRouterConfig config,
+            OkHttpClient httpClient,
+            ObjectMapper objectMapper,
+            Clock clock,
+            ExecutorService refreshExecutor) {
         this.config = config;
         this.httpClient = httpClient;
         this.objectMapper = objectMapper;
         this.clock = clock;
+        this.refreshExecutor = refreshExecutor;
+    }
+
+    @PreDestroy
+    void shutdown() {
+        refreshExecutor.shutdownNow();
     }
 
     @Override
@@ -89,31 +118,73 @@ public class OpenRouterModelCatalog implements AiModelCatalog {
 
     private Snapshot currentSnapshot() {
         Snapshot current = snapshot;
-        Instant now = clock.instant();
-        if (current != null && now.isBefore(current.expiresAt())) {
-            return current;
+        if (current == null) {
+            return refresh().join();
         }
-        synchronized (this) {
-            current = snapshot;
-            if (current != null && now.isBefore(current.expiresAt())) {
-                return current;
+        if (!clock.instant().isBefore(current.expiresAt())) {
+            refresh();
+        }
+        return current;
+    }
+
+    /** Single-flight: joins the running refresh or starts exactly one. */
+    private CompletableFuture<Snapshot> refresh() {
+        while (true) {
+            CompletableFuture<Snapshot> running = inFlight.get();
+            if (running != null) {
+                return running;
+            }
+            CompletableFuture<Snapshot> flight = new CompletableFuture<>();
+            if (!inFlight.compareAndSet(null, flight)) {
+                continue;
+            }
+            Snapshot latest = snapshot;
+            if (latest != null && clock.instant().isBefore(latest.expiresAt())) {
+                // Another refresh finished between the caller's expiry check and this claim.
+                inFlight.compareAndSet(flight, null);
+                flight.complete(latest);
+                return flight;
             }
             try {
-                Snapshot refreshed = fetch(now);
-                snapshot = refreshed;
-                return refreshed;
-            } catch (RuntimeException failure) {
-                log.warn("OpenRouter model catalog refresh failed: failure={}", SafeLog.failure(failure));
-                if (current != null) {
-                    Snapshot stale = new Snapshot(current.models(), retryAt(now), true);
-                    snapshot = stale;
-                    return stale;
-                }
-                Snapshot fallback = fallback(now);
-                snapshot = fallback;
-                return fallback;
+                refreshExecutor.execute(() -> runRefresh(flight));
+            } catch (RejectedExecutionException shutDown) {
+                runRefresh(flight);
             }
+            return flight;
         }
+    }
+
+    private void runRefresh(CompletableFuture<Snapshot> flight) {
+        try {
+            flight.complete(refreshNow());
+        } finally {
+            if (!flight.isDone()) {
+                flight.completeExceptionally(new IllegalStateException("OpenRouter model catalog refresh aborted"));
+            }
+            inFlight.compareAndSet(flight, null);
+        }
+    }
+
+    private Snapshot refreshNow() {
+        Snapshot previous = snapshot;
+        long startedAt = System.nanoTime();
+        Snapshot next;
+        try {
+            next = fetch(clock.instant());
+            log.info("OpenRouter model catalog refreshed: models={}, latencyMs={}",
+                    next.models().size(), elapsedMillis(startedAt));
+        } catch (RuntimeException failure) {
+            Instant now = clock.instant();
+            next = previous != null
+                    ? new Snapshot(previous.models(), retryAt(now), true)
+                    : fallback(now);
+            log.warn("OpenRouter model catalog refresh failed: failure={}, latencyMs={}, serving={}",
+                    SafeLog.failure(failure),
+                    elapsedMillis(startedAt),
+                    previous != null ? "stale" : "default");
+        }
+        snapshot = next;
+        return next;
     }
 
     private Snapshot fetch(Instant now) {
@@ -196,6 +267,21 @@ public class OpenRouterModelCatalog implements AiModelCatalog {
 
     private Instant retryAt(Instant now) {
         return now.plus(Duration.ofSeconds(Math.min(60, Math.max(1, ttl().toSeconds()))));
+    }
+
+    private static long elapsedMillis(long startedAt) {
+        return Math.max(0, (System.nanoTime() - startedAt) / 1_000_000);
+    }
+
+    private static ExecutorService newRefreshExecutor() {
+        ThreadPoolExecutor executor = new ThreadPoolExecutor(
+                1, 1, 60, TimeUnit.SECONDS, new LinkedBlockingQueue<>(), runnable -> {
+                    Thread thread = new Thread(runnable, "openrouter-catalog-refresh");
+                    thread.setDaemon(true);
+                    return thread;
+                });
+        executor.allowCoreThreadTimeOut(true);
+        return executor;
     }
 
     private static Set<String> strings(JsonNode array) {

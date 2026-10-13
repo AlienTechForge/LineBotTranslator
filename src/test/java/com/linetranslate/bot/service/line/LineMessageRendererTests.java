@@ -1,6 +1,7 @@
 package com.linetranslate.bot.service.line;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -15,6 +16,9 @@ import com.linecorp.bot.messaging.model.ClipboardAction;
 import com.linecorp.bot.messaging.model.ImageMessage;
 import com.linecorp.bot.messaging.model.PostbackAction;
 import com.linecorp.bot.messaging.model.TextMessage;
+import com.linetranslate.bot.model.UserProfile;
+import com.linetranslate.bot.repository.UserProfileRepository;
+import com.linetranslate.bot.service.ai.AiExecutionResult;
 import com.linetranslate.bot.service.ai.AiModelCatalog;
 import com.linetranslate.bot.service.ai.AiModelDescriptor;
 import com.linetranslate.bot.service.ai.AiModelPage;
@@ -22,12 +26,24 @@ import com.linetranslate.bot.service.imageproxy.ImageProxyLinkService;
 import com.linetranslate.bot.service.imageproxy.ImageProxyLinks;
 import com.linetranslate.bot.service.imageproxy.DwzShortLinkService;
 import com.linetranslate.bot.service.line.intent.LineIntent;
+import com.linetranslate.bot.service.ocr.DownloadedImage;
+import com.linetranslate.bot.service.ocr.ImageTranslationContext;
+import com.linetranslate.bot.service.ocr.ImageTranslationOutcome;
+import com.linetranslate.bot.service.ocr.ImageTranslationPipeline;
+import com.linetranslate.bot.service.ocr.ImageTranslationPipelineResult;
 import com.linetranslate.bot.service.ocr.ImageTranslationReply;
+import com.linetranslate.bot.service.ocr.ImageTranslationService;
+import com.linetranslate.bot.service.preference.UserPreferencesModule;
 import com.linetranslate.bot.service.settings.RuntimeSettings;
 import com.linetranslate.bot.service.settings.RuntimeSettingsSource;
+import com.linetranslate.bot.service.storage.ImageStorageResult;
+import com.linetranslate.bot.service.translation.TranslationRequestKind;
 import com.linetranslate.bot.service.translation.TranslationResponse;
+import com.linetranslate.bot.service.translation.TranslationWorkflowResult;
 
 class LineMessageRendererTests {
+
+    private static final String TRUNCATION_MARKER = "…（內容過長，已截斷）";
 
     private LineMessageRenderer renderer;
 
@@ -216,6 +232,173 @@ class LineMessageRendererTests {
                 3, 2, null, null, RuntimeSettings.Source.PERSISTED));
         ImageMessage unshortened = (ImageMessage) directRenderer.imageResult(reply);
         assertThat(unshortened.originalContentUrl().toString()).isEqualTo(signed);
+    }
+
+    private static final String SIGNED_IMAGE = "https://s3.azndev.com/line-bot/translated-images/1/image.png"
+            + "?X-Amz-Algorithm=AWS4-HMAC-SHA256"
+            + "&X-Amz-Credential=test%2F20260812%2Fus-east-1%2Fs3%2Faws4_request"
+            + "&X-Amz-Date=20260812T071753Z&X-Amz-Expires=3600"
+            + "&X-Amz-SignedHeaders=host&X-Amz-Signature=" + "a".repeat(64);
+
+    private static ImageTranslationReply overlayReply() {
+        TranslationResponse response = new TranslationResponse(
+                "【翻譯圖片（連結 1 小時內有效）】\n" + SIGNED_IMAGE + "\n\n"
+                        + "【圖片文字辨識結果】\n\n識別的文字：\nhello\n\n翻譯結果：\n你好\n\n"
+                        + "[偵測到: 英文 | 翻譯成: 繁體中文]",
+                "你好", "507f1f77bcf86cd799439011", "en", "zh-TW");
+        return new ImageTranslationReply(response, Optional.of(SIGNED_IMAGE));
+    }
+
+    private static ImageTranslationReply textOnlyReply() {
+        TranslationResponse response = new TranslationResponse(
+                "【圖片文字辨識結果】\n\n識別的文字：\nhello\n\n翻譯結果：\n你好\n\n"
+                        + "[偵測到: 英文 | 翻譯成: 繁體中文]",
+                "你好", "507f1f77bcf86cd799439011", "en", "zh-TW");
+        return ImageTranslationReply.text(response);
+    }
+
+    private static LineMessageRenderer imageRenderer(Boolean imageTextReplyEnabled) {
+        RuntimeSettingsSource settings = imageTextReplyEnabled == null
+                ? () -> null
+                : () -> new RuntimeSettings(
+                        "en", "zh-TW", "openai/gpt-4o-mini", true, false, imageTextReplyEnabled,
+                        4, 1, null, null, RuntimeSettings.Source.PERSISTED);
+        return new LineMessageRenderer(mock(AiModelCatalog.class), settings, null, null);
+    }
+
+    @Test
+    void overlayImageIsFollowedByTranslationTextWithQuickRepliesOnTheLastMessage() {
+        List<com.linecorp.bot.messaging.model.Message> messages =
+                imageRenderer(true).imageResultMessages(overlayReply());
+
+        assertThat(messages).hasSize(2);
+        ImageMessage image = (ImageMessage) messages.get(0);
+        assertThat(image.originalContentUrl().toString()).isEqualTo(SIGNED_IMAGE);
+        assertThat(image.quickReply()).isNull();
+        TextMessage text = (TextMessage) messages.get(1);
+        assertThat(text.text())
+                .startsWith("【圖片文字辨識結果】")
+                .contains("識別的文字：\nhello", "翻譯結果：\n你好", "[偵測到: 英文 | 翻譯成: 繁體中文]")
+                .doesNotContain("X-Amz", "https://", "1 小時內有效");
+        assertThat(text.quickReply()).isNotNull();
+        assertThat(text.quickReply().items().stream().map(item -> item.action()))
+                .anySatisfy(action -> assertThat(action)
+                        .isEqualTo(new ClipboardAction("複製譯文", "你好")))
+                .anySatisfy(action -> assertThat(action).isInstanceOfSatisfying(
+                        PostbackAction.class,
+                        postback -> assertThat(postback.data()).contains("retranslate")));
+    }
+
+    @Test
+    void imageTextReplyDefaultsToOnWhenNoRuntimeSettingsAreAvailable() {
+        assertThat(imageRenderer(null).imageResultMessages(overlayReply()))
+                .hasSize(2)
+                .satisfies(messages -> {
+                    assertThat(messages.get(0)).isInstanceOf(ImageMessage.class);
+                    assertThat(messages.get(1)).isInstanceOf(TextMessage.class);
+                });
+    }
+
+    @Test
+    void disabledImageTextReplyKeepsTheOverlayImageOnly() {
+        List<com.linecorp.bot.messaging.model.Message> messages =
+                imageRenderer(false).imageResultMessages(overlayReply());
+
+        assertThat(messages).singleElement().isInstanceOf(ImageMessage.class);
+        assertThat(messages.get(0)).isEqualTo(imageRenderer(false).imageResult(overlayReply()));
+    }
+
+    @Test
+    void imageWithoutOverlayStillRepliesWithTheTextAndQuickRepliesRegardlessOfTheSwitch() {
+        for (Boolean enabled : new Boolean[] {true, false}) {
+            List<com.linecorp.bot.messaging.model.Message> messages =
+                    imageRenderer(enabled).imageResultMessages(textOnlyReply());
+
+            assertThat(messages).singleElement().isInstanceOfSatisfying(TextMessage.class, text -> {
+                assertThat(text.text()).contains("識別的文字：\nhello", "翻譯結果：\n你好");
+                assertThat(text.quickReply()).isNotNull();
+            });
+        }
+    }
+
+    @Test
+    void failedImageReplyStaysASingleTextMessage() {
+        ImageTranslationReply failure = ImageTranslationReply.text(
+                TranslationResponse.plain("圖片翻譯處理失敗，請稍後再試。"));
+
+        assertThat(imageRenderer(true).imageResultMessages(failure)).singleElement()
+                .isInstanceOfSatisfying(TextMessage.class, text -> {
+                    assertThat(text.text()).isEqualTo("圖片翻譯處理失敗，請稍後再試。");
+                    assertThat(text.quickReply()).isNull();
+                });
+    }
+
+    @Test
+    void veryLongTranslationIsCutToLineTextLimitAndKeepsActions() {
+        String translated = "長".repeat(6_000);
+        var response = new TranslationResponse(
+                translated + "\n\n[偵測到: 英文 | 翻譯成: 繁體中文]", translated,
+                "507f1f77bcf86cd799439011", "en", "zh-TW");
+
+        TextMessage rendered = (TextMessage) renderer.translation(response);
+
+        assertThat(codePoints(rendered.text())).isLessThanOrEqualTo(5_000);
+        assertThat(rendered.text())
+                .startsWith("長".repeat(4_900))
+                .endsWith(TRUNCATION_MARKER);
+        assertThat(rendered.quickReply().items())
+                .anySatisfy(item -> assertThat(item.action()).isInstanceOf(PostbackAction.class))
+                .noneSatisfy(item -> assertThat(item.action()).isInstanceOf(ClipboardAction.class));
+        assertThat(codePoints(text(renderer.translation(translated)))).isLessThanOrEqualTo(5_000);
+    }
+
+    @Test
+    void veryLongRecognizedTextIsCutBeforeTheImageTranslation() {
+        ImageTranslationPipeline pipeline = mock(ImageTranslationPipeline.class);
+        UserProfileRepository profiles = mock(UserProfileRepository.class);
+        UserPreferencesModule preferences = mock(UserPreferencesModule.class);
+        when(preferences.profile("U-long")).thenReturn(UserProfile.builder().userId("U-long").build());
+        when(profiles.save(any(UserProfile.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        String recognized = "字".repeat(50_000);
+        ImageTranslationContext context = new ImageTranslationContext(
+                new DownloadedImage(new byte[] {1}, "image/png"),
+                ImageStorageResult.notStored(), recognized, null);
+        TranslationWorkflowResult translation = new TranslationWorkflowResult(
+                recognized, "ja", "zh-TW", new AiExecutionResult("短譯文", "openrouter", "model"),
+                20, TranslationRequestKind.IMAGE_OCR, "507f1f77bcf86cd799439011");
+        when(pipeline.execute(any())).thenReturn(new ImageTranslationOutcome.Success(
+                new ImageTranslationPipelineResult(context, translation)));
+        ImageTranslationReply reply = new ImageTranslationService(pipeline, profiles, preferences)
+                .processImageTranslationReply("U-long", "message");
+
+        TextMessage rendered = (TextMessage) renderer.imageResult(reply);
+
+        assertThat(codePoints(rendered.text())).isLessThanOrEqualTo(5_000);
+        assertThat(rendered.text())
+                .contains("識別的文字：\n字字字")
+                .contains("字" + TRUNCATION_MARKER + "\n\n翻譯結果：\n短譯文\n\n")
+                .endsWith("[偵測到: 日文 | 翻譯成: 繁體中文]");
+        assertThat(rendered.quickReply().items())
+                .anySatisfy(item -> assertThat(item.action())
+                        .isEqualTo(new ClipboardAction("複製譯文", "短譯文")));
+    }
+
+    @Test
+    void cutLandsOnACodePointBoundaryWhenAnEmojiSitsAtTheLimit() {
+        int kept = 5_000 - codePoints(TRUNCATION_MARKER);
+        // The emoji is the last kept code point; a UTF-16 cut would split its surrogate pair.
+        String head = "a".repeat(kept - 1) + "😀";
+
+        String rendered = text(renderer.translation(head + "😀b".repeat(10)));
+
+        assertThat(rendered).isEqualTo(head + TRUNCATION_MARKER);
+        assertThat(codePoints(rendered)).isEqualTo(5_000);
+        assertThat(rendered.codePoints().noneMatch(
+                codePoint -> Character.isSurrogate((char) codePoint))).isTrue();
+    }
+
+    private static int codePoints(String value) {
+        return value.codePointCount(0, value.length());
     }
 
     private static String text(com.linecorp.bot.messaging.model.Message message) {

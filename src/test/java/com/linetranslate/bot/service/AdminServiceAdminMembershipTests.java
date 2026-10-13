@@ -229,13 +229,13 @@ class AdminServiceAdminMembershipTests {
                 runtimeSettingsModule,
                 usageAccountingModule,
                 usageReportRenderer);
-        ReflectionTestUtils.setField(service, "adminUserSeed", List.of(seed));
+        ReflectionTestUtils.setField(service, "adminUsers", List.of(seed));
         return service;
     }
 
     private static RuntimeSettings settings(List<String> adminUserIds) {
         return new RuntimeSettings(
-                "en", "zh-TW", "openai/gpt-4o-mini", true, false, adminUserIds,
+                "en", "zh-TW", "openai/gpt-4o-mini", true, false, true, adminUserIds,
                 RuntimeSettingsModule.SCHEMA_VERSION, 0, null, null,
                 adminUserIds.isEmpty()
                         ? RuntimeSettings.Source.DEPLOYMENT_DEFAULTS

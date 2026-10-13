@@ -1,6 +1,7 @@
 package com.linetranslate.bot.service.webhook;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
@@ -10,14 +11,21 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.io.IOException;
+import java.net.SocketTimeoutException;
 import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.stream.Stream;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import com.linecorp.bot.messaging.model.TextMessage;
 import com.linecorp.bot.webhook.model.Event;
@@ -161,6 +169,83 @@ class WebhookIngestionModuleTests {
         verify(replySender, times(3)).send(reply);
         verify(receiptStore).markPoisoned(claim, "IllegalStateException", 3);
         verify(receiptStore, never()).markCompleted(any(), any(Integer.class));
+    }
+
+    @Test
+    void rejectedReplyIsSentOnceAndPoisonedWithoutBackoff() {
+        properties.setReplyRetryBackoff(Duration.ofMinutes(1));
+        Event event = event("event-reply-rejected", 2_000L, false);
+        WebhookClaim claim = WebhookClaim.claimed("event-reply-rejected", "claim-reply-rejected");
+        WebhookReply reply = new WebhookReply("expired-token", List.of(new TextMessage("done")));
+        when(receiptStore.claim(any())).thenReturn(claim);
+        when(eventProcessor.process(event)).thenReturn(Optional.of(reply));
+        doThrow(new WebhookReplyRejectedException(400, new IOException("rejected")))
+                .when(replySender).send(reply);
+        WebhookIngestionModule module = module(Runnable::run);
+
+        assertTimeoutPreemptively(Duration.ofSeconds(5), () ->
+                assertThat(module.ingest(event)).isEqualTo(WebhookIngestionResult.ACCEPTED));
+
+        verify(eventProcessor).process(event);
+        verify(replySender, times(1)).send(reply);
+        verify(receiptStore).markPoisoned(claim, "WebhookReplyRejectedException", 1);
+        verify(receiptStore, never()).markCompleted(any(), any(Integer.class));
+        assertThat(replyCount("rejected")).isEqualTo(1);
+        assertThat(replyCount("retry")).isZero();
+    }
+
+    @Test
+    void rejectionAfterTransientFailureRecordsEveryAttempt() {
+        Event event = event("event-reply-late-reject", 2_000L, false);
+        WebhookClaim claim = WebhookClaim.claimed("event-reply-late-reject", "claim-reply-late-reject");
+        WebhookReply reply = new WebhookReply("reply-token", List.of(new TextMessage("done")));
+        when(receiptStore.claim(any())).thenReturn(claim);
+        when(eventProcessor.process(event)).thenReturn(Optional.of(reply));
+        doThrow(new CompletionException(new SocketTimeoutException("timeout")))
+                .doThrow(new WebhookReplyRejectedException(400, new IOException("rejected")))
+                .when(replySender).send(reply);
+        WebhookIngestionModule module = module(Runnable::run);
+
+        assertThat(module.ingest(event)).isEqualTo(WebhookIngestionResult.ACCEPTED);
+
+        verify(replySender, times(2)).send(reply);
+        verify(receiptStore).markPoisoned(claim, "WebhookReplyRejectedException", 2);
+        assertThat(replyCount("retry")).isEqualTo(1);
+        assertThat(replyCount("rejected")).isEqualTo(1);
+    }
+
+    @ParameterizedTest
+    @MethodSource("transientReplyFailures")
+    void transientReplyFailuresAreRetriedUntilExhausted(RuntimeException failure, String failureType) {
+        Event event = event("event-reply-transient", 2_000L, false);
+        WebhookClaim claim = WebhookClaim.claimed("event-reply-transient", "claim-reply-transient");
+        WebhookReply reply = new WebhookReply("reply-token", List.of(new TextMessage("done")));
+        when(receiptStore.claim(any())).thenReturn(claim);
+        when(eventProcessor.process(event)).thenReturn(Optional.of(reply));
+        doThrow(failure).when(replySender).send(reply);
+        WebhookIngestionModule module = module(Runnable::run);
+
+        assertThat(module.ingest(event)).isEqualTo(WebhookIngestionResult.ACCEPTED);
+
+        verify(replySender, times(3)).send(reply);
+        verify(receiptStore).markPoisoned(claim, failureType, 3);
+        assertThat(replyCount("retry")).isEqualTo(2);
+        assertThat(replyCount("rejected")).isZero();
+    }
+
+    /**
+     * The reply adapter lets 429, 5xx and I/O failures through as the
+     * CompletionException that wraps the SDK's checked IOException.
+     */
+    private static Stream<Arguments> transientReplyFailures() {
+        return Stream.of(
+                Arguments.of(new CompletionException(new IOException("server error")), "CompletionException"),
+                Arguments.of(new CompletionException(new SocketTimeoutException("timeout")), "CompletionException"),
+                Arguments.of(new IllegalStateException("unavailable"), "IllegalStateException"));
+    }
+
+    private double replyCount(String result) {
+        return meterRegistry.get("line.webhook.reply").tag("result", result).counter().count();
     }
 
     private WebhookIngestionModule module(Executor executor) {

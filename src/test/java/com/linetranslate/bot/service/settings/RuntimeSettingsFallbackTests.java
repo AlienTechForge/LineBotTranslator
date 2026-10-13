@@ -23,6 +23,7 @@ class RuntimeSettingsFallbackTests {
         when(appConfig.getDefaultTargetLanguageForChinese()).thenReturn("en");
         when(appConfig.getDefaultTargetLanguageForOthers()).thenReturn("zh-TW");
         when(appConfig.isOcrEnabled()).thenReturn(true);
+        when(appConfig.isImageTextReplyEnabled()).thenReturn(true);
         when(openRouterConfig.getModelName()).thenReturn("openai/gpt-4o-mini");
         when(mongoTemplate.findById(
                 RuntimeSettingsModule.DOCUMENT_ID,
@@ -40,6 +41,7 @@ class RuntimeSettingsFallbackTests {
         assertThat(settings.defaultTargetLanguageForOthers()).isEqualTo("zh-TW");
         assertThat(settings.openRouterDefaultModel()).isEqualTo("openai/gpt-4o-mini");
         assertThat(settings.ocrEnabled()).isTrue();
+        assertThat(settings.imageTextReplyEnabled()).isTrue();
         assertThat(settings.adminUserIds()).isEmpty();
         assertThat(settings.source()).isEqualTo(RuntimeSettings.Source.DEPLOYMENT_DEFAULTS);
     }

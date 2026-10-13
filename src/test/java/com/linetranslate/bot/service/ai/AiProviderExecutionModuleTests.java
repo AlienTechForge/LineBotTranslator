@@ -51,6 +51,29 @@ class AiProviderExecutionModuleTests {
     }
 
     @Test
+    void truncatedCompletionIsAFailedAttemptThatKeepsItsTokenUsageForAccounting() {
+        FakeAdapter adapter = new FakeAdapter("openai/gpt-4o-mini", Set.of("openai/gpt-4o-mini"));
+        adapter.failure = new AiProviderException(
+                AiProviderException.Outcome.MALFORMED_RESPONSE, "openrouter", "openai/gpt-4o-mini",
+                "TRUNCATED_OUTPUT", "correlation-1", 200, null, new AiTokenUsage(900, 1024, 1924));
+        AiUsageEventSink sink = mock(AiUsageEventSink.class);
+        AiProviderExecutionModule module = new AiProviderExecutionModule(
+                List.of(adapter), () -> settings("openai/gpt-4o-mini"), sink);
+
+        AiExecutionOutcome outcome = module.processImageOutcome(
+                preferences("openai/gpt-4o-mini"), "read", "data:image/jpeg;base64,AA==");
+
+        AiExecutionFailure failure = ((AiExecutionOutcome.Failure) outcome).failure();
+        assertThat(failure.outcome()).isEqualTo(AiProviderException.Outcome.MALFORMED_RESPONSE);
+        assertThat(failure.reason()).isEqualTo("TRUNCATED_OUTPUT");
+        assertThat(failure.tokenUsage()).isEqualTo(new AiTokenUsage(900, 1024, 1924));
+        assertThat(failure.attempts()).singleElement()
+                .extracting(AiProviderAttempt::status)
+                .isEqualTo(AiProviderAttempt.Status.FAILURE);
+        verify(sink).record(AiProviderOperation.PROCESS_IMAGE, outcome);
+    }
+
+    @Test
     void versionedStyleContractReachesTheOnlyProviderAdapter() {
         FakeAdapter adapter = new FakeAdapter(
                 "openai/gpt-4o-mini", Set.of("openai/gpt-4o-mini"));

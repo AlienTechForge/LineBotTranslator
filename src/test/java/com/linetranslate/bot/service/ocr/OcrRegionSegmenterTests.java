@@ -310,8 +310,9 @@ class OcrRegionSegmenterTests {
 
     @Test
     void splitsTopToBottomColumnsIntoOneRegionPerItem() {
-        // Two columns of vertical CJK, two dish names each, in Vision's reading order:
-        // top to bottom within a column, then on to the next column.
+        // Two columns of vertical CJK, two dish names each. Vision lists the left column first,
+        // but vertical CJK is read from the rightmost column to the leftmost, then top to bottom
+        // within a column, so the segmenter must emit the right column first.
         List<OcrWord> words = List.of(
                 word("澎", 10, 10, 22, 22), word("湃", 10, 34, 22, 22), word("飯", 10, 58, 22, 22),
                 word("風", 10, 110, 22, 22), word("味", 10, 134, 22, 22), word("飯", 10, 158, 22, 22),
@@ -324,10 +325,62 @@ class OcrRegionSegmenterTests {
         List<OcrRegion> result = new OcrRegionSegmenter().segment(List.of(card));
 
         assertThat(result).hasSize(4).extracting(OcrRegion::text)
-                .containsExactly("澎湃飯", "風味飯", "香酥飯", "經典飯");
-        assertThat(result).allSatisfy(region -> assertThat(region.id()).startsWith("card.v"));
-        // Each item keeps its own column, so the two columns stay horizontally separated.
-        assertThat(result.get(0).polygon().get(0).x()).isLessThan(result.get(2).polygon().get(0).x());
+                .containsExactly("香酥飯", "經典飯", "澎湃飯", "風味飯");
+        // Ids and reading order follow the emitted order: column 1 is the rightmost one.
+        assertThat(result).extracting(OcrRegion::id)
+                .containsExactly("card.v1.1", "card.v1.2", "card.v2.1", "card.v2.2");
+        assertThat(result).extracting(OcrRegion::readingOrder).containsExactly(0, 1, 2, 3);
+        // Each item keeps its own column, so the two columns stay horizontally separated and the
+        // first two items sit to the right of the last two.
+        assertThat(result.get(0).polygon().get(0).x()).isGreaterThan(result.get(2).polygon().get(0).x());
+    }
+
+    @Test
+    void keepsLatinTopToBottomColumnsLeftToRight() {
+        // Latin stacked in columns is not vertical Japanese or Chinese text, so the page order
+        // stays left to right.
+        OcrRegion card = verticalCard("latin", "en", "TEA", "BAR");
+
+        List<OcrRegion> result = new OcrRegionSegmenter().segment(List.of(card));
+
+        assertThat(result).extracting(OcrRegionSegmenterTests::compactText)
+                .containsExactly("TEA", "BAR");
+        assertThat(result).extracting(OcrRegion::id).containsExactly("latin.v1.1", "latin.v2.1");
+    }
+
+    @Test
+    void decidesTheColumnDirectionFromAllWordsOfTheParagraph() {
+        // The direction is chosen once per paragraph from the majority of its letters, never per
+        // column, so a stray Latin column travels with the CJK columns around it.
+        OcrRegion mostlyCjk = verticalCard("cjk", "zh", "香酥飯", "TEA", "經典飯", "澎湃飯");
+        OcrRegion mostlyLatin = verticalCard("lat", "en", "香酥飯", "TEA", "BAR", "BOX");
+
+        assertThat(new OcrRegionSegmenter().segment(List.of(mostlyCjk)))
+                .extracting(OcrRegionSegmenterTests::compactText)
+                .containsExactly("澎湃飯", "經典飯", "TEA", "香酥飯");
+        assertThat(new OcrRegionSegmenter().segment(List.of(mostlyLatin)))
+                .extracting(OcrRegionSegmenterTests::compactText)
+                .containsExactly("香酥飯", "TEA", "BAR", "BOX");
+    }
+
+    @Test
+    void anEvenSplitBetweenCjkAndLatinKeepsThePageOrder() {
+        OcrRegion tie = verticalCard("tie", "zh", "香酥飯", "TEA");
+
+        assertThat(new OcrRegionSegmenter().segment(List.of(tie)))
+                .extracting(OcrRegionSegmenterTests::compactText)
+                .containsExactly("香酥飯", "TEA");
+    }
+
+    @Test
+    void prolongedSoundMarksDoNotTipAKatakanaColumnIntoLeftToRight() {
+        // The mark is a letter of the common script: half of these glyphs are marks, but they say
+        // nothing about the script, so the three kana still make the paragraph CJK.
+        OcrRegion katakana = verticalCard("kana", "ja", "コーヒー", "ビー");
+
+        assertThat(new OcrRegionSegmenter().segment(List.of(katakana)))
+                .extracting(OcrRegionSegmenterTests::compactText)
+                .containsExactly("ビー", "コーヒー");
     }
 
     @Test
@@ -362,6 +415,30 @@ class OcrRegionSegmenterTests {
 
         assertThat(result).allSatisfy(region ->
                 assertThat(region.id()).doesNotContain(".v"));
+    }
+
+    /**
+     * One glyph per word and one column per argument, 50px apart from the left. Words are listed
+     * column by column, so the leftmost column comes first, as Vision lists it.
+     */
+    private static OcrRegion verticalCard(String id, String language, String... columns) {
+        List<OcrWord> words = new java.util.ArrayList<>();
+        StringBuilder text = new StringBuilder();
+        for (int column = 0; column < columns.length; column++) {
+            int row = 0;
+            for (int codePoint : columns[column].codePoints().toArray()) {
+                words.add(word(new String(Character.toChars(codePoint)),
+                        10 + column * 50, 10 + row++ * 24, 22, 22));
+            }
+            text.append(text.isEmpty() ? "" : " ").append(columns[column]);
+        }
+        return new OcrRegion(id, text.toString(), rectangle(5, 5, columns.length * 50 + 5, 100), words,
+                .98f, true, OcrBlockType.TEXT, List.of(new OcrDetectedLanguage(language, .98f)), 0);
+    }
+
+    /** The region text without the spaces the segmenter puts between non-CJK glyphs. */
+    private static String compactText(OcrRegion region) {
+        return region.text().replace(" ", "");
     }
 
     private static OcrWord word(String text, int x) {

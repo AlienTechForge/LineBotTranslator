@@ -39,16 +39,24 @@ class RuntimeSettingsAdminUserIdsTests {
                 "en", "zh-TW", "openai/gpt-4o-mini", true, 1, 0, null, null,
                 RuntimeSettings.Source.DEPLOYMENT_DEFAULTS);
 
+        RuntimeSettings withImageTextReply = new RuntimeSettings(
+                "en", "zh-TW", "openai/gpt-4o-mini", true, true, false, 4, 2, null, null,
+                RuntimeSettings.Source.PERSISTED);
+
         assertThat(withShortUrl.adminUserIds()).isEmpty();
         assertThat(withShortUrl.shortUrlEnabled()).isTrue();
+        assertThat(withShortUrl.imageTextReplyEnabled()).isTrue();
+        assertThat(withImageTextReply.adminUserIds()).isEmpty();
+        assertThat(withImageTextReply.imageTextReplyEnabled()).isFalse();
         assertThat(original.adminUserIds()).isEmpty();
         assertThat(original.shortUrlEnabled()).isFalse();
+        assertThat(original.imageTextReplyEnabled()).isTrue();
     }
 
     @Test
     void textualFormNeverShowsUserIdentifiers() {
         RuntimeSettings settings = new RuntimeSettings(
-                "en", "zh-TW", "openai/gpt-4o-mini", true, false,
+                "en", "zh-TW", "openai/gpt-4o-mini", true, false, true,
                 List.of("U-secret-admin-one", "U-secret-admin-two"), 4, 1, null,
                 "U-secret-operator", RuntimeSettings.Source.PERSISTED);
 
@@ -59,7 +67,7 @@ class RuntimeSettingsAdminUserIdsTests {
 
     private static RuntimeSettings settingsWith(List<String> adminUserIds) {
         return new RuntimeSettings(
-                "en", "zh-TW", "openai/gpt-4o-mini", true, false, adminUserIds, 4, 0, null, null,
+                "en", "zh-TW", "openai/gpt-4o-mini", true, false, true, adminUserIds, 4, 0, null, null,
                 RuntimeSettings.Source.PERSISTED);
     }
 }

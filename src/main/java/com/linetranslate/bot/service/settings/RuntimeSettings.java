@@ -25,6 +25,7 @@ public record RuntimeSettings(
         String openRouterDefaultModel,
         boolean ocrEnabled,
         boolean shortUrlEnabled,
+        boolean imageTextReplyEnabled,
         List<String> adminUserIds,
         int schemaVersion,
         long revision,
@@ -36,7 +37,41 @@ public record RuntimeSettings(
         adminUserIds = normalizeAdminUserIds(adminUserIds);
     }
 
+    /** Compatibility constructor for callers that predate the persisted administrator list. */
+    public RuntimeSettings(
+            String defaultTargetLanguageForChinese,
+            String defaultTargetLanguageForOthers,
+            String openRouterDefaultModel,
+            boolean ocrEnabled,
+            boolean shortUrlEnabled,
+            boolean imageTextReplyEnabled,
+            int schemaVersion,
+            long revision,
+            Instant updatedAt,
+            String updatedBy,
+            Source source) {
+        this(defaultTargetLanguageForChinese, defaultTargetLanguageForOthers,
+                openRouterDefaultModel, ocrEnabled, shortUrlEnabled, imageTextReplyEnabled,
+                List.of(), schemaVersion, revision, updatedAt, updatedBy, source);
+    }
+
     /** Compatibility constructor for existing focused tests and consumers. */
+    public RuntimeSettings(
+            String defaultTargetLanguageForChinese,
+            String defaultTargetLanguageForOthers,
+            String openRouterDefaultModel,
+            boolean ocrEnabled,
+            int schemaVersion,
+            long revision,
+            Instant updatedAt,
+            String updatedBy,
+            Source source) {
+        this(defaultTargetLanguageForChinese, defaultTargetLanguageForOthers,
+                openRouterDefaultModel, ocrEnabled, false, true, schemaVersion, revision,
+                updatedAt, updatedBy, source);
+    }
+
+    /** Compatibility constructor for callers that predate the image text reply switch. */
     public RuntimeSettings(
             String defaultTargetLanguageForChinese,
             String defaultTargetLanguageForOthers,
@@ -49,24 +84,8 @@ public record RuntimeSettings(
             String updatedBy,
             Source source) {
         this(defaultTargetLanguageForChinese, defaultTargetLanguageForOthers,
-                openRouterDefaultModel, ocrEnabled, shortUrlEnabled, List.of(), schemaVersion,
+                openRouterDefaultModel, ocrEnabled, shortUrlEnabled, true, schemaVersion,
                 revision, updatedAt, updatedBy, source);
-    }
-
-    /** Compatibility constructor for existing focused tests and consumers. */
-    public RuntimeSettings(
-            String defaultTargetLanguageForChinese,
-            String defaultTargetLanguageForOthers,
-            String openRouterDefaultModel,
-            boolean ocrEnabled,
-            int schemaVersion,
-            long revision,
-            Instant updatedAt,
-            String updatedBy,
-            Source source) {
-        this(defaultTargetLanguageForChinese, defaultTargetLanguageForOthers,
-                openRouterDefaultModel, ocrEnabled, false, schemaVersion, revision,
-                updatedAt, updatedBy, source);
     }
 
     /**
@@ -93,6 +112,7 @@ public record RuntimeSettings(
                 + ", openRouterDefaultModel=" + openRouterDefaultModel
                 + ", ocrEnabled=" + ocrEnabled
                 + ", shortUrlEnabled=" + shortUrlEnabled
+                + ", imageTextReplyEnabled=" + imageTextReplyEnabled
                 + ", adminUserCount=" + adminUserIds.size()
                 + ", schemaVersion=" + schemaVersion
                 + ", revision=" + revision

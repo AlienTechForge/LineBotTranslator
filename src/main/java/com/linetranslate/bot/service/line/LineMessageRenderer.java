@@ -6,6 +6,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.regex.Pattern;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
@@ -29,6 +30,7 @@ import com.linetranslate.bot.service.settings.RuntimeSettings;
 import com.linetranslate.bot.service.settings.RuntimeSettingsSource;
 import com.linetranslate.bot.service.translation.TranslationResponse;
 import com.linetranslate.bot.service.translation.TranslationStylePreset;
+import com.linetranslate.bot.util.LineTextLimit;
 
 /** Central LINE message renderer for user-facing interaction results. */
 @Component
@@ -189,6 +191,42 @@ public class LineMessageRenderer {
         return interactiveTranslation(reply.response());
     }
 
+    /**
+     * Image reply as an ordered message list. A delivered overlay image is followed by the
+     * recognised text and translation with their quick replies unless the administrator
+     * switched {@code imageTextReplyEnabled} off. Quick replies only show on the last message.
+     */
+    public List<Message> imageResultMessages(ImageTranslationReply reply) {
+        Message primary = imageResult(reply);
+        if (!(primary instanceof ImageMessage) || !imageTextReplyEnabled()) {
+            return List.of(primary);
+        }
+        return List.of(primary, interactiveTranslation(withoutImageLink(reply)));
+    }
+
+    private boolean imageTextReplyEnabled() {
+        RuntimeSettings settings = runtimeSettingsSource.current();
+        return settings == null || settings.imageTextReplyEnabled();
+    }
+
+    /** The image message already shows the artifact, so its signed link is not repeated in text. */
+    private static TranslationResponse withoutImageLink(ImageTranslationReply reply) {
+        TranslationResponse response = reply.response();
+        if (response.displayText() == null || reply.renderedImageUrl().isEmpty()) {
+            return response;
+        }
+        String display = response.displayText().replaceFirst(
+                "^[^\\n]*\\n" + Pattern.quote(reply.renderedImageUrl().get()) + "\\n\\n", "");
+        return new TranslationResponse(
+                display,
+                response.translatedText(),
+                response.recordId(),
+                response.sourceLanguage(),
+                response.targetLanguage(),
+                response.stylePresetId(),
+                response.stylePromptVersion());
+    }
+
     private static Optional<URI> safeHttpsUri(String raw) {
         try {
             URI uri = URI.create(raw);
@@ -204,6 +242,11 @@ public class LineMessageRenderer {
 
     public Message imageFailure() {
         return text("圖片處理失敗。\n請確保圖片清晰且包含可識別的文字，或稍後再試。");
+    }
+
+    public Message unidentifiedSender() {
+        return text("⚠️ 無法辨識此聊天室中的傳送者，因此無法為您翻譯。\n"
+                + "請先將本機器人加為好友並同意 LINE 使用條款，或直接在一對一聊天中使用。");
     }
 
     public Message invalid(LineIntent.Invalid invalid) {
@@ -230,7 +273,12 @@ public class LineMessageRenderer {
     }
 
     private static Message text(String value) {
-        return new TextMessage(value == null ? "" : value);
+        return new TextMessage(lineText(value));
+    }
+
+    /** LINE rejects an oversized text message outright, so every text sent here is fitted. */
+    private static String lineText(String value) {
+        return value == null ? "" : LineTextLimit.fit(value);
     }
 
     private Message interactiveTranslation(TranslationResponse response) {
@@ -266,7 +314,7 @@ public class LineMessageRenderer {
             }
         }
 
-        return new TextMessage.Builder(response.displayText())
+        return new TextMessage.Builder(lineText(response.displayText()))
                 .quickReply(new QuickReply(items))
                 .build();
     }

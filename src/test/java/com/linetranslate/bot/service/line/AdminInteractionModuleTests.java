@@ -15,6 +15,7 @@ import org.junit.jupiter.api.Test;
 import com.linecorp.bot.messaging.model.Message;
 import com.linecorp.bot.messaging.model.TextMessage;
 import com.linetranslate.bot.service.AdminService;
+import com.linetranslate.bot.service.BroadcastResult;
 import com.linetranslate.bot.service.ai.AiModelPage;
 import com.linetranslate.bot.service.line.intent.AdminIntent;
 
@@ -97,5 +98,103 @@ class AdminInteractionModuleTests {
 
         verify(adminService).addAdmin("U-new", "admin");
         verify(adminService).removeAdmin("U-old", "admin");
+    }
+
+    @Test
+    void authorizedAdminCanToggleImageTextReply() {
+        Message card = new TextMessage("updated");
+        when(adminService.isAdmin("admin")).thenReturn(true);
+        when(adminService.setImageTextReplyEnabled("off", "admin"))
+                .thenReturn("✅ 已禁用圖片翻譯附帶文字譯文");
+        when(renderer.info("設定結果", "✅ 已禁用圖片翻譯附帶文字譯文"))
+                .thenReturn(card);
+
+        assertThat(module.execute("admin", AdminIntent.action(
+                AdminIntent.Action.CONFIG_IMAGE_TEXT_REPLY, "off", "")))
+                .isSameAs(card);
+
+        verify(adminService).setImageTextReplyEnabled("off", "admin");
+    }
+
+    @Test
+    void nonAdminCannotToggleImageTextReply() {
+        Message denied = new TextMessage("denied");
+        when(adminService.isAdmin("user")).thenReturn(false);
+        when(renderer.accessDenied()).thenReturn(denied);
+
+        assertThat(module.execute("user", AdminIntent.action(
+                AdminIntent.Action.CONFIG_IMAGE_TEXT_REPLY, "off", "")))
+                .isSameAs(denied);
+
+        verify(adminService, never()).setImageTextReplyEnabled("off", "user");
+    }
+
+    @Test
+    void configListingAdvertisesTheImageTextSwitch() {
+        Message card = new TextMessage("config");
+        when(adminService.isAdmin("admin")).thenReturn(true);
+        when(adminService.getSystemConfig()).thenReturn("config");
+        when(renderer.card(
+                org.mockito.ArgumentMatchers.eq("系統設定"),
+                org.mockito.ArgumentMatchers.contains("/admin config image-text [on|off]"),
+                org.mockito.ArgumentMatchers.anyList()))
+                .thenReturn(card);
+
+        assertThat(module.execute("admin", AdminIntent.action(
+                AdminIntent.Action.CONFIG_SHOW, "", "")))
+                .isSameAs(card);
+    }
+
+    @Test
+    void broadcastWithEveryPushAcceptedReportsSuccess() {
+        Message card = new TextMessage("sent");
+        when(adminService.isAdmin("admin")).thenReturn(true);
+        when(adminService.broadcastMessage("系統通知"))
+                .thenReturn(new BroadcastResult(3, 3, 0, false));
+        when(renderer.success("廣播完成", "已送達 3 位，失敗 0 位（共 3 位）。\n\n系統通知"))
+                .thenReturn(card);
+
+        assertThat(module.execute("admin", broadcast("系統通知"))).isSameAs(card);
+    }
+
+    @Test
+    void broadcastWithAFailedPushReportsDeliveredAndFailedCounts() {
+        Message card = new TextMessage("partial");
+        when(adminService.isAdmin("admin")).thenReturn(true);
+        when(adminService.broadcastMessage("系統通知"))
+                .thenReturn(new BroadcastResult(3, 2, 1, false));
+        when(renderer.info("廣播部分完成", "已送達 2 位，失敗 1 位（共 3 位）。\n\n系統通知"))
+                .thenReturn(card);
+
+        assertThat(module.execute("admin", broadcast("系統通知"))).isSameAs(card);
+    }
+
+    @Test
+    void broadcastWithEveryPushFailedReportsFailure() {
+        Message card = new TextMessage("failed");
+        when(adminService.isAdmin("admin")).thenReturn(true);
+        when(adminService.broadcastMessage("系統通知"))
+                .thenReturn(new BroadcastResult(2, 0, 2, false));
+        when(renderer.error("廣播失敗", "已送達 0 位，失敗 2 位（共 2 位）。\n\n系統通知"))
+                .thenReturn(card);
+
+        assertThat(module.execute("admin", broadcast("系統通知"))).isSameAs(card);
+    }
+
+    @Test
+    void testModeBroadcastSaysNothingWasActuallySent() {
+        Message card = new TextMessage("simulated");
+        when(adminService.isAdmin("admin")).thenReturn(true);
+        when(adminService.broadcastMessage("系統通知"))
+                .thenReturn(new BroadcastResult(2, 2, 0, true));
+        when(renderer.success(
+                "廣播完成", "測試模式，未實際發送：模擬送達 2 位，失敗 0 位（共 2 位）。\n\n系統通知"))
+                .thenReturn(card);
+
+        assertThat(module.execute("admin", broadcast("系統通知"))).isSameAs(card);
+    }
+
+    private static AdminIntent broadcast(String message) {
+        return AdminIntent.action(AdminIntent.Action.BROADCAST, message, "");
     }
 }
