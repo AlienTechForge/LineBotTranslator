@@ -7,6 +7,7 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import org.junit.jupiter.api.Test;
 
 import com.linetranslate.bot.repository.UserProfileRepository;
+import com.linetranslate.bot.service.preference.UserPreferencesModule;
 import com.linetranslate.bot.service.settings.RuntimeSettings;
 
 class ImageTranslationRuntimeSettingsTests {
@@ -15,14 +16,15 @@ class ImageTranslationRuntimeSettingsTests {
     void runtimeOcrSwitchStopsRequestsBeforeThePipeline() {
         ImageTranslationPipeline pipeline = mock(ImageTranslationPipeline.class);
         UserProfileRepository repository = mock(UserProfileRepository.class);
+        UserPreferencesModule profiles = mock(UserPreferencesModule.class);
         RuntimeSettings disabled = new RuntimeSettings(
                 "en", "zh-TW", "openai/gpt-4o-mini", false,
                 2, 1, null, "U-admin", RuntimeSettings.Source.PERSISTED);
         ImageTranslationService service = new ImageTranslationService(
-                pipeline, repository, () -> disabled);
+                pipeline, repository, profiles, () -> disabled);
 
         assertThat(service.processImageTranslation("U-test", "message-id"))
                 .isEqualTo("OCR 功能目前已停用。請稍後再試。");
-        verifyNoInteractions(pipeline, repository);
+        verifyNoInteractions(pipeline, repository, profiles);
     }
 }

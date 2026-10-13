@@ -135,7 +135,7 @@ class MinioStorageRecoveryIntegrationTests {
                 1_000,
                 clock::get);
 
-        ImageStorageResult result = service.uploadTranslatedImage(new byte[] {1, 2, 3});
+        ImageStorageResult result = service.uploadTranslatedImage(new byte[] {1, 2, 3}, "image/png");
 
         assertThat(result.url()).hasValueSatisfying(
                 url -> assertThat(url).startsWith("https://s3.azndev.com/"));
@@ -148,6 +148,29 @@ class MinioStorageRecoveryIntegrationTests {
                 .endsWith(".png");
         assertThat(signed.getValue().object()).isEqualTo(put.getValue().object());
         assertThat(signed.getValue().expiry()).isEqualTo(3_600);
+    }
+
+    @Test
+    void translatedJpegKeepsItsContentTypeAndUnsupportedTypesAreNotStored() throws Exception {
+        when(minioClient.bucketExists(any(BucketExistsArgs.class))).thenReturn(true);
+        when(publicUrlSigner.getPresignedObjectUrl(any(GetPresignedObjectUrlArgs.class)))
+                .thenReturn("https://s3.azndev.com/line-bot/translated-images/result.jpg?signature=safe");
+        MinioStorageService service = new MinioStorageService(
+                minioClient,
+                publicUrlSigner,
+                "line-bot",
+                true,
+                1_000,
+                clock::get);
+
+        assertThat(service.uploadTranslatedImage(new byte[] {1, 2, 3}, "image/gif").stored()).isFalse();
+        ImageStorageResult result = service.uploadTranslatedImage(new byte[] {1, 2, 3}, "image/jpeg");
+
+        assertThat(result.stored()).isTrue();
+        var put = org.mockito.ArgumentCaptor.forClass(PutObjectArgs.class);
+        verify(minioClient).putObject(put.capture());
+        assertThat(put.getValue().object()).startsWith("translated-images/").endsWith(".jpg");
+        assertThat(put.getValue().contentType()).hasToString("image/jpeg");
     }
 
     @Test
