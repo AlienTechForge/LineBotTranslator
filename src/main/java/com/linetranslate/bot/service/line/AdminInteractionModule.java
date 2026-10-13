@@ -77,8 +77,10 @@ public class AdminInteractionModule {
             case USAGE_TYPE -> renderer.info(
                     "內容類型 API 用量", adminService.getApiUsageStatsByContentKind(intent.value()));
             case USAGE_SUMMARY -> renderer.info("API 用量總覽", adminService.getApiUsageSummary());
-            case ADD_ADMIN -> renderer.info("新增管理員", adminService.addAdmin(intent.value()));
-            case REMOVE_ADMIN -> renderer.info("移除管理員", adminService.removeAdmin(intent.value()));
+            case ADD_ADMIN -> renderer.info(
+                    "新增管理員", adminService.addAdmin(intent.value(), userId));
+            case REMOVE_ADMIN -> renderer.info(
+                    "移除管理員", adminService.removeAdmin(intent.value(), userId));
             case UNKNOWN_CONFIG -> renderer.error(
                     "未知的設定命令",
                     "無法識別：" + intent.value() + "\n請使用 /admin config 查看可用指令。");
