@@ -114,6 +114,9 @@ public class AdminInteractionModule {
         try {
             BroadcastResult result = adminService.broadcastMessage(message);
             String body = broadcastSummary(result) + "\n\n" + message;
+            if (result.interrupted()) {
+                return renderer.error("廣播中斷", body);
+            }
             if (result.failed() == 0) {
                 return renderer.success("廣播完成", body);
             }
@@ -140,9 +143,13 @@ public class AdminInteractionModule {
     }
 
     private static String broadcastSummary(BroadcastResult result) {
-        String counts = "送達 " + result.sent() + " 位，失敗 " + result.failed()
-                + " 位（共 " + result.attempted() + " 位）。";
-        return result.testMode() ? "測試模式，未實際發送：模擬" + counts : "已" + counts;
+        String counts = "送達 " + result.sent() + " 位，失敗 " + result.failed() + " 位"
+                + (result.interrupted() ? "，未處理 " + result.remaining() + " 位" : "")
+                + "（共 " + result.total() + " 位）。";
+        String summary = result.testMode() ? "測試模式，未實際發送：模擬" + counts : "已" + counts;
+        return result.interrupted()
+                ? "廣播已中斷，未處理的用戶不會自動重送。\n" + summary
+                : summary;
     }
 
     private Message users(String userId) {

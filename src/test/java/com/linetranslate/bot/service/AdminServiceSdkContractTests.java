@@ -124,6 +124,75 @@ class AdminServiceSdkContractTests {
         verifyNoInteractions(messagingApiClient);
     }
 
+    @Test
+    void broadcastStopsAndRestoresTheInterruptFlagWhenInterruptedWhileWaitingForAPush() {
+        when(userProfileRepository.findAll()).thenReturn(List.of(
+                UserProfile.builder().userId("U-first").build(),
+                UserProfile.builder().userId("U-second").build(),
+                UserProfile.builder().userId("U-third").build()));
+        when(messagingApiClient.pushMessage(any(UUID.class), any(PushMessageRequest.class)))
+                .thenReturn(CompletableFuture.completedFuture(null))
+                .thenAnswer(invocation -> {
+                    Thread.currentThread().interrupt();
+                    return new CompletableFuture<>();
+                });
+
+        try {
+            // The second push was in flight when the interrupt arrived, so its outcome
+            // is unknown: it and the third user are remaining, not failed.
+            assertThat(newService().broadcastMessage("系統通知"))
+                    .isEqualTo(new BroadcastResult(1, 1, 0, false, 2));
+            assertThat(Thread.currentThread().isInterrupted()).isTrue();
+            verify(messagingApiClient, times(2))
+                    .pushMessage(any(UUID.class), any(PushMessageRequest.class));
+        } finally {
+            Thread.interrupted();
+        }
+    }
+
+    @Test
+    void broadcastStopsBeforeTheNextPushWhenTheFlagIsSetBetweenPushes() {
+        when(userProfileRepository.findAll()).thenReturn(List.of(
+                UserProfile.builder().userId("U-first").build(),
+                UserProfile.builder().userId("U-second").build(),
+                UserProfile.builder().userId("U-third").build()));
+        // An already-completed future never checks the flag, so only the loop itself can notice.
+        when(messagingApiClient.pushMessage(any(UUID.class), any(PushMessageRequest.class)))
+                .thenAnswer(invocation -> {
+                    Thread.currentThread().interrupt();
+                    return CompletableFuture.completedFuture(null);
+                });
+
+        try {
+            assertThat(newService().broadcastMessage("系統通知"))
+                    .isEqualTo(new BroadcastResult(1, 1, 0, false, 2));
+            assertThat(Thread.currentThread().isInterrupted()).isTrue();
+            verify(messagingApiClient, times(1))
+                    .pushMessage(any(UUID.class), any(PushMessageRequest.class));
+        } finally {
+            Thread.interrupted();
+        }
+    }
+
+    @Test
+    void broadcastInTestModeReachesNobodyWhenAlreadyInterrupted() {
+        when(userProfileRepository.findAll()).thenReturn(List.of(
+                UserProfile.builder().userId("U-first").build(),
+                UserProfile.builder().userId("U-second").build()));
+        AdminService service = newService();
+        ReflectionTestUtils.setField(service, "broadcastTestMode", true);
+
+        Thread.currentThread().interrupt();
+        try {
+            assertThat(service.broadcastMessage("系統通知"))
+                    .isEqualTo(new BroadcastResult(0, 0, 0, true, 2));
+            assertThat(Thread.currentThread().isInterrupted()).isTrue();
+        } finally {
+            Thread.interrupted();
+        }
+        verifyNoInteractions(messagingApiClient);
+    }
+
     private AdminService newService() {
         return new AdminService(
                 translationRecordRepository,

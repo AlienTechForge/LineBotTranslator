@@ -34,8 +34,14 @@ public class TranslationService {
     // 所有指令模式都以 DOTALL 編譯，讓擷取的原文可跨越換行，多行輸入不會只剩指令所在的那一行。
     // 文本在前的模式另以 ^ 錨定，指令前的全部文字（而非僅最後一行）都是原文。
 
+    // 以「翻譯成」開頭的指令，語言名稱與原文之間可以沒有空白（翻譯成英文我愛你），
+    // 所以該模式只擷取連續的中文字，由 chineseTarget 依已知語言名稱切成語言與原文，
+    // 中文字之後的內容則由呼叫端自該 group 的結尾取回。
+    // 文本在前的格式（文本 翻譯成日文、文本換行翻譯成日文）不切分：連續的中文字必須整段
+    // 都是已知語言名稱，否則視為一般文字，避免「請幫我 翻譯成日文可以嗎」這類句子被當成指令。
+
     // 翻譯指令的正則表達式模式（中文語言名稱）
-    private static final Pattern TRANSLATION_COMMAND_PATTERN_CN = Pattern.compile("翻譯成([\\u4e00-\\u9fa5]+)\\s*(.*)", Pattern.DOTALL);
+    private static final Pattern TRANSLATION_COMMAND_PATTERN_CN = Pattern.compile("翻譯成([\\u4e00-\\u9fa5]+)", Pattern.DOTALL);
 
     // 翻譯指令的正則表達式模式（語言代碼）
     private static final Pattern TRANSLATION_COMMAND_PATTERN_CODE = Pattern.compile("翻譯成([a-zA-Z\\-]+)\\s*(.*)", Pattern.DOTALL);
@@ -174,12 +180,13 @@ public class TranslationService {
 
                 if (matcherCN.find()) {
                     // 使用用戶指定的中文語言名稱
-                    String languageName = matcherCN.group(1);
-                    targetLanguage = supportedTargetLanguage(languageName);
-                    if (targetLanguage == null) {
+                    ChineseTarget target = chineseTarget(matcherCN.group(1));
+                    if (target == null) {
                         return handleDefaultTranslation(userId, text, userProfile, start);
                     }
-                    sourceText = matcherCN.group(2).trim();
+                    String languageName = target.languageName();
+                    targetLanguage = target.languageCode();
+                    sourceText = (target.trailingText() + text.substring(matcherCN.end(1))).trim();
 
                     if (sourceText.isEmpty()) {
                         return TranslationResponse.plain(
@@ -236,6 +243,30 @@ public class TranslationService {
         return LanguageUtils.isSupported(languageNameOrCode)
                 ? LanguageUtils.toLanguageCode(languageNameOrCode)
                 : null;
+    }
+
+    /**
+     * 「翻譯成」後連續中文字的切分結果：已知的語言名稱、對應的語言代碼，
+     * 以及緊接在語言名稱後、屬於原文的中文字（可為空字串）。
+     */
+    private record ChineseTarget(String languageName, String languageCode, String trailingText) {
+    }
+
+    /**
+     * 把以「翻譯成」開頭的訊息中連續的中文字切成語言名稱與原文，讓「翻譯成英文我愛你」的語言是
+     * 「英文」、原文是「我愛你」，而不是把整段中文當成語言名稱。以最長的已知語言名稱開頭；
+     * 開頭不是已知語言（或不是支援的目標語言）時回傳 null，整段訊息視為一般文字翻譯。
+     */
+    private static ChineseTarget chineseTarget(String chineseRun) {
+        String languageName = LanguageUtils.leadingChineseName(chineseRun);
+        if (languageName == null) {
+            return null;
+        }
+        String languageCode = supportedTargetLanguage(languageName);
+        if (languageCode == null) {
+            return null;
+        }
+        return new ChineseTarget(languageName, languageCode, chineseRun.substring(languageName.length()));
     }
 
     /**
