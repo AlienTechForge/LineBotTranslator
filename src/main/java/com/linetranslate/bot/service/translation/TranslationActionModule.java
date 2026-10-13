@@ -18,6 +18,7 @@ import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.data.mongodb.core.query.Update;
 import org.springframework.stereotype.Service;
 
+import com.mongodb.client.result.UpdateResult;
 import com.linetranslate.bot.logging.SafeLog;
 import com.linetranslate.bot.model.TranslationActionClaim;
 import com.linetranslate.bot.model.TranslationRecord;
@@ -30,7 +31,8 @@ import lombok.extern.slf4j.Slf4j;
 /**
  * Authorized, idempotent execution of actions attached to translation results.
  * A PROCESSING claim older than its lease is treated as abandoned and may be
- * taken over atomically by exactly one later click.
+ * taken over atomically by exactly one later click. Finalisation is fenced by the
+ * claim's attempt counter, so a worker that lost its claim cannot overwrite it.
  */
 @Service
 @Slf4j
@@ -107,14 +109,7 @@ public class TranslationActionModule {
             response = TranslationResponse.plain("重新翻譯未完成，請建立新的翻譯請求。");
         }
 
-        claim.setUpdatedAt(LocalDateTime.now(clock));
-        if (response.actionable()) {
-            claim.setStatus(TranslationActionClaim.Status.COMPLETED);
-            claim.setResultRecordId(response.recordId());
-        } else {
-            claim.setStatus(TranslationActionClaim.Status.FAILED);
-        }
-        claimRepository.save(claim);
+        completeClaim(claim, response);
         return response;
     }
 
@@ -184,7 +179,8 @@ public class TranslationActionModule {
                 .and("updatedAt").lte(now.minus(claimLease)));
         Update renewed = new Update()
                 .set("status", TranslationActionClaim.Status.PROCESSING)
-                .set("updatedAt", now);
+                .set("updatedAt", now)
+                .inc("attempt", 1);
         TranslationActionClaim taken = mongoTemplate.findAndModify(
                 abandoned,
                 renewed,
@@ -238,6 +234,7 @@ public class TranslationActionModule {
                 .targetLanguage(targetLanguage)
                 .stylePresetId(stylePresetId)
                 .status(TranslationActionClaim.Status.PROCESSING)
+                .attempt(1)
                 .createdAt(now)
                 .updatedAt(now)
                 .build();
@@ -262,15 +259,30 @@ public class TranslationActionModule {
         }
     }
 
+    /**
+     * Records the outcome only while this worker still holds the claim: the write is
+     * filtered on the fencing token and PROCESSING, so a worker that stalled past its
+     * lease and lost the claim to a takeover cannot overwrite the newer attempt.
+     */
     private void completeClaim(TranslationActionClaim claim, TranslationResponse response) {
-        claim.setUpdatedAt(LocalDateTime.now(clock));
-        if (response.actionable()) {
-            claim.setStatus(TranslationActionClaim.Status.COMPLETED);
-            claim.setResultRecordId(response.recordId());
-        } else {
-            claim.setStatus(TranslationActionClaim.Status.FAILED);
+        boolean succeeded = response.actionable();
+        Query held = Query.query(Criteria.where("_id").is(claim.getId())
+                .and("attempt").is(claim.getAttempt())
+                .and("status").is(TranslationActionClaim.Status.PROCESSING));
+        Update finished = new Update()
+                .set("status", succeeded
+                        ? TranslationActionClaim.Status.COMPLETED
+                        : TranslationActionClaim.Status.FAILED)
+                .set("updatedAt", LocalDateTime.now(clock));
+        if (succeeded) {
+            finished.set("resultRecordId", response.recordId());
         }
-        claimRepository.save(claim);
+        UpdateResult result = mongoTemplate.updateFirst(
+                held, finished, TranslationActionClaim.class);
+        if (result.getMatchedCount() == 0) {
+            log.warn("Translation action claim lease lost; outcome discarded: claim={}, outcome={}",
+                    claim.getId(), succeeded ? "completed" : "failed");
+        }
     }
 
     private static Duration requirePositive(Duration lease) {

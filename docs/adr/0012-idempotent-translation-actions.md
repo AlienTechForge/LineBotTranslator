@@ -12,7 +12,7 @@ LINE Quick Reply 可讓使用者複製譯文、改目標語言或重新翻譯，
 
 可再次翻譯的 action 只傳 allowlisted command、opaque Translation Record ID 與 target language。執行前使用 `recordId + userId` 查詢 Translation Record 以驗證 ownership，再以 `SHA-256(userId, sourceRecordId, targetLanguage)` 作為 `translation_action_claims` 的 deterministic ID，使用 Mongo `_id` 唯一性在呼叫 provider 前取得 durable claim。
 
-Claim 只保存 owner、來源／結果 record ID、target、status 與 timestamps，不保存翻譯內容或 LINE payload。重複 action 若已完成則重用既有結果；失敗，或仍在 lease（`TRANSLATION_ACTION_CLAIM_LEASE`，預設 5 分鐘）內的處理中狀態，不再次呼叫 provider。`updatedAt` 已超過 lease 的處理中 claim 視為中斷，以 Mongo `findAndModify` 原子接手並刷新 `updatedAt`，只有一個 worker 能重新執行。
+Claim 只保存 owner、來源／結果 record ID、target、status、`attempt` 與 timestamps，不保存翻譯內容或 LINE payload。重複 action 若已完成則重用既有結果；失敗，或仍在 lease（`TRANSLATION_ACTION_CLAIM_LEASE`，預設 5 分鐘）內的處理中狀態，不再次呼叫 provider。`updatedAt` 已超過 lease 的處理中 claim 視為中斷，以 Mongo `findAndModify` 原子接手並刷新 `updatedAt`，只有一個 worker 能重新執行。每次取得 claim（insert 或接手）都會遞增 `attempt` 作為 fencing token；worker 只能以 `_id`、自己持有的 `attempt` 與 `status == PROCESSING` 為條件寫入 COMPLETED／FAILED，因此超過 lease 才返回的舊 worker 更新不到文件、也就無法覆寫接手者的 claim，只記錄 claim ID 與結果。沒有 `attempt` 欄位的既有 claim 仍可讀取與接手。
 
 Clipboard action 只在譯文符合 LINE 的 1,000 字元限制時加入。所有 client 都繼續收到完整 TextMessage，未支援 Quick Reply 的 client 不失去主要結果。
 

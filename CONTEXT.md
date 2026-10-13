@@ -74,7 +74,7 @@
 12. 每個 Provider Attempt 產生一個 Usage Event；app 不做跨 provider fallback；accounting failure 採 fail-open，不可改變 provider outcome。
 13. Usage Event 與 logs 遵守 data minimization；credential、使用者原文、OCR 結果、signed URL 與第三方完整 payload 不得記錄。
 14. AI Prompt 由 server-owned versioned catalog 產生；文字與圖片翻譯使用獨立模板。Target locale 以 BCP 47 canonical form 注入，圖片回應另驗證 locale/script，prompt/schema version 納入 cache identity。
-15. Translation Action 必須以 `recordId + userId` 驗證 ownership；同一來源紀錄與 target 的 durable claim 在 lease 內只允許一次 Provider Attempt；超過 lease 仍為 processing 的 claim 只能由一個 worker 原子接手重試。
+15. Translation Action 必須以 `recordId + userId` 驗證 ownership；同一來源紀錄與 target 的 durable claim 在 lease 內只允許一次 Provider Attempt；超過 lease 仍為 processing 的 claim 只能由一個 worker 原子接手重試。每次取得 claim 遞增 `attempt` fencing token，完成狀態只能以 `_id + attempt + PROCESSING` 條件寫入，失去 lease 的舊 worker 不得覆寫接手者。
 16. Translation Style 只接受 catalog 內的 stable ID；單次 style 不可修改使用者預設，無效或已移除的 stored style 回退 faithful。
 17. Translated Image Delivery 只接受內部 pipeline 產生的 HTTPS `translated-images/` presigned URL；木雷 Adapter 必須驗證 AWS V4 query，不得縮短 caller 提供的任意 URL。
 
@@ -137,7 +137,7 @@
 | --- | --- | --- | --- |
 | `user_profiles` | User Preferences / profile services | LINE profile metadata、preferences、活動與計數 | API secrets；其他 Module 不直接重建 preference precedence。 |
 | `translation_records` | Translation Workflow | 成功翻譯內容、語言、actual provider/model、actual style/version、時間、image storage metadata | 精確 token/cost；失敗 attempt。 |
-| `translation_action_claims` | Translation Action Module | hashed action ID、owner、來源／結果 record ID、target、style ID、status、timestamps | 原文、譯文、LINE payload、postback data、provider payload 或 secret。 |
+| `translation_action_claims` | Translation Action Module | hashed action ID、owner、來源／結果 record ID、target、style ID、status、`attempt`、timestamps | 原文、譯文、LINE payload、postback data、provider payload 或 secret。 |
 | `runtime_settings` | Runtime Settings Module | allowlisted settings、schema/revision、operator/time | credential、token、API key、connection secret。 |
 | `ai_usage_events` | Usage Accounting Module | provider attempt metadata、token、pricing/cost snapshot | user ID、原文、譯文、correlation ID、secret。 |
 | `webhook_event_receipts` | Webhook ingestion | event ID、status、claim/attempt/time metadata | LINE message content、reply token。 |
