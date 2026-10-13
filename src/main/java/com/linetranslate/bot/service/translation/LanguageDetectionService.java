@@ -34,6 +34,9 @@ public class LanguageDetectionService {
     @Autowired
     private AiLanguageDetectionService aiLanguageDetectionService;
     
+    @Autowired
+    private LanguageDetectionCache detectionCache;
+
     @Value("${app.language-detection.use-ai:true}")
     private boolean useAiDetection;
     
@@ -75,7 +78,9 @@ public class LanguageDetectionService {
             // 如果啟用 AI 語言檢測，則使用 AI 模型進行檢測
             if (useAiDetection) {
                 log.debug("使用 AI 模型進行語言檢測");
-                String aiDetectedLanguage = aiLanguageDetectionService.detectLanguage(text);
+                // 重複文字沿用先前的 AI 結果，避免每次翻譯前都多付一次偵測費用
+                String aiDetectedLanguage = detectionCache.detect(
+                        text, aiLanguageDetectionService::detectLanguage);
                 
                 // 如果 AI 檢測失敗，則使用傳統方法
                 if ("unknown".equals(aiDetectedLanguage)) {

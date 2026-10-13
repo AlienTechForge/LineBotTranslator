@@ -38,6 +38,42 @@ class ImageTranslationStyleEstimatorTests {
         assertThat(style.maximumFontSize()).isBetween(48, 54);
     }
 
+    @Test
+    void paragraphWithManyGlyphsIsSampledWithoutQuadraticMaskCost() {
+        // Testing every pixel against the union of all glyph polygons took about 20 s here;
+        // rasterising each polygon within its own bounds takes well under one second.
+        BufferedImage image = new BufferedImage(760, 560, BufferedImage.TYPE_INT_RGB);
+        List<OcrWord> words = new java.util.ArrayList<>();
+        var graphics = image.createGraphics();
+        try {
+            graphics.setColor(Color.WHITE);
+            graphics.fillRect(0, 0, image.getWidth(), image.getHeight());
+            graphics.setColor(new Color(30, 30, 30));
+            graphics.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 22));
+            for (int line = 0; line < 20; line++) {
+                int y = 10 + line * 27;
+                graphics.drawString("Lorem ipsum dolor sit amet, consectetur adipiscing", 10, y + 20);
+                List<OcrSymbol> symbols = new java.util.ArrayList<>();
+                for (int index = 0; index < 30; index++) {
+                    symbols.add(new OcrSymbol("x", rectangle(10 + index * 24, y, 22, 24), .99f, true));
+                }
+                words.add(new OcrWord("line", rectangle(10, y, 718, 24), .99f, true, symbols));
+            }
+        } finally {
+            graphics.dispose();
+        }
+        OcrRegion region = new OcrRegion("paragraph", "Lorem ipsum", rectangle(8, 8, 722, 544),
+                words, .99f, true, OcrBlockType.TEXT, List.of(), 0);
+
+        long started = System.nanoTime();
+        ImageTranslationTextStyle style = ImageTranslationStyleEstimator.estimate(image, region);
+        long elapsedMillis = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(
+                System.nanoTime() - started);
+
+        assertThat(style.background()).isEqualTo(Color.WHITE);
+        assertThat(elapsedMillis).as("600 glyph polygons in one paragraph").isLessThan(3_000);
+    }
+
     private static List<OcrPoint> rectangle(int x, int y, int width, int height) {
         return List.of(new OcrPoint(x, y), new OcrPoint(x + width, y),
                 new OcrPoint(x + width, y + height), new OcrPoint(x, y + height));

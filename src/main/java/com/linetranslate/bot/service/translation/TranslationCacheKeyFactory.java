@@ -20,7 +20,7 @@ final class TranslationCacheKeyFactory {
         return TranslationCacheKey.of(digest(sourceText), targetLanguage, route, variant);
     }
 
-    private static String digest(String sourceText) {
+    static String digest(String sourceText) {
         if (sourceText == null || sourceText.isBlank()) {
             throw new IllegalArgumentException("Translation cache requires source text");
         }

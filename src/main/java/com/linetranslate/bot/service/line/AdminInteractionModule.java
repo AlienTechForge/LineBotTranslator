@@ -9,6 +9,7 @@ import org.springframework.stereotype.Service;
 import com.linecorp.bot.messaging.model.Message;
 import com.linetranslate.bot.logging.SafeLog;
 import com.linetranslate.bot.service.AdminService;
+import com.linetranslate.bot.service.BroadcastResult;
 import com.linetranslate.bot.service.ai.AiModelPage;
 import com.linetranslate.bot.service.line.intent.AdminIntent;
 import com.linetranslate.bot.service.webhook.PushFallbackModule;
@@ -107,8 +108,15 @@ public class AdminInteractionModule {
     private Message broadcast(String userId, String message) {
         log.info("廣播命令: user={}, content={}", SafeLog.user(userId), SafeLog.content(message));
         try {
-            int count = adminService.broadcastMessage(message);
-            return renderer.success("廣播完成", "已向 " + count + " 個用戶發送訊息。\n\n" + message);
+            BroadcastResult result = adminService.broadcastMessage(message);
+            String body = broadcastSummary(result) + "\n\n" + message;
+            if (result.failed() == 0) {
+                return renderer.success("廣播完成", body);
+            }
+            if (result.sent() == 0) {
+                return renderer.error("廣播失敗", body);
+            }
+            return renderer.info("廣播部分完成", body);
         } catch (Exception exception) {
             log.error("廣播訊息失敗: failure={}", SafeLog.failure(exception));
             return renderer.error("廣播失敗", "廣播訊息未能送出，請稍後再試。");
@@ -125,6 +133,12 @@ public class AdminInteractionModule {
             log.error("取得推播額度失敗: failure={}", SafeLog.failure(exception));
             return renderer.error("推播額度失敗", "無法取得 LINE 推播額度，請稍後再試。");
         }
+    }
+
+    private static String broadcastSummary(BroadcastResult result) {
+        String counts = "送達 " + result.sent() + " 位，失敗 " + result.failed()
+                + " 位（共 " + result.attempted() + " 位）。";
+        return result.testMode() ? "測試模式，未實際發送：模擬" + counts : "已" + counts;
     }
 
     private Message users(String userId) {

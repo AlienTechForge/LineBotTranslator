@@ -71,6 +71,20 @@ class CiQualityGateContractTests {
     }
 
     @Test
+    void deploymentPassesTranslationActionClaimLeaseIntoTheRuntimeContainer() throws IOException {
+        String workflow = Files.readString(Path.of(".github", "workflows", "ci-cd.yml"));
+        String deployScript = Files.readString(Path.of("scripts", "deploy.sh"));
+        String properties = Files.readString(
+                Path.of("src", "main", "resources", "application.properties"));
+
+        assertThat(workflow).contains(
+                "TRANSLATION_ACTION_CLAIM_LEASE: ${{ vars.TRANSLATION_ACTION_CLAIM_LEASE || 'PT5M' }}");
+        assertThat(deployScript).contains("TRANSLATION_ACTION_CLAIM_LEASE");
+        assertThat(properties).contains(
+                "app.translation.action-claim-lease=${TRANSLATION_ACTION_CLAIM_LEASE:PT5M}");
+    }
+
+    @Test
     void deploymentPassesBoundedWebhookPolicyIntoTheRuntimeContainer() throws IOException {
         String workflow = Files.readString(Path.of(".github", "workflows", "ci-cd.yml"));
         String deployScript = Files.readString(Path.of("scripts", "deploy.sh"));
@@ -91,6 +105,16 @@ class CiQualityGateContractTests {
                 .contains("WEBHOOK_PROCESSING_LEASE")
                 .contains("WEBHOOK_REPLY_MAX_ATTEMPTS")
                 .contains("WEBHOOK_REPLY_RETRY_BACKOFF");
+    }
+
+    @Test
+    void deploymentPassesBoundedVisionTimeoutIntoTheRuntimeContainer() throws IOException {
+        String workflow = Files.readString(Path.of(".github", "workflows", "ci-cd.yml"));
+        String deployScript = Files.readString(Path.of("scripts", "deploy.sh"));
+
+        assertThat(workflow)
+                .contains("GOOGLE_VISION_TIMEOUT_MS: ${{ vars.GOOGLE_VISION_TIMEOUT_MS || '60000' }}");
+        assertThat(deployScript).contains("GOOGLE_VISION_TIMEOUT_MS");
     }
 
     @Test
