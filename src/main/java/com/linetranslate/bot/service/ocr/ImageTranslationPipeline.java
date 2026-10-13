@@ -291,7 +291,11 @@ public class ImageTranslationPipeline {
             return new ImageTranslationOutcome.Failure(ImageTranslationFailureStage.TRANSLATION);
         }
         if (workflowOutcome instanceof TranslationWorkflowOutcome.Failure failure) {
-            if (failure.failure().outcome() == AiProviderException.Outcome.UNEXPECTED_ERROR) {
+            if (failure.failure() == null) {
+                // A failed outcome must say why; one that does not is a defect of the workflow.
+                logUnexpected(UnexpectedStage.TRANSLATION,
+                        new IllegalStateException("Translation workflow failed without a failure"));
+            } else if (failure.failure().outcome() == AiProviderException.Outcome.UNEXPECTED_ERROR) {
                 // The provider module reports a bug it caught as a failed outcome, with the cause.
                 logUnexpected(UnexpectedStage.TRANSLATION, failure.failure().toException());
             }
@@ -300,8 +304,14 @@ public class ImageTranslationPipeline {
                     failure.failure());
         }
 
-        TranslationWorkflowResult translation =
-                ((TranslationWorkflowOutcome.Success) workflowOutcome).result();
+        TranslationWorkflowOutcome.Success workflowSuccess =
+                (TranslationWorkflowOutcome.Success) workflowOutcome;
+        TranslationWorkflowResult translation = workflowSuccess.result();
+        if (workflowSuccess.unexpectedFailure() != null) {
+            // The workflow made up for a provider bug (a structured attempt) with a plain-text
+            // translation: the image is served, but the bug is still reported.
+            logUnexpected(UnexpectedStage.TRANSLATION, workflowSuccess.unexpectedFailure().toException());
+        }
         long translationMillis = elapsedMillis(translationStarted);
         long renderingStarted = System.nanoTime();
         OverlayOutcome overlay = renderAndStore(image, recognition, translation, translatableRegionIds)

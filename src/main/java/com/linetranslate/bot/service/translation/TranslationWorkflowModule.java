@@ -93,6 +93,7 @@ public class TranslationWorkflowModule {
                         .orElse(preferences.translationStyle());
 
         AiExecutionResult execution;
+        AiExecutionFailure unexpectedFailure = null;
         java.util.List<ImageRegionTranslation> regionTranslations = java.util.List.of();
         if (!request.imageRegions().isEmpty()) {
             if (structuredAdapter == null) {
@@ -103,7 +104,9 @@ public class TranslationWorkflowModule {
                         preferences, request.imageRegions(), targetLanguage, style);
                 execution = structured.execution();
                 regionTranslations = structured.translations();
+                unexpectedFailure = structured.unexpectedFailure();
             } catch (StructuredTranslationException unsafeMapping) {
+                unexpectedFailure = unsafeMapping.unexpectedFailure();
                 // Keep the core translation useful, but never guess image-region identity.
                 AiExecutionOutcome degraded = translateWithLocaleValidation(
                         preferences, request.sourceText(), targetLanguage, style, true);
@@ -140,7 +143,7 @@ public class TranslationWorkflowModule {
                 recordId,
                 style.id(),
                 style.promptVersion(),
-                regionTranslations));
+                regionTranslations), unexpectedFailure);
     }
 
     private AiExecutionOutcome translateWithLocaleValidation(

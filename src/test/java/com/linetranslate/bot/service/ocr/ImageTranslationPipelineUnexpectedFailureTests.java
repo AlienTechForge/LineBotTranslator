@@ -20,6 +20,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -48,14 +49,23 @@ import com.linetranslate.bot.service.ai.AiProviderException;
 import com.linetranslate.bot.service.ai.AiProviderOperation;
 import com.linetranslate.bot.service.ai.AiProviderRequest;
 import com.linetranslate.bot.service.ai.AiProviderResponse;
+import com.linetranslate.bot.service.ai.AiTokenUsage;
 import com.linetranslate.bot.service.ai.AiProviderExecutionModule;
 import com.linetranslate.bot.service.preference.UserPreferencesModule;
 import com.linetranslate.bot.service.settings.RuntimeSettings;
 import com.linetranslate.bot.service.storage.ImageStorageResult;
 import com.linetranslate.bot.service.storage.MinioStorageService;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.linetranslate.bot.repository.TranslationRecordRepository;
+import com.linetranslate.bot.service.translation.CachedTranslationAdapter;
 import com.linetranslate.bot.service.translation.ImageRegionTranslation;
 import com.linetranslate.bot.service.translation.ImageRegionTranslationInput;
+import com.linetranslate.bot.service.translation.LanguageDetectionService;
+import com.linetranslate.bot.service.translation.StructuredImageTranslationAdapter;
+import com.linetranslate.bot.service.translation.StructuredImageTranslationCodec;
 import com.linetranslate.bot.service.translation.StructuredTranslationException;
+import com.linetranslate.bot.service.translation.TranslationCacheProperties;
+import com.linetranslate.bot.service.translation.TranslationCacheStore;
 import com.linetranslate.bot.service.translation.TranslationPromptFactory;
 import com.linetranslate.bot.service.translation.TranslationRequestKind;
 import com.linetranslate.bot.service.translation.TranslationWorkflowModule;
@@ -280,6 +290,45 @@ class ImageTranslationPipelineUnexpectedFailureTests {
     }
 
     @Test
+    void aStructuredProviderBugIsReportedEvenWhenThePlainTextFallbackServesTheImage() {
+        // The real chain from the pipeline down to the provider adapter: only structured requests
+        // (the ones that carry a schema version) hit the bug, the plain-text fallback succeeds.
+        AiProviderExecutionModule provider = providerModule(request -> {
+            if (request.input().contains("schemaVersion")) {
+                throw new NullPointerException(SEEDED);
+            }
+            return new AiProviderResponse("fallback translation", request.model(), new AiTokenUsage(1, 1, 2));
+        });
+        CachedTranslationAdapter cached = new CachedTranslationAdapter(
+                provider, mock(TranslationCacheStore.class), new TranslationCacheProperties());
+        workflowModule = new TranslationWorkflowModule(mock(LanguageDetectionService.class), cached,
+                mock(TranslationRecordRepository.class), userPreferencesModule,
+                new StructuredImageTranslationAdapter(cached, new StructuredImageTranslationCodec(new ObjectMapper())));
+        when(ocrService.recognize(any(InputStream.class))).thenReturn(OcrRecognition.structured(List.of(region())));
+        pipeline = pipeline(ocrService, aiProviderExecutionModule, new OcrRegionQualificationPolicy());
+
+        ImageTranslationOutcome outcome = pipeline.execute(request());
+
+        assertThat(outcome).isInstanceOfSatisfying(ImageTranslationOutcome.Success.class, success -> {
+            assertThat(success.result().translation().translatedText()).isEqualTo("fallback translation");
+            assertThat(success.result().translation().imageRegionTranslations()).isEmpty();
+        });
+        assertReportedAsDefect("translation", AiProviderException.class, NullPointerException.class);
+    }
+
+    @Test
+    void aWorkflowFailureWithoutDetailStillDegradesTheImageAndIsReportedAsADefect() {
+        when(ocrService.recognize(any(InputStream.class))).thenReturn(OcrRecognition.plain("hello"));
+        doReturn(new TranslationWorkflowOutcome.Failure(null)).when(workflowModule).execute(any());
+
+        ImageTranslationOutcome outcome = pipeline.execute(request());
+
+        assertThat(outcome).isEqualTo(new ImageTranslationOutcome.Failure(
+                ImageTranslationFailureStage.TRANSLATION));
+        assertReportedAsDefect("translation", IllegalStateException.class);
+    }
+
+    @Test
     void anOcrServiceThatReturnsNothingIsAnUnexpectedRecognitionFailure() {
         when(ocrService.recognize(any(InputStream.class))).thenReturn(null);
 
@@ -386,12 +435,16 @@ class ImageTranslationPipelineUnexpectedFailureTests {
     }
 
     private static AiProviderExecutionModule providerModuleWhoseAdapterThrows(RuntimeException failure) {
+        return providerModule(request -> { throw failure; });
+    }
+
+    private static AiProviderExecutionModule providerModule(Function<AiProviderRequest, AiProviderResponse> behaviour) {
         AiProviderAdapter adapter = new AiProviderAdapter() {
             public String providerName() { return "openrouter"; }
             public String defaultModel() { return "test-model"; }
             public Set<String> availableModels() { return Set.of("test-model"); }
             public Set<AiProviderOperation> capabilities() { return Set.of(AiProviderOperation.values()); }
-            public AiProviderResponse execute(AiProviderRequest request) { throw failure; }
+            public AiProviderResponse execute(AiProviderRequest request) { return behaviour.apply(request); }
         };
         return new AiProviderExecutionModule(List.of(adapter),
                 () -> new RuntimeSettings("en", "zh-TW", "test-model", true, 2, 1, null, "U-admin",

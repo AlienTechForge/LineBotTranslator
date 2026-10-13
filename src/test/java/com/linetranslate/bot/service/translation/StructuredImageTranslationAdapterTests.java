@@ -177,6 +177,76 @@ class StructuredImageTranslationAdapterTests {
         assertThat(result.execution().text()).isEqualTo("保護自己\nStay hydrated");
     }
 
+    @Test
+    void aProviderBugInAnAttemptIsKeptEvenWhenTheRepairAttemptSucceeds() {
+        CachedTranslationAdapter provider = mock(CachedTranslationAdapter.class);
+        UserPreferences preferences = new UserPreferences("zh-TW", "en", "zh-TW", "model", List.of());
+        NullPointerException bug = new NullPointerException("seeded-private-detail");
+        AiExecutionOutcome unexpected = providerFailure(AiProviderException.Outcome.UNEXPECTED_ERROR, bug);
+        when(provider.translateValidated(eq(preferences), anyString(), eq("zh-TW"),
+                eq(TranslationStylePreset.FAITHFUL), eq(StructuredImageTranslationCodec.SCHEMA_VERSION), any()))
+                .thenReturn(unexpected)
+                .thenReturn(success("{\"schemaVersion\":\"image-regions-v3\",\"regions\":["
+                        + "{\"regionId\":\"r1\",\"translatedText\":\"你好\"}]}"));
+        StructuredImageTranslationAdapter adapter = new StructuredImageTranslationAdapter(
+                provider, new StructuredImageTranslationCodec(new ObjectMapper()));
+
+        StructuredImageTranslationAdapter.Result result = adapter.translate(preferences,
+                List.of(new ImageRegionTranslationInput("r1", "hello", "en", List.of(), true, 0)),
+                "zh-TW", TranslationStylePreset.FAITHFUL);
+
+        assertThat(result.translations()).containsExactly(new ImageRegionTranslation("r1", "你好"));
+        assertThat(result.unexpectedFailure()).isSameAs(((AiExecutionOutcome.Failure) unexpected).failure());
+        assertThat(result.unexpectedFailure().cause()).isSameAs(bug);
+    }
+
+    @Test
+    void aProviderBugInAnAttemptTravelsWithTheExceptionWhenBothAttemptsFail() {
+        CachedTranslationAdapter provider = mock(CachedTranslationAdapter.class);
+        UserPreferences preferences = new UserPreferences("zh-TW", "en", "zh-TW", "model", List.of());
+        NullPointerException bug = new NullPointerException("seeded-private-detail");
+        AiExecutionOutcome unexpected = providerFailure(AiProviderException.Outcome.UNEXPECTED_ERROR, bug);
+        when(provider.translateValidated(eq(preferences), anyString(), eq("zh-TW"),
+                eq(TranslationStylePreset.FAITHFUL), eq(StructuredImageTranslationCodec.SCHEMA_VERSION), any()))
+                .thenReturn(unexpected)
+                .thenReturn(providerFailure(AiProviderException.Outcome.RATE_LIMITED, null));
+        StructuredImageTranslationAdapter adapter = new StructuredImageTranslationAdapter(
+                provider, new StructuredImageTranslationCodec(new ObjectMapper()));
+
+        assertThatThrownBy(() -> adapter.translate(preferences,
+                List.of(new ImageRegionTranslationInput("r1", "hello", "en", List.of())),
+                "zh-TW", TranslationStylePreset.FAITHFUL))
+                .isInstanceOfSatisfying(StructuredTranslationException.class, failure -> {
+                    assertThat(failure.reason()).isEqualTo(StructuredTranslationException.PROVIDER_FAILED);
+                    assertThat(failure.unexpectedFailure())
+                            .isSameAs(((AiExecutionOutcome.Failure) unexpected).failure());
+                });
+    }
+
+    @Test
+    void knownProviderFailuresAreNotReportedAsUnexpected() {
+        CachedTranslationAdapter provider = mock(CachedTranslationAdapter.class);
+        UserPreferences preferences = new UserPreferences("zh-TW", "en", "zh-TW", "model", List.of());
+        when(provider.translateValidated(eq(preferences), anyString(), eq("zh-TW"),
+                eq(TranslationStylePreset.FAITHFUL), eq(StructuredImageTranslationCodec.SCHEMA_VERSION), any()))
+                .thenReturn(providerFailure(AiProviderException.Outcome.TIMEOUT, null));
+        StructuredImageTranslationAdapter adapter = new StructuredImageTranslationAdapter(
+                provider, new StructuredImageTranslationCodec(new ObjectMapper()));
+
+        assertThatThrownBy(() -> adapter.translate(preferences,
+                List.of(new ImageRegionTranslationInput("r1", "hello", "en", List.of())),
+                "zh-TW", TranslationStylePreset.FAITHFUL))
+                .isInstanceOfSatisfying(StructuredTranslationException.class, failure -> {
+                    assertThat(failure.reason()).isEqualTo(StructuredTranslationException.PROVIDER_FAILED);
+                    assertThat(failure.unexpectedFailure()).isNull();
+                });
+    }
+
+    private static AiExecutionOutcome providerFailure(AiProviderException.Outcome outcome, Throwable cause) {
+        return new AiExecutionOutcome.Failure(AiExecutionFailure.from(new AiProviderException(
+                outcome, "openrouter", "model", outcome.name(), "correlation-1", -1, cause), List.of()));
+    }
+
     private static AiExecutionOutcome success(String text) {
         return new AiExecutionOutcome.Success(new AiExecutionResult(text, "openrouter", "model"));
     }
