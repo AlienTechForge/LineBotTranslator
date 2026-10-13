@@ -3,6 +3,7 @@ package com.linetranslate.bot.service.ocr;
 import java.io.InputStream;
 import java.util.Base64;
 import java.util.List;
+import java.util.stream.IntStream;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.ObjectProvider;
@@ -36,6 +37,10 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 public class ImageTranslationPipeline {
 
+    /**
+     * What one image may send to the model and overlay. A result past either bound is not an
+     * invalid image: the leading regions in reading order are kept and the rest are reported.
+     */
     private static final int MAX_OCR_REGIONS = 200;
     private static final int MAX_OCR_TEXT_CHARS = 50_000;
 
@@ -179,10 +184,18 @@ public class ImageTranslationPipeline {
         List<OcrRegionDecision> decisions = recognition.regions().stream()
                 .map(region -> qualificationPolicy.decide(region, properties.lowConfidenceThreshold()))
                 .toList();
-        List<OcrRegionDecision> translatedDecisions = decisions.stream()
-                .filter(value -> value.qualification() == OcrQualification.TRANSLATE).toList();
-        List<OcrRegionDecision> workflowDecisions = decisions.stream()
+        List<OcrRegionDecision> eligibleDecisions = decisions.stream()
                 .filter(value -> value.qualification() != OcrQualification.REJECT).toList();
+        List<OcrRegionDecision> workflowDecisions = withinModelLimits(eligibleDecisions);
+        int omittedRegions = eligibleDecisions.size() - workflowDecisions.size();
+        if (omittedRegions > 0) {
+            log.info("Image OCR output exceeds processing limits; leading regions kept: "
+                            + "eligible={}, kept={}, omitted={}, maxRegions={}, maxChars={}",
+                    eligibleDecisions.size(), workflowDecisions.size(), omittedRegions,
+                    MAX_OCR_REGIONS, MAX_OCR_TEXT_CHARS);
+        }
+        List<OcrRegionDecision> translatedDecisions = workflowDecisions.stream()
+                .filter(value -> value.qualification() == OcrQualification.TRANSLATE).toList();
         String translatableText = recognition.regions().isEmpty()
                 ? recognition.reliableText(properties.lowConfidenceThreshold())
                 : workflowDecisions.stream().map(value -> value.region().text())
@@ -246,10 +259,12 @@ public class ImageTranslationPipeline {
                 ((TranslationWorkflowOutcome.Success) workflowOutcome).result();
         long translationMillis = elapsedMillis(translationStarted);
         long renderingStarted = System.nanoTime();
-        OverlayOutcome overlay = renderAndStore(image, recognition, translation, translatableRegionIds);
+        OverlayOutcome overlay = renderAndStore(image, recognition, translation, translatableRegionIds)
+                .omitting(omittedRegions);
         long renderingMillis = elapsedMillis(renderingStarted);
         log.info("Image translation timing: downloadMs={}, storageMs={}, recognitionMs={}, "
-                        + "translationMs={}, renderingMs={}, totalMs={}, ocrRegions={}, translatedRegions={}",
+                        + "translationMs={}, renderingMs={}, totalMs={}, ocrRegions={}, translatedRegions={}, "
+                        + "omittedRegions={}",
                 downloadMillis,
                 storageMillis,
                 recognitionMillis,
@@ -257,7 +272,8 @@ public class ImageTranslationPipeline {
                 renderingMillis,
                 elapsedMillis(pipelineStarted),
                 recognition.regions().size(),
-                translatedDecisions.size());
+                translatedDecisions.size(),
+                omittedRegions);
         return new ImageTranslationOutcome.Success(
                 new ImageTranslationPipelineResult(
                         context,
@@ -282,6 +298,35 @@ public class ImageTranslationPipeline {
                     decision.region().id(), derived.size(), bounded.size());
         }
         return bounded;
+    }
+
+    /**
+     * The leading regions, in reading order, that fit the region and character bounds. Segmenting
+     * one paragraph into rows and columns can multiply the regions Vision returned, so the bounds
+     * cannot be checked on the raw OCR. The first translatable region is always kept, so an image
+     * with text is not turned into "no text": when preserved regions such as prices come before it
+     * and would break a bound, the oldest of them are dropped instead. Both bounds always hold.
+     */
+    private static List<OcrRegionDecision> withinModelLimits(List<OcrRegionDecision> decisions) {
+        int first = IntStream.range(0, decisions.size())
+                .filter(index -> decisions.get(index).qualification() == OcrQualification.TRANSLATE)
+                .findFirst().orElse(-1);
+        int start = Math.max(first, 0);
+        int end = first < 0 ? 0 : first + 1;
+        int characters = first < 0 ? 0 : textLength(decisions.get(first));
+        while (start > 0 && end - start < MAX_OCR_REGIONS
+                && characters + textLength(decisions.get(start - 1)) <= MAX_OCR_TEXT_CHARS) {
+            characters += textLength(decisions.get(--start));
+        }
+        while (end < decisions.size() && end - start < MAX_OCR_REGIONS
+                && characters + textLength(decisions.get(end)) <= MAX_OCR_TEXT_CHARS) {
+            characters += textLength(decisions.get(end++));
+        }
+        return decisions.subList(start, end);
+    }
+
+    private static int textLength(OcrRegionDecision decision) {
+        return decision.region().text().length();
     }
 
     private static long elapsedMillis(long startedAt) {
@@ -328,13 +373,9 @@ public class ImageTranslationPipeline {
                     recognition = ocrService.recognize(stream);
                 }
                 List<OcrRegion> regions = recognition.regions();
-                if (!regions.isEmpty()) {
-                    int characters = regions.stream().mapToInt(region -> region.text().length()).sum();
-                    long uniqueIds = regions.stream().map(OcrRegion::id).distinct().count();
-                    if (regions.size() > MAX_OCR_REGIONS || characters > MAX_OCR_TEXT_CHARS
-                            || uniqueIds != regions.size()) {
-                        throw new InvalidImageException("OCR result exceeds processing limits");
-                    }
+                if (regions.stream().map(OcrRegion::id).distinct().count() != regions.size()) {
+                    // A fault of the OCR provider, not of the upload: use AI recognition instead.
+                    throw new OcrProcessingException("OCR result contains duplicate region ids");
                 }
                 return recognition;
             } catch (OcrProcessingException failure) {
@@ -468,6 +509,12 @@ public class ImageTranslationPipeline {
         static OverlayOutcome unavailable() {
             return new OverlayOutcome(ImageStorageResult.notStored(), 0, ImageOverlayDisposition.UNAVAILABLE,
                     OverlayDegradationSummary.none());
+        }
+
+        /** Regions left out for exceeding the processing limits, reported as a count only. */
+        OverlayOutcome omitting(int regions) {
+            return new OverlayOutcome(storage, lowConfidenceBlockCount, disposition,
+                    degradation.merge(OverlayDegradationSummary.single(OverlayDegradationReason.LIMIT, regions)));
         }
     }
 }

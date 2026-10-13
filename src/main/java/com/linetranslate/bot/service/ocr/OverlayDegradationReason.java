@@ -10,5 +10,6 @@ public enum OverlayDegradationReason {
     MAPPING,
     DISABLED,
     STORAGE,
+    LIMIT,
     OTHER
 }

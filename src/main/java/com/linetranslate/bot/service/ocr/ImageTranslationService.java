@@ -137,12 +137,13 @@ public class ImageTranslationService {
         int mapping = degradation.count(OverlayDegradationReason.MAPPING);
         int disabled = degradation.count(OverlayDegradationReason.DISABLED);
         int storage = degradation.count(OverlayDegradationReason.STORAGE);
+        int limit = degradation.count(OverlayDegradationReason.LIMIT);
         int other = degradation.count(OverlayDegradationReason.OTHER);
         log.info("Image overlay outcome: disposition={}, preservedTotal={}, lowConfidence={}, "
                         + "coverage={}, geometry={}, overlap={}, font={}, textFit={}, "
-                        + "mapping={}, disabled={}, storage={}, other={}",
+                        + "mapping={}, disabled={}, storage={}, limit={}, other={}",
                 disposition, preservedTotal, lowConfidence, coverage, geometry, overlap,
-                font, textFit, mapping, disabled, storage, other);
+                font, textFit, mapping, disabled, storage, limit, other);
     }
 
     private static boolean isSafeRenderedImageUrl(String value) {
