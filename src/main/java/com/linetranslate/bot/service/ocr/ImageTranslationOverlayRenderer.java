@@ -1,5 +1,6 @@
 package com.linetranslate.bot.service.ocr;
 
+import java.awt.AlphaComposite;
 import java.awt.BasicStroke;
 import java.awt.Color;
 import java.awt.Font;
@@ -13,10 +14,17 @@ import java.awt.geom.Area;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 
+import javax.imageio.IIOImage;
 import javax.imageio.ImageIO;
+import javax.imageio.ImageWriteParam;
+import javax.imageio.ImageWriter;
+import javax.imageio.stream.ImageOutputStream;
+import javax.imageio.stream.MemoryCacheImageOutputStream;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 /** Deterministic Java2D renderer that replaces reliable OCR regions in place. */
@@ -44,11 +52,31 @@ public class ImageTranslationOverlayRenderer {
     private static final double SKEW_REPORT_THRESHOLD = .02;
     /** Share of a cleanup area still holding source ink above which the erase is worth reporting. */
     private static final double RESIDUAL_INK_THRESHOLD = .05;
+    /** LINE refuses an image message whose original is larger than 10 MB. */
+    private static final long DEFAULT_MAX_OUTPUT_BYTES = 10_485_760L;
+    private static final String PNG_CONTENT_TYPE = "image/png";
+    private static final String JPEG_CONTENT_TYPE = "image/jpeg";
+    /** JPEG qualities tried in order once lossless PNG exceeds the cap; opaque output only. */
+    private static final float[] JPEG_QUALITIES = {.92f, .85f, .75f};
+    /** Linear scale applied per step when re-encoding alone cannot meet the cap. */
+    private static final double DOWNSCALE_STEP = .85;
+    private static final int MAX_DOWNSCALE_STEPS = 6;
     private final ImageTranslationFontProvider fontProvider;
+    private final long maxOutputBytes;
 
     @org.springframework.beans.factory.annotation.Autowired
-    public ImageTranslationOverlayRenderer(ImageTranslationFontProvider fontProvider) {
+    public ImageTranslationOverlayRenderer(
+            ImageTranslationFontProvider fontProvider,
+            @Value("${app.image-translation.max-output-bytes:10485760}") long maxOutputBytes) {
+        if (maxOutputBytes <= 0) {
+            throw new IllegalArgumentException("Rendered image size cap must be positive");
+        }
         this.fontProvider = fontProvider;
+        this.maxOutputBytes = maxOutputBytes;
+    }
+
+    public ImageTranslationOverlayRenderer(ImageTranslationFontProvider fontProvider) {
+        this(fontProvider, DEFAULT_MAX_OUTPUT_BYTES);
     }
 
     public ImageTranslationOverlayRenderer() {
@@ -696,16 +724,104 @@ public class ImageTranslationOverlayRenderer {
         return result;
     }
 
-    private static byte[] encode(BufferedImage image) {
+    /**
+     * Lossless PNG while it fits the output cap. A photo re-encoded as PNG grows to several times
+     * its JPEG size, and LINE cannot fetch an original above its 10 MB limit, so the user would get
+     * nothing. Oversized opaque output therefore falls back to JPEG, then any output is downscaled
+     * in bounded steps. Output that still does not fit is refused like an unencodable image, which
+     * degrades the reply to text.
+     */
+    private RenderedImage.Encoded encode(BufferedImage image) {
         try {
-            ByteArrayOutputStream output = new ByteArrayOutputStream();
-            if (!ImageIO.write(image, "png", output)) {
-                throw new IOException("PNG writer is unavailable");
+            byte[] png = writePng(image);
+            if (png.length <= maxOutputBytes) {
+                return new RenderedImage.Encoded(png, PNG_CONTENT_TYPE);
             }
-            return output.toByteArray();
+            // JPEG cannot carry alpha, so transparent output only ever shrinks as PNG.
+            boolean opaque = !image.getColorModel().hasAlpha();
+            String contentType = opaque ? JPEG_CONTENT_TYPE : PNG_CONTENT_TYPE;
+            if (opaque) {
+                for (float quality : JPEG_QUALITIES) {
+                    byte[] jpeg = writeJpeg(image, quality);
+                    if (jpeg.length <= maxOutputBytes) {
+                        return degraded(image, png.length, jpeg, contentType, 1d);
+                    }
+                }
+            }
+            double scale = 1d;
+            int lastBytes = png.length;
+            for (int step = 0; step < MAX_DOWNSCALE_STEPS; step++) {
+                scale *= DOWNSCALE_STEP;
+                BufferedImage smaller = scaled(image, scale);
+                byte[] bytes = opaque
+                        ? writeJpeg(smaller, JPEG_QUALITIES[JPEG_QUALITIES.length - 1])
+                        : writePng(smaller);
+                if (bytes.length <= maxOutputBytes) {
+                    return degraded(image, png.length, bytes, contentType, scale);
+                }
+                lastBytes = bytes.length;
+            }
+            log.warn("Translated image exceeds the output cap: width={}, height={}, pngBytes={}, "
+                            + "lastBytes={}, format={}, scale={}, maxOutputBytes={}",
+                    image.getWidth(), image.getHeight(), png.length, lastBytes, contentType,
+                    String.format(java.util.Locale.ROOT, "%.3f", scale), maxOutputBytes);
+            throw new IOException("Translated image exceeds the output cap");
         } catch (IOException failure) {
             throw new IllegalStateException("Translated image could not be encoded", failure);
         }
+    }
+
+    private RenderedImage.Encoded degraded(
+            BufferedImage image, int pngBytes, byte[] bytes, String contentType, double scale) {
+        log.info("Translated image degraded to fit the output cap: width={}, height={}, pngBytes={}, "
+                        + "outputBytes={}, format={}, scale={}, maxOutputBytes={}",
+                image.getWidth(), image.getHeight(), pngBytes, bytes.length, contentType,
+                String.format(java.util.Locale.ROOT, "%.3f", scale), maxOutputBytes);
+        return new RenderedImage.Encoded(bytes, contentType);
+    }
+
+    private static byte[] writePng(BufferedImage image) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        if (!ImageIO.write(image, "png", output)) {
+            throw new IOException("PNG writer is unavailable");
+        }
+        return output.toByteArray();
+    }
+
+    private static byte[] writeJpeg(BufferedImage image, float quality) throws IOException {
+        Iterator<ImageWriter> writers = ImageIO.getImageWritersByFormatName("jpeg");
+        if (!writers.hasNext()) {
+            throw new IOException("JPEG writer is unavailable");
+        }
+        ImageWriter writer = writers.next();
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (ImageOutputStream stream = new MemoryCacheImageOutputStream(output)) {
+            ImageWriteParam parameters = writer.getDefaultWriteParam();
+            parameters.setCompressionMode(ImageWriteParam.MODE_EXPLICIT);
+            parameters.setCompressionQuality(quality);
+            writer.setOutput(stream);
+            writer.write(null, new IIOImage(image, null, null), parameters);
+        } finally {
+            writer.dispose();
+        }
+        return output.toByteArray();
+    }
+
+    private static BufferedImage scaled(BufferedImage source, double scale) {
+        int width = Math.max(1, (int) Math.round(source.getWidth() * scale));
+        int height = Math.max(1, (int) Math.round(source.getHeight() * scale));
+        int type = source.getColorModel().hasAlpha() ? BufferedImage.TYPE_INT_ARGB : BufferedImage.TYPE_INT_RGB;
+        BufferedImage result = new BufferedImage(width, height, type);
+        Graphics2D graphics = result.createGraphics();
+        try {
+            graphics.setComposite(AlphaComposite.Src);
+            graphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION,
+                    RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+            graphics.drawImage(source, 0, 0, width, height, null);
+        } finally {
+            graphics.dispose();
+        }
+        return result;
     }
 
     private record Layout(Font font, List<String> lines, boolean fits) {

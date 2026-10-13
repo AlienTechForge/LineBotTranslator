@@ -29,7 +29,7 @@ class ImageProxyControllerTests {
         byte[] original = new byte[] { 1, 2, 3 };
         byte[] preview = new byte[] { 4, 5 };
         when(contentService.load("0123456789abcdefghij-_"))
-                .thenReturn(Optional.of(new ImageProxyAsset(original, preview)));
+                .thenReturn(Optional.of(new ImageProxyAsset(original, preview, "image/png")));
 
         mockMvc.perform(get("/i/0123456789abcdefghij-_"))
                 .andExpect(status().isOk())
@@ -41,6 +41,20 @@ class ImageProxyControllerTests {
         mockMvc.perform(get("/i/0123456789abcdefghij-_/preview"))
                 .andExpect(status().isOk())
                 .andExpect(content().bytes(preview));
+    }
+
+    @Test
+    void servesTheStoredContentTypeForJpegOutput() throws Exception {
+        when(contentService.load("0123456789abcdefghij-_"))
+                .thenReturn(Optional.of(new ImageProxyAsset(
+                        new byte[] { 1, 2, 3 }, new byte[] { 4, 5 }, "image/jpeg")));
+
+        mockMvc.perform(get("/i/0123456789abcdefghij-_"))
+                .andExpect(status().isOk())
+                .andExpect(content().contentType("image/jpeg"));
+        mockMvc.perform(get("/i/0123456789abcdefghij-_/preview"))
+                .andExpect(status().isOk())
+                .andExpect(content().contentType("image/jpeg"));
     }
 
     @Test
