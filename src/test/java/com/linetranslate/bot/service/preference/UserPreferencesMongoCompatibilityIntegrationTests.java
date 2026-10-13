@@ -17,7 +17,7 @@ import com.linetranslate.bot.repository.UserProfileRepository;
 
 @SpringBootTest
 @ActiveProfiles("test")
-class UserPreferencesMongoCompatibilityTests {
+class UserPreferencesMongoCompatibilityIntegrationTests {
 
     @Autowired
     private MongoTemplate mongoTemplate;

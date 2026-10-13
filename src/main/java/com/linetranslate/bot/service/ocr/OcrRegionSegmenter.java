@@ -66,7 +66,7 @@ public class OcrRegionSegmenter {
                 || current.orientation() != OcrOrientation.HORIZONTAL
                 || previous.text().codePointCount(0, previous.text().length()) < 20
                 || current.text().codePointCount(0, current.text().length()) > 4
-                || current.text().codePoints().noneMatch(OcrRegionSegmenter::isCjk)
+                || current.text().codePoints().noneMatch(OcrWordJoiner::isCjk)
                 || !endsSentence(current.text())) {
             return false;
         }
@@ -114,7 +114,8 @@ public class OcrRegionSegmenter {
         if (left.isEmpty() || right.isEmpty()) return left + right;
         int previous = left.codePointBefore(left.length());
         int next = right.codePointAt(0);
-        return isCjk(previous) && (isCjk(next) || Character.getType(next) == Character.OTHER_PUNCTUATION)
+        return OcrWordJoiner.isCjk(previous)
+                && (OcrWordJoiner.isCjk(next) || Character.getType(next) == Character.OTHER_PUNCTUATION)
                 ? left + right : left + " " + right;
     }
 
@@ -590,25 +591,10 @@ public class OcrRegionSegmenter {
     private static String joinWords(List<OcrWord> words) {
         StringBuilder result = new StringBuilder();
         for (OcrWord word : words) {
-            if (!result.isEmpty() && needsSpace(result, word.text())) result.append(' ');
+            result.append(OcrWordJoiner.scriptSeparator(result, word.text()));
             result.append(word.text());
         }
         return result.toString();
-    }
-
-    private static boolean needsSpace(StringBuilder left, String right) {
-        if (right.isEmpty()) return false;
-        int previous = left.codePointBefore(left.length());
-        int next = right.codePointAt(0);
-        return !(isCjk(previous) && isCjk(next));
-    }
-
-    private static boolean isCjk(int codePoint) {
-        Character.UnicodeScript script = Character.UnicodeScript.of(codePoint);
-        return script == Character.UnicodeScript.HAN
-                || script == Character.UnicodeScript.HIRAGANA
-                || script == Character.UnicodeScript.KATAKANA
-                || script == Character.UnicodeScript.HANGUL;
     }
 
     private static boolean isDiscreteLabelRow(OcrRegion region) {

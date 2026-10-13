@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Optional;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 
 import com.linetranslate.bot.config.AppConfig;
@@ -53,6 +54,11 @@ public class UserPreferencesModule {
         this(repository, deploymentSettings(appConfig, adapters), adapters);
     }
 
+    /**
+     * Returns the user's profile, creating it on first contact. The unique userId
+     * index ({@link UserProfileIndexInitializer}) rejects a concurrent second
+     * insert; the losing worker re-reads the profile the winner stored.
+     */
     public UserProfile profile(String userId) {
         requireUserId(userId);
         Optional<UserProfile> existing = repository.findByUserId(userId);
@@ -60,11 +66,15 @@ public class UserPreferencesModule {
             return existing.get();
         }
         LocalDateTime now = LocalDateTime.now();
-        return repository.save(UserProfile.builder()
-                .userId(userId)
-                .firstInteractionAt(now)
-                .lastInteractionAt(now)
-                .build());
+        try {
+            return repository.insert(UserProfile.builder()
+                    .userId(userId)
+                    .firstInteractionAt(now)
+                    .lastInteractionAt(now)
+                    .build());
+        } catch (DuplicateKeyException concurrentCreation) {
+            return repository.findByUserId(userId).orElseThrow(() -> concurrentCreation);
+        }
     }
 
     public UserPreferences get(String userId) {

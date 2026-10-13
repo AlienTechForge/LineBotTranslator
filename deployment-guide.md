@@ -20,7 +20,8 @@
 `./mvnw clean verify -B` 是 PR 與 `master` 的必要 gate：
 
 - Surefire 執行 `*Tests` focused suite，涵蓋文字/圖片翻譯、provider failure、使用者偏好、管理員授權與 signed LINE webhook routing。
-- Failsafe 執行 `*IntegrationTests`，對隔離 MongoDB 與 MinIO 驗證 unavailable、recovery 與實際讀寫流程。
+- Failsafe 執行 `*IntegrationTests`，對隔離 MongoDB 與 MinIO 驗證 unavailable、recovery、readiness 與實際讀寫流程。
+- 分層規則：`*Tests` 必須在沒有任何基礎設施的機器上以 `./mvnw test` 全數通過；任何需要 MongoDB 或 MinIO 的測試（包含斷言 readiness `mongo` component 為 `UP` 的 health endpoint 測試）都命名為 `*IntegrationTests`，交由 Failsafe 執行。
 - `verify` lifecycle 會 compile、執行兩層測試並建立 Spring Boot JAR；workflow 另行確認 packaged JAR 存在。
 - provider、LINE reply、OCR 與 storage 邊界在 focused tests 使用 mocks/adapters，不讀 production Secrets，也不呼叫付費 API。
 - 測試失敗時 Actions 會保留 Surefire 與 Failsafe reports 7 天；成功時不建立多餘 artifact。
@@ -88,6 +89,7 @@ Secrets 只作為容器環境變數傳入，不會寫入 image、Repository 或 
 | `HEALTH_TIMEOUT_SECONDS` | `120` | 等待 readiness 的最長秒數 |
 | `OPEN_ROUTE_MODEL_NAME` | `openai/gpt-4o-mini` | OpenRouter 全域預設模型 slug |
 | `OPEN_ROUTE_API_URL` | `https://openrouter.ai/api/v1` | OpenRouter API base URL |
+| `TRANSLATION_ACTION_CLAIM_LEASE` | `PT5M` | 翻譯 action claim 處理中的租約；逾期仍未完成時由下一次點擊原子接手重試，需長於一次翻譯的最長耗時 |
 | `MONGODB_CONNECT_TIMEOUT_MS` | `3000` | Mongo socket 連線 timeout |
 | `MONGODB_READ_TIMEOUT_MS` | `5000` | Mongo socket 讀取 timeout |
 | `MONGODB_SERVER_SELECTION_TIMEOUT_MS` | `3000` | 每次操作等待可用 Mongo 節點的上限 |
@@ -98,6 +100,7 @@ Secrets 只作為容器環境變數傳入，不會寫入 image、Repository 或 
 | `MINIO_CONNECT_TIMEOUT_MS` | `3000` | MinIO 連線 timeout |
 | `MINIO_WRITE_TIMEOUT_MS` | `5000` | MinIO 上傳 timeout |
 | `MINIO_READ_TIMEOUT_MS` | `5000` | MinIO API 讀取 timeout |
+| `GOOGLE_VISION_TIMEOUT_MS` | `60000` | 單次 Google Vision OCR 呼叫（含重試）的總時間上限 |
 
 ### 同機木雷連線
 

@@ -1,5 +1,6 @@
 package com.linetranslate.bot.repository;
 
+import org.springframework.data.domain.Limit;
 import org.springframework.data.mongodb.repository.MongoRepository;
 import org.springframework.stereotype.Repository;
 
@@ -18,7 +19,12 @@ public interface UserProfileRepository extends MongoRepository<UserProfile, Stri
 
     List<UserProfile> findTop10ByOrderByTotalTranslationsDesc();
 
-    List<UserProfile> findByLastInteractionAtAfter(LocalDateTime dateTime);
+    long countByLastInteractionAtAfter(LocalDateTime dateTime);
+
+    List<UserProfile> findByLastInteractionAtNotNullOrderByLastInteractionAtDesc(Limit limit);
+
+    /** Profiles without a completed translation; their last activity is firstInteractionAt. */
+    List<UserProfile> findByLastInteractionAtIsNullOrderByFirstInteractionAtDesc(Limit limit);
 
     long countByLastInteractionAtBetween(LocalDateTime start, LocalDateTime end);
 }

@@ -2,7 +2,9 @@ package com.linetranslate.bot.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import java.util.List;
@@ -14,6 +16,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import com.linecorp.bot.messaging.client.MessagingApiClient;
 import com.linecorp.bot.messaging.model.PushMessageRequest;
@@ -64,7 +67,8 @@ class AdminServiceSdkContractTests {
                 lineUserProfileService,
                 userPreferencesModule);
 
-        assertThat(service.broadcastMessage("系統通知")).isEqualTo(1);
+        assertThat(service.broadcastMessage("系統通知"))
+                .isEqualTo(new BroadcastResult(1, 1, 0, false));
 
         ArgumentCaptor<PushMessageRequest> requestCaptor =
                 ArgumentCaptor.forClass(PushMessageRequest.class);
@@ -75,5 +79,60 @@ class AdminServiceSdkContractTests {
         assertThat(request.messages()).singleElement().isInstanceOfSatisfying(
                 TextMessage.class,
                 message -> assertThat(message.text()).isEqualTo("系統通知"));
+    }
+
+    @Test
+    void broadcastReportsEveryUserAsSentWhenAllPushesSucceed() {
+        when(userProfileRepository.findAll()).thenReturn(List.of(
+                UserProfile.builder().userId("U-first").build(),
+                UserProfile.builder().userId("U-second").build()));
+        when(messagingApiClient.pushMessage(any(UUID.class), any(PushMessageRequest.class)))
+                .thenReturn(CompletableFuture.completedFuture(null));
+
+        assertThat(newService().broadcastMessage("系統通知"))
+                .isEqualTo(new BroadcastResult(2, 2, 0, false));
+        verify(messagingApiClient, times(2))
+                .pushMessage(any(UUID.class), any(PushMessageRequest.class));
+    }
+
+    @Test
+    void broadcastCountsAFailedPushAsFailedAndKeepsSending() {
+        when(userProfileRepository.findAll()).thenReturn(List.of(
+                UserProfile.builder().userId("U-blocked").build(),
+                UserProfile.builder().userId("U-reachable").build()));
+        when(messagingApiClient.pushMessage(any(UUID.class), any(PushMessageRequest.class)))
+                .thenReturn(
+                        CompletableFuture.failedFuture(new IllegalStateException("blocked")),
+                        CompletableFuture.completedFuture(null));
+
+        assertThat(newService().broadcastMessage("系統通知"))
+                .isEqualTo(new BroadcastResult(2, 1, 1, false));
+        verify(messagingApiClient, times(2))
+                .pushMessage(any(UUID.class), any(PushMessageRequest.class));
+    }
+
+    @Test
+    void broadcastInTestModeCountsSimulatedSendsWithoutPushing() {
+        when(userProfileRepository.findAll()).thenReturn(List.of(
+                UserProfile.builder().userId("U-first").build(),
+                UserProfile.builder().userId("U-second").build()));
+        AdminService service = newService();
+        ReflectionTestUtils.setField(service, "broadcastTestMode", true);
+
+        assertThat(service.broadcastMessage("系統通知"))
+                .isEqualTo(new BroadcastResult(2, 2, 0, true));
+        verifyNoInteractions(messagingApiClient);
+    }
+
+    private AdminService newService() {
+        return new AdminService(
+                translationRecordRepository,
+                userProfileRepository,
+                messagingApiClient,
+                appConfig,
+                openRouterConfig,
+                modelCatalog,
+                lineUserProfileService,
+                userPreferencesModule);
     }
 }

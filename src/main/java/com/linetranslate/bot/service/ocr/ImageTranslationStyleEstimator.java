@@ -24,10 +24,10 @@ final class ImageTranslationStyleEstimator {
         Area regionArea = OverlaySafetyPolicy.mask(region);
         Rectangle bounds = regionArea.getBounds();
         Color background = dominant(borderPixels(image, regionArea, bounds), Color.WHITE);
-        Area sourceArea = OverlaySafetyPolicy.sourceMask(region);
-        if (sourceArea.isEmpty()) sourceArea = new Area(regionArea);
+        List<Area> sourceAreas = OverlaySafetyPolicy.sourceAreas(region);
+        if (sourceAreas.isEmpty()) sourceAreas = List.of(new Area(regionArea));
 
-        PixelSample foreground = foregroundPixels(image, sourceArea, background);
+        PixelSample foreground = foregroundPixels(image, sourceAreas, background);
         Color text = dominant(foreground.colours(), contrastingText(background));
         int fontStyle = foreground.inkRatio() >= BOLD_INK_RATIO ? Font.BOLD : Font.PLAIN;
         return new ImageTranslationTextStyle(background, text, fontStyle, sourceFontSize(region, bounds));
@@ -88,13 +88,17 @@ final class ImageTranslationStyleEstimator {
         return pixels;
     }
 
-    private static PixelSample foregroundPixels(BufferedImage image, Area sourceArea, Color background) {
-        Rectangle bounds = sourceArea.getBounds();
+    private static PixelSample foregroundPixels(
+            BufferedImage image, List<Area> sourceAreas, Color background) {
+        Rectangle bounds = sourceAreas.get(0).getBounds();
+        sourceAreas.forEach(area -> bounds.add(area.getBounds()));
+        Rectangle window = bounds.intersection(new Rectangle(0, 0, image.getWidth(), image.getHeight()));
         List<Color> colours = new ArrayList<>();
         int areaPixels = 0;
-        for (int y = Math.max(0, bounds.y); y < Math.min(image.getHeight(), bounds.y + bounds.height); y++) {
-            for (int x = Math.max(0, bounds.x); x < Math.min(image.getWidth(), bounds.x + bounds.width); x++) {
-                if (!sourceArea.contains(x + .5, y + .5)) continue;
+        boolean[] inside = OverlaySafetyPolicy.coverage(sourceAreas, window);
+        for (int y = window.y; y < window.y + window.height; y++) {
+            for (int x = window.x; x < window.x + window.width; x++) {
+                if (!inside[(y - window.y) * window.width + x - window.x]) continue;
                 areaPixels++;
                 Color colour = new Color(image.getRGB(x, y), true);
                 if (colour.getAlpha() > 32 && colourDistanceSquared(colour, background)

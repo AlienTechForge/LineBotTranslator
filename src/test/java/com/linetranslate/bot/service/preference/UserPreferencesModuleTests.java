@@ -5,7 +5,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import java.util.List;
 import java.util.Optional;
@@ -17,6 +19,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.dao.DuplicateKeyException;
 
 import com.linetranslate.bot.model.UserProfile;
 import com.linetranslate.bot.repository.UserProfileRepository;
@@ -131,6 +134,44 @@ class UserPreferencesModuleTests {
                         UserPreferences::chineseTargetLanguage,
                         UserPreferences::model)
                 .containsExactly("ko", "fr", "anthropic/claude-sonnet-4");
+    }
+
+    @Test
+    void missingProfileIsInsertedWithFirstInteractionTimestamps() {
+        when(repository.findByUserId("U-new")).thenReturn(Optional.empty());
+        when(repository.insert(any(UserProfile.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        UserPreferencesModule module = module(settings("en", "ja", "openai/gpt-4o-mini"));
+
+        UserProfile created = module.profile("U-new");
+
+        assertThat(created.getUserId()).isEqualTo("U-new");
+        assertThat(created.getFirstInteractionAt()).isNotNull().isEqualTo(created.getLastInteractionAt());
+        verify(repository).insert(created);
+        verify(repository, never()).save(any());
+    }
+
+    @Test
+    void creationThatLosesTheUniqueIndexRaceReturnsTheStoredProfile() {
+        UserProfile winner = UserProfile.builder().id("winner").userId("U-race").build();
+        when(repository.findByUserId("U-race")).thenReturn(Optional.empty(), Optional.of(winner));
+        when(repository.insert(any(UserProfile.class))).thenThrow(new DuplicateKeyException("E11000"));
+        UserPreferencesModule module = module(settings("en", "ja", "openai/gpt-4o-mini"));
+
+        UserProfile resolved = module.profile("U-race");
+
+        assertThat(resolved).isSameAs(winner);
+        verify(repository, times(2)).findByUserId("U-race");
+        verify(repository, never()).save(any());
+    }
+
+    @Test
+    void duplicateKeyWithoutAStoredProfileIsNotSwallowed() {
+        DuplicateKeyException duplicate = new DuplicateKeyException("E11000");
+        when(repository.findByUserId("U-vanished")).thenReturn(Optional.empty());
+        when(repository.insert(any(UserProfile.class))).thenThrow(duplicate);
+        UserPreferencesModule module = module(settings("en", "ja", "openai/gpt-4o-mini"));
+
+        assertThatThrownBy(() -> module.profile("U-vanished")).isSameAs(duplicate);
     }
 
     private UserPreferencesModule module(RuntimeSettings settings) {

@@ -1,5 +1,6 @@
 package com.linetranslate.bot.util;
 
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Locale;
@@ -9,8 +10,8 @@ import java.util.Locale;
  */
 public class LanguageUtils {
 
-    // 語言名稱到語言代碼的映射
-    private static final Map<String, String> LANGUAGE_NAME_TO_CODE = new HashMap<>();
+    // 語言名稱到語言代碼的映射；同一個鍵不可放入兩個不同的代碼
+    private static final Map<String, String> LANGUAGE_NAME_TO_CODE = new ConflictRejectingMap();
 
     // 語言代碼到正式名稱的映射
     private static final Map<String, String> LANGUAGE_CODE_TO_NAME = new HashMap<>();
@@ -43,6 +44,8 @@ public class LanguageUtils {
         addLanguageMapping("丹麥文", "da", "Danish");
         addLanguageMapping("芬蘭文", "fi", "Finnish");
         addLanguageMapping("印地文", "hi", "Hindi");
+        addLanguageMapping("挪威文", "nb", "Norwegian Bokmal");
+        addLanguageMapping("烏克蘭文", "uk", "Ukrainian");
 
         // 添加別名
         LANGUAGE_NAME_TO_CODE.put("英語", "en");
@@ -76,10 +79,11 @@ public class LanguageUtils {
         LANGUAGE_NAME_TO_CODE.put("kr", "ko");
 
         // 添加 ISO 3166-1 國家代碼到語言代碼的映射
+        // 國家代碼若同時是 ISO 639-1 語言代碼（例如 ca 加泰隆尼亞文、be 白俄羅斯文、my 緬甸文），
+        // 不可在此當成別名，否則使用者輸入該語言代碼時會被翻成另一種語言
         // 亞洲
         LANGUAGE_NAME_TO_CODE.put("no", "nb");  // 挪威
         LANGUAGE_NAME_TO_CODE.put("nor", "nb"); // 挪威
-        LANGUAGE_NAME_TO_CODE.put("se", "sv");  // 瑞典
         LANGUAGE_NAME_TO_CODE.put("swe", "sv"); // 瑞典
         LANGUAGE_NAME_TO_CODE.put("dk", "da");  // 丹麥
         LANGUAGE_NAME_TO_CODE.put("den", "da"); // 丹麥
@@ -89,11 +93,9 @@ public class LanguageUtils {
         LANGUAGE_NAME_TO_CODE.put("ice", "is"); // 冰島
         LANGUAGE_NAME_TO_CODE.put("nl", "nl");  // 荷蘭
         LANGUAGE_NAME_TO_CODE.put("net", "nl"); // 荷蘭
-        LANGUAGE_NAME_TO_CODE.put("be", "nl");  // 比利時（荷蘭語）
         LANGUAGE_NAME_TO_CODE.put("de", "de");  // 德國
         LANGUAGE_NAME_TO_CODE.put("ger", "de"); // 德國
         LANGUAGE_NAME_TO_CODE.put("at", "de");  // 奧地利（德語）
-        LANGUAGE_NAME_TO_CODE.put("ch", "de");  // 瑞士（德語）
         LANGUAGE_NAME_TO_CODE.put("fr", "fr");  // 法國
         LANGUAGE_NAME_TO_CODE.put("fra", "fr"); // 法國
         LANGUAGE_NAME_TO_CODE.put("it", "it");  // 義大利
@@ -120,7 +122,6 @@ public class LanguageUtils {
         LANGUAGE_NAME_TO_CODE.put("il", "he");  // 以色列（希伯來語）
         LANGUAGE_NAME_TO_CODE.put("he", "he");  // 希伯來語
         LANGUAGE_NAME_TO_CODE.put("heb", "he"); // 希伯來語
-        LANGUAGE_NAME_TO_CODE.put("sa", "ar");  // 沙烏地阿拉伯（阿拉伯語）
         LANGUAGE_NAME_TO_CODE.put("ar", "ar");  // 阿拉伯語
         LANGUAGE_NAME_TO_CODE.put("ara", "ar"); // 阿拉伯語
 
@@ -130,7 +131,6 @@ public class LanguageUtils {
         LANGUAGE_NAME_TO_CODE.put("chi", "zh");   // 中文
         LANGUAGE_NAME_TO_CODE.put("tw", "zh-TW"); // 台灣（繁體中文）
         LANGUAGE_NAME_TO_CODE.put("hk", "zh-TW"); // 香港（繁體中文）
-        LANGUAGE_NAME_TO_CODE.put("mo", "zh-TW"); // 澳門（繁體中文）
         LANGUAGE_NAME_TO_CODE.put("sg", "zh-CN"); // 新加坡（簡體中文）
         LANGUAGE_NAME_TO_CODE.put("jp", "ja");    // 日本
         LANGUAGE_NAME_TO_CODE.put("ja", "ja");    // 日文
@@ -145,12 +145,10 @@ public class LanguageUtils {
         LANGUAGE_NAME_TO_CODE.put("vie", "vi");   // 越南文
         LANGUAGE_NAME_TO_CODE.put("id", "id");    // 印尼
         LANGUAGE_NAME_TO_CODE.put("ind", "id");   // 印尼文
-        LANGUAGE_NAME_TO_CODE.put("my", "ms");    // 馬來西亞
         LANGUAGE_NAME_TO_CODE.put("ms", "ms");    // 馬來文
         LANGUAGE_NAME_TO_CODE.put("may", "ms");   // 馬來文
         LANGUAGE_NAME_TO_CODE.put("ph", "tl");    // 菲律賓（塔加拉族語）
         LANGUAGE_NAME_TO_CODE.put("tl", "tl");    // 塔加拉族語
-        LANGUAGE_NAME_TO_CODE.put("in", "hi");    // 印度（印地文）
         LANGUAGE_NAME_TO_CODE.put("hi", "hi");    // 印地文
         LANGUAGE_NAME_TO_CODE.put("hin", "hi");   // 印地文
 
@@ -159,14 +157,12 @@ public class LanguageUtils {
         LANGUAGE_NAME_TO_CODE.put("usa", "en");   // 美國（英文）
         LANGUAGE_NAME_TO_CODE.put("en", "en");    // 英文
         LANGUAGE_NAME_TO_CODE.put("eng", "en");   // 英文
-        LANGUAGE_NAME_TO_CODE.put("ca", "en");    // 加拿大（英文）
         LANGUAGE_NAME_TO_CODE.put("can", "en");   // 加拿大（英文）
         LANGUAGE_NAME_TO_CODE.put("mx", "es");    // 墨西哥（西班牙文）
 
         // 南美洲
         LANGUAGE_NAME_TO_CODE.put("br", "pt");    // 巴西（葡萄牙文）
         LANGUAGE_NAME_TO_CODE.put("bra", "pt");   // 巴西（葡萄牙文）
-        LANGUAGE_NAME_TO_CODE.put("ar", "es");    // 阿根廷（西班牙文）
         LANGUAGE_NAME_TO_CODE.put("arg", "es");   // 阿根廷（西班牙文）
 
         // 大洋洲
@@ -267,6 +263,15 @@ public class LanguageUtils {
         return false;
     }
 
+    /**
+     * 供同套件的單元測試檢查映射表結構
+     *
+     * @return 語言名稱到語言代碼映射的唯讀檢視
+     */
+    static Map<String, String> languageNameToCode() {
+        return Collections.unmodifiableMap(LANGUAGE_NAME_TO_CODE);
+    }
+
     private static String canonicalCode(String code) {
         if (code == null) {
             return null;
@@ -275,5 +280,22 @@ public class LanguageUtils {
                 .filter(candidate -> candidate.equalsIgnoreCase(code.trim()))
                 .findFirst()
                 .orElse(null);
+    }
+
+    /**
+     * 拒絕把既有的鍵改放成另一個代碼的映射，避免後放入的別名靜默覆蓋先前的對應；
+     * 相同的鍵放入相同的代碼則允許。靜態初始化只使用 put，因此只攔截 put。
+     */
+    static final class ConflictRejectingMap extends HashMap<String, String> {
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public String put(String key, String value) {
+            String previous = get(key);
+            if (previous != null && !previous.equals(value)) {
+                throw new IllegalStateException("Conflicting language alias: " + key);
+            }
+            return super.put(key, value);
+        }
     }
 }

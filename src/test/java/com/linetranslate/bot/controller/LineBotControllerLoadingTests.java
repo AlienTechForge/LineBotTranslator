@@ -21,6 +21,7 @@ import com.linecorp.bot.webhook.model.UserSource;
 import com.linetranslate.bot.service.line.LineInteractionModule;
 import com.linetranslate.bot.service.line.LineLoadingFeedback;
 import com.linetranslate.bot.service.line.LineLoadingSession;
+import com.linetranslate.bot.service.line.LineMessageRenderer;
 import com.linetranslate.bot.service.line.intent.LineIntent;
 import com.linetranslate.bot.service.line.intent.LineIntentParser;
 
@@ -40,7 +41,8 @@ class LineBotControllerLoadingTests {
         when(content.text()).thenReturn("hello");
         when(parser.parseText("hello")).thenReturn(intent);
         when(interaction.execute("user-1", intent)).thenReturn(response);
-        var controller = new LineBotController(parser, interaction, loading);
+        var controller = new LineBotController(
+                parser, interaction, loading, mock(LineMessageRenderer.class));
 
         assertThat(controller.handleTextMessageEvent(event, content)).isSameAs(response);
 
@@ -63,7 +65,8 @@ class LineBotControllerLoadingTests {
         when(content.id()).thenReturn("message-1");
         when(loading.startImage(source)).thenReturn(session);
         when(interaction.executeImage("user-1", "message-1")).thenReturn(List.of(response));
-        var controller = new LineBotController(parser, interaction, loading);
+        var controller = new LineBotController(
+                parser, interaction, loading, mock(LineMessageRenderer.class));
 
         assertThat(controller.handleImageMessageEvent(event, content)).containsExactly(response);
 
@@ -87,7 +90,8 @@ class LineBotControllerLoadingTests {
         when(loading.startImage(source)).thenReturn(session);
         when(interaction.executeImage("user-1", "message-1"))
                 .thenThrow(new IllegalStateException("processing failed"));
-        var controller = new LineBotController(parser, interaction, loading);
+        var controller = new LineBotController(
+                parser, interaction, loading, mock(LineMessageRenderer.class));
 
         assertThatThrownBy(() -> controller.handleImageMessageEvent(event, content))
                 .isInstanceOf(IllegalStateException.class);
@@ -111,7 +115,8 @@ class LineBotControllerLoadingTests {
         when(content.data()).thenReturn("safe-postback");
         when(parser.parsePostback("safe-postback")).thenReturn(intent);
         when(interaction.execute("user-1", intent)).thenReturn(response);
-        var controller = new LineBotController(parser, interaction, loading);
+        var controller = new LineBotController(
+                parser, interaction, loading, mock(LineMessageRenderer.class));
 
         assertThat(controller.handlePostbackEvent(event)).isSameAs(response);
 
