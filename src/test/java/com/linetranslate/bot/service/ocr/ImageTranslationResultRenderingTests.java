@@ -2,8 +2,13 @@ package com.linetranslate.bot.service.ocr;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+
+import java.time.LocalDateTime;
 
 import org.junit.jupiter.api.Test;
 
@@ -25,7 +30,6 @@ class ImageTranslationResultRenderingTests {
         UserProfile profile = UserProfile.builder().userId("U-result").build();
         UserPreferencesModule profiles = mock(UserPreferencesModule.class);
         when(profiles.profile("U-result")).thenReturn(profile);
-        when(repository.save(any(UserProfile.class))).thenAnswer(invocation -> invocation.getArgument(0));
         ImageTranslationContext context = new ImageTranslationContext(
                 new DownloadedImage(new byte[] {1}, "image/png"),
                 ImageStorageResult.notStored(),
@@ -56,6 +60,9 @@ class ImageTranslationResultRenderingTests {
                 .contains("1 小時內有效")
                 .contains("翻譯結果：\n你好")
                 .doesNotContain("低信心區塊");
+        // The activity time is one atomic field write; the whole profile is never saved back.
+        verify(repository).setLastInteractionAt(eq("U-result"), any(LocalDateTime.class));
+        verify(repository, never()).save(any(UserProfile.class));
     }
 
     @Test
@@ -65,7 +72,6 @@ class ImageTranslationResultRenderingTests {
         UserProfile profile = UserProfile.builder().userId("U-result").build();
         UserPreferencesModule profiles = mock(UserPreferencesModule.class);
         when(profiles.profile("U-result")).thenReturn(profile);
-        when(repository.save(any(UserProfile.class))).thenAnswer(invocation -> invocation.getArgument(0));
         ImageTranslationContext context = new ImageTranslationContext(
                 new DownloadedImage(new byte[] {1}, "image/png"),
                 ImageStorageResult.notStored(),
@@ -98,7 +104,6 @@ class ImageTranslationResultRenderingTests {
         UserProfile profile = UserProfile.builder().userId("U-safe").build();
         UserPreferencesModule profiles = mock(UserPreferencesModule.class);
         when(profiles.profile("U-safe")).thenReturn(profile);
-        when(repository.save(any(UserProfile.class))).thenAnswer(invocation -> invocation.getArgument(0));
         ImageTranslationContext context = new ImageTranslationContext(
                 new DownloadedImage(new byte[] {1}, "image/png"), ImageStorageResult.notStored(), "hello", null);
         TranslationWorkflowResult translation = new TranslationWorkflowResult(
@@ -125,7 +130,6 @@ class ImageTranslationResultRenderingTests {
         UserProfile profile = UserProfile.builder().userId("U-coverage").build();
         UserPreferencesModule profiles = mock(UserPreferencesModule.class);
         when(profiles.profile("U-coverage")).thenReturn(profile);
-        when(repository.save(any(UserProfile.class))).thenAnswer(invocation -> invocation.getArgument(0));
         ImageTranslationContext context = new ImageTranslationContext(
                 new DownloadedImage(new byte[] {1}, "image/png"), ImageStorageResult.notStored(), "text", null);
         TranslationWorkflowResult translation = new TranslationWorkflowResult(
@@ -167,7 +171,6 @@ class ImageTranslationResultRenderingTests {
         UserProfile profile = UserProfile.builder().userId(userId).build();
         UserPreferencesModule profiles = mock(UserPreferencesModule.class);
         when(profiles.profile(userId)).thenReturn(profile);
-        when(repository.save(any(UserProfile.class))).thenAnswer(invocation -> invocation.getArgument(0));
         ImageTranslationContext context = new ImageTranslationContext(
                 new DownloadedImage(new byte[] {1}, "image/png"), ImageStorageResult.notStored(), "text", null);
         TranslationWorkflowResult translation = new TranslationWorkflowResult(

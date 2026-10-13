@@ -358,7 +358,6 @@ class LineMessageRendererTests {
         UserProfileRepository profiles = mock(UserProfileRepository.class);
         UserPreferencesModule preferences = mock(UserPreferencesModule.class);
         when(preferences.profile("U-long")).thenReturn(UserProfile.builder().userId("U-long").build());
-        when(profiles.save(any(UserProfile.class))).thenAnswer(invocation -> invocation.getArgument(0));
         String recognized = "字".repeat(50_000);
         ImageTranslationContext context = new ImageTranslationContext(
                 new DownloadedImage(new byte[] {1}, "image/png"),
