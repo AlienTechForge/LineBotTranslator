@@ -314,22 +314,20 @@ public class ImageTranslationPipeline {
     private OcrRecognition recognize(ImageTranslationRequest request, ValidatedImage image) {
         if (ocrService != null) {
             try {
-                List<OcrRegion> regions;
+                OcrRecognition recognition;
                 try (InputStream stream = new java.io.ByteArrayInputStream(image.bytes())) {
-                    regions = ocrService.recognizeRegions(stream);
+                    recognition = ocrService.recognize(stream);
                 }
-                if (regions != null && !regions.isEmpty()) {
+                List<OcrRegion> regions = recognition.regions();
+                if (!regions.isEmpty()) {
                     int characters = regions.stream().mapToInt(region -> region.text().length()).sum();
                     long uniqueIds = regions.stream().map(OcrRegion::id).distinct().count();
                     if (regions.size() > MAX_OCR_REGIONS || characters > MAX_OCR_TEXT_CHARS
                             || uniqueIds != regions.size()) {
                         throw new InvalidImageException("OCR result exceeds processing limits");
                     }
-                    return OcrRecognition.structured(regions);
                 }
-                try (InputStream stream = new java.io.ByteArrayInputStream(image.bytes())) {
-                    return OcrRecognition.plain(ocrService.recognizeText(stream));
-                }
+                return recognition;
             } catch (OcrProcessingException failure) {
                 log.info("Primary OCR unavailable; using AI image recognition: failure={}",
                         SafeLog.failure(failure));
