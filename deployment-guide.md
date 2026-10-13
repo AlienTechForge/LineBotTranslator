@@ -88,6 +88,7 @@ Secrets 只作為容器環境變數傳入，不會寫入 image、Repository 或 
 | `HEALTH_TIMEOUT_SECONDS` | `120` | 等待 readiness 的最長秒數 |
 | `OPEN_ROUTE_MODEL_NAME` | `openai/gpt-4o-mini` | OpenRouter 全域預設模型 slug |
 | `OPEN_ROUTE_API_URL` | `https://openrouter.ai/api/v1` | OpenRouter API base URL |
+| `TRANSLATION_ACTION_CLAIM_LEASE` | `PT5M` | 翻譯 action claim 處理中的租約；逾期仍未完成時由下一次點擊原子接手重試，需長於一次翻譯的最長耗時 |
 | `MONGODB_CONNECT_TIMEOUT_MS` | `3000` | Mongo socket 連線 timeout |
 | `MONGODB_READ_TIMEOUT_MS` | `5000` | Mongo socket 讀取 timeout |
 | `MONGODB_SERVER_SELECTION_TIMEOUT_MS` | `3000` | 每次操作等待可用 Mongo 節點的上限 |
