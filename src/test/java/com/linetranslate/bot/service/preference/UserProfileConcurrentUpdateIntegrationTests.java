@@ -102,7 +102,7 @@ class UserProfileConcurrentUpdateIntegrationTests {
         when(lineClient.getProfile(anyString())).thenReturn(CompletableFuture.completedFuture(new Result<>(
                 "request-id", null, new UserProfileResponse(
                         "LINE Name", "id", URI.create("https://example.com/p.jpg"), "Hello", "zh-TW"))));
-        lineSync = new LineUserProfileService(lineClient, repository, recordRepository, preferences);
+        lineSync = new LineUserProfileService(lineClient, repository, preferences);
     }
 
     @AfterAll

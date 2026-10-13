@@ -18,7 +18,6 @@ import org.springframework.dao.DuplicateKeyException;
 
 import com.linecorp.bot.messaging.client.MessagingApiClient;
 import com.linetranslate.bot.model.UserProfile;
-import com.linetranslate.bot.repository.TranslationRecordRepository;
 import com.linetranslate.bot.repository.UserProfileRepository;
 import com.linetranslate.bot.service.ai.AiProviderAdapter;
 import com.linetranslate.bot.service.preference.UserPreferencesModule;
@@ -36,7 +35,7 @@ class LineUserProfileServiceDisplayNameTests {
         UserPreferencesModule preferences = new UserPreferencesModule(
                 repository, () -> null, List.of(mock(AiProviderAdapter.class)));
         service = new LineUserProfileService(
-                mock(MessagingApiClient.class), repository, mock(TranslationRecordRepository.class), preferences);
+                mock(MessagingApiClient.class), repository, preferences);
     }
 
     @Test

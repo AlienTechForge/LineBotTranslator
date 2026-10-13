@@ -51,7 +51,7 @@ class UserPreferenceViewsConsistencyTests {
         TranslationService translation = new TranslationService(
                 mock(TranslationWorkflowModule.class), preferencesModule);
         LineUserProfileService lineProfile = new LineUserProfileService(
-                messaging, profiles, records, preferencesModule);
+                messaging, profiles, preferencesModule);
         AdminService admin = new AdminService(
                 records,
                 profiles,

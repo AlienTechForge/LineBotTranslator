@@ -73,7 +73,7 @@ class TranslationDetectionContractTests {
     void defaultTranslationDetectsOnceAndReusesLanguageEverywhere() {
         when(languageDetectionService.detectLanguage("hello")).thenReturn("en");
 
-        String response = translationService.processTranslationRequest(USER_ID, "hello");
+        String response = translationService.processTranslationResponse(USER_ID, "hello").displayText();
 
         verify(languageDetectionService, times(1)).detectLanguage("hello");
         TranslationRecord saved = savedRecord();
@@ -89,7 +89,7 @@ class TranslationDetectionContractTests {
     void explicitTargetFormatsDetectExactlyOnce(String request, String expectedTarget) {
         when(languageDetectionService.detectLanguage("hello")).thenReturn("en");
 
-        translationService.processTranslationRequest(USER_ID, request);
+        translationService.processTranslationResponse(USER_ID, request);
 
         verify(languageDetectionService, times(1)).detectLanguage("hello");
         TranslationRecord saved = savedRecord();
@@ -101,7 +101,7 @@ class TranslationDetectionContractTests {
     void quickTranslationDetectsExactlyOnceAndPersistsIt() {
         when(languageDetectionService.detectLanguage("hello")).thenReturn("en");
 
-        translationService.quickTranslate(USER_ID, "hello", "ja");
+        translationService.quickTranslateResponse(USER_ID, "hello", "ja");
 
         verify(languageDetectionService, times(1)).detectLanguage("hello");
         assertThat(savedRecord().getSourceLanguage()).isEqualTo("en");
@@ -119,7 +119,7 @@ class TranslationDetectionContractTests {
         ReflectionTestUtils.setField(realDetectionService, "useAiDetection", true);
         TranslationService service = createService(realDetectionService);
 
-        service.processTranslationRequest(USER_ID, "hello");
+        service.processTranslationResponse(USER_ID, "hello");
 
         verify(aiDetector, times(1)).detectLanguage("hello");
     }
@@ -131,7 +131,7 @@ class TranslationDetectionContractTests {
                 .thenReturn(new AiExecutionOutcome.Success(
                         new AiExecutionResult("翻譯結果", "gemini", "gemini-test")));
 
-        translationService.processTranslationRequest(USER_ID, "hello");
+        translationService.processTranslationResponse(USER_ID, "hello");
 
         TranslationRecord saved = savedRecord();
         assertThat(saved.getAiProvider()).isEqualTo("gemini");
@@ -148,7 +148,7 @@ class TranslationDetectionContractTests {
                 .thenReturn(new AiExecutionOutcome.Failure(
                         AiExecutionFailure.from(error, java.util.List.of())));
 
-        String response = translationService.processTranslationRequest(USER_ID, "hello");
+        String response = translationService.processTranslationResponse(USER_ID, "hello").displayText();
 
         assertThat(response).isEqualTo("翻譯服務暫時無法使用，請稍後再試。");
         verify(translationRecordRepository, never()).save(any(TranslationRecord.class));

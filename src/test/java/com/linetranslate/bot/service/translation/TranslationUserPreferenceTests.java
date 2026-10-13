@@ -86,7 +86,7 @@ class TranslationUserPreferenceTests {
     void nonChineseTextUsesPreferredTargetLanguage() {
         when(languageDetectionService.detectLanguage("hello")).thenReturn("en");
 
-        translationService.processTranslationRequest(USER_ID, "hello");
+        translationService.processTranslationResponse(USER_ID, "hello");
 
         verify(translationAdapter).translate(
                 argThat(preferences -> "ja".equals(preferences.targetLanguage())),
@@ -98,7 +98,7 @@ class TranslationUserPreferenceTests {
     void ChineseTextUsesDedicatedChineseTargetPreference() {
         when(languageDetectionService.detectLanguage("你好")).thenReturn("zh-tw");
 
-        translationService.processTranslationRequest(USER_ID, "你好");
+        translationService.processTranslationResponse(USER_ID, "你好");
 
         verify(translationAdapter).translate(
                 argThat(preferences -> "en".equals(preferences.chineseTargetLanguage())),
@@ -112,7 +112,7 @@ class TranslationUserPreferenceTests {
         when(languageDetectionService.detectLanguage("hello")).thenReturn("en");
         when(appConfig.getDefaultTargetLanguageForOthers()).thenReturn("zh-tw");
 
-        translationService.processTranslationRequest(USER_ID, "hello");
+        translationService.processTranslationResponse(USER_ID, "hello");
 
         verify(translationAdapter).translate(
                 any(UserPreferences.class), eq("hello"), eq("zh-TW"));

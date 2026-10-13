@@ -251,13 +251,7 @@ public interface UserProfileRepository extends MongoRepository<UserProfile, Stri
 
     Optional<UserProfile> findByUserId(String userId);
 
-    boolean existsByUserId(String userId);
-
-    List<UserProfile> findTop10ByOrderByTotalTranslationsDesc();
-
     List<UserProfile> findByLastInteractionAtAfter(LocalDateTime dateTime);
-
-    long countByLastInteractionAtBetween(LocalDateTime start, LocalDateTime end);
 }
 ```
 

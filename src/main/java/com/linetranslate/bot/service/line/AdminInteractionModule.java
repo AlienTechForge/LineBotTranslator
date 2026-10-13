@@ -126,9 +126,6 @@ public class AdminInteractionModule {
     }
 
     private Message pushQuota() {
-        if (pushFallback == null) {
-            return renderer.error("推播額度", "此環境未提供推播額度監控。");
-        }
         try {
             return renderer.info("推播額度", PushQuotaReport.render(pushFallback.quotaStatus()));
         } catch (RuntimeException exception) {
