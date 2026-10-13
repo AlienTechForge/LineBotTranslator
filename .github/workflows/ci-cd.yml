@@ -222,8 +222,8 @@ jobs:
           DWZ_SHORT_DOMAIN: ${{ vars.DWZ_SHORT_DOMAIN || '' }}
           DWZ_WORKSPACE_ID: ${{ vars.DWZ_WORKSPACE_ID || '' }}
           SHORT_URL_TTL: ${{ vars.SHORT_URL_TTL || 'PT55M' }}
-          LANGUAGE_DETECTION_USE_AI: ${{ secrets.LANGUAGE_DETECTION_USE_AI }}
-          LANGUAGE_DETECTION_DEFAULT_CHINESE: ${{ secrets.LANGUAGE_DETECTION_DEFAULT_CHINESE }}
+          LANGUAGE_DETECTION_USE_AI: ${{ vars.LANGUAGE_DETECTION_USE_AI || 'true' }}
+          LANGUAGE_DETECTION_DEFAULT_CHINESE: ${{ vars.LANGUAGE_DETECTION_DEFAULT_CHINESE || 'zh-tw' }}
           APP_BROADCAST_TEST_MODE: ${{ secrets.APP_BROADCAST_TEST_MODE }}
           JAVA_TOOL_OPTIONS: ${{ vars.JAVA_TOOL_OPTIONS || '-XX:MaxRAMPercentage=75.0 -XX:+ExitOnOutOfMemoryError' }}
         run: |
