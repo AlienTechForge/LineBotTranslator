@@ -32,6 +32,8 @@ public class ImageProxyContentService {
 
     private static final String JPEG_CONTENT_TYPE = "image/jpeg";
     private static final String PNG_CONTENT_TYPE = "image/png";
+    /** Approximate per-entry overhead (key, record, array headers) counted by the weigher. */
+    private static final int ENTRY_OVERHEAD_BYTES = 256;
 
     private final ImageProxyLinkService linkService;
     private final OkHttpClient httpClient;
@@ -49,7 +51,7 @@ public class ImageProxyContentService {
             @Value("${app.image-translation.max-dimension:4096}") int maxDimension,
             @Value("${app.image-translation.max-pixels:16000000}") long maxPixels,
             @Value("${app.image-translation.proxy-content-cache-ttl:PT5M}") Duration cacheTtl,
-            @Value("${app.image-translation.proxy-content-cache-entries:256}") long cacheEntries) {
+            @Value("${app.image-translation.proxy-content-cache-max-bytes:67108864}") long cacheMaxBytes) {
         this(
                 linkService,
                 new OkHttpClient.Builder()
@@ -63,7 +65,7 @@ public class ImageProxyContentService {
                 maxDimension,
                 maxPixels,
                 cacheTtl,
-                cacheEntries);
+                cacheMaxBytes);
     }
 
     ImageProxyContentService(
@@ -74,9 +76,9 @@ public class ImageProxyContentService {
             int maxDimension,
             long maxPixels,
             Duration cacheTtl,
-            long cacheEntries) {
+            long cacheMaxBytes) {
         if (maxOriginalBytes <= 0 || maxPreviewBytes <= 0 || maxDimension <= 0 || maxPixels <= 0
-                || cacheTtl == null || cacheTtl.isZero() || cacheTtl.isNegative() || cacheEntries <= 0) {
+                || cacheTtl == null || cacheTtl.isZero() || cacheTtl.isNegative() || cacheMaxBytes <= 0) {
             throw new IllegalArgumentException("Image proxy bounds must be positive");
         }
         this.linkService = linkService;
@@ -85,9 +87,15 @@ public class ImageProxyContentService {
         this.maxPreviewBytes = maxPreviewBytes;
         this.maxDimension = maxDimension;
         this.maxPixels = maxPixels;
+        // Bound by retained bytes, not entry count: one entry can hold an original of up
+        // to maxOriginalBytes plus its preview. An asset heavier than the whole cap is
+        // served once and then evicted. Eviction runs on the writing thread so the cap
+        // is enforced right after each insert instead of waiting on the common pool.
         this.assets = Caffeine.newBuilder()
-                .maximumSize(cacheEntries)
+                .maximumWeight(cacheMaxBytes)
+                .weigher((String token, ImageProxyAsset asset) -> weigh(asset))
                 .expireAfterWrite(cacheTtl)
+                .executor(Runnable::run)
                 .build();
     }
 
@@ -102,6 +110,21 @@ public class ImageProxyContentService {
             log.warn("Image proxy load failed: failure={}", SafeLog.failure(failure));
             return Optional.empty();
         }
+    }
+
+    long cachedBytes() {
+        assets.cleanUp();
+        return assets.policy().eviction().orElseThrow().weightedSize().orElse(0L);
+    }
+
+    long cachedEntries() {
+        assets.cleanUp();
+        return assets.estimatedSize();
+    }
+
+    private static int weigh(ImageProxyAsset asset) {
+        long bytes = (long) asset.originalLength() + asset.previewLength() + ENTRY_OVERHEAD_BYTES;
+        return (int) Math.min(Integer.MAX_VALUE, bytes);
     }
 
     private Optional<ImageProxyAsset> fetch(URI target) {

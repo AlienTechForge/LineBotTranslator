@@ -65,7 +65,8 @@ OPEN_ROUTE_MODEL_NAME=openai/gpt-4o-mini
 OPEN_ROUTE_API_URL=https://openrouter.ai/api/v1
 
 # Google Cloud Vision API 配置 (OCR)
-GOOGLE_CLOUD_VISION_API_KEY=your_google_cloud_vision_api_key
+# 指向 Google service account JSON；正式環境改由 GOOGLE_CREDENTIALS_JSON secret 傳入（見 deployment-guide.md）
+GOOGLE_APPLICATION_CREDENTIALS=./linebot.json
 GOOGLE_VISION_TIMEOUT_MS=60000
 
 # 應用程式配置
