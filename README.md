@@ -61,6 +61,7 @@ OPEN_ROUTE_API_URL=https://openrouter.ai/api/v1
 
 # Google Cloud Vision API 配置 (OCR)
 GOOGLE_CLOUD_VISION_API_KEY=your_google_cloud_vision_api_key
+GOOGLE_VISION_TIMEOUT_MS=60000
 
 # 應用程式配置
 OCR_ENABLED=true
