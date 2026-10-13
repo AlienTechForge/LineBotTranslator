@@ -33,8 +33,7 @@ class ImageTranslationResultRenderingTests {
         ImageTranslationContext context = new ImageTranslationContext(
                 new DownloadedImage(new byte[] {1}, "image/png"),
                 ImageStorageResult.notStored(),
-                "hello",
-                null);
+                "hello");
         TranslationWorkflowResult translation = new TranslationWorkflowResult(
                 "hello",
                 "en",
@@ -114,8 +113,7 @@ class ImageTranslationResultRenderingTests {
         ImageTranslationContext context = new ImageTranslationContext(
                 new DownloadedImage(new byte[] {1}, "image/png"),
                 ImageStorageResult.notStored(),
-                "hello",
-                null);
+                "hello");
         TranslationWorkflowResult translation = new TranslationWorkflowResult(
                 "hello", "en", "zh-TW",
                 new AiExecutionResult("你好", "openrouter", "model"),
@@ -136,8 +134,7 @@ class ImageTranslationResultRenderingTests {
         ImageTranslationContext context = new ImageTranslationContext(
                 new DownloadedImage(new byte[] {1}, "image/png"),
                 ImageStorageResult.notStored(),
-                "hello",
-                null);
+                "hello");
         TranslationWorkflowResult translation = new TranslationWorkflowResult(
                 "hello", "en", "zh-TW",
                 new AiExecutionResult("你好", "openrouter", "model"),
@@ -166,7 +163,7 @@ class ImageTranslationResultRenderingTests {
         UserPreferencesModule profiles = mock(UserPreferencesModule.class);
         when(profiles.profile("U-safe")).thenReturn(profile);
         ImageTranslationContext context = new ImageTranslationContext(
-                new DownloadedImage(new byte[] {1}, "image/png"), ImageStorageResult.notStored(), "hello", null);
+                new DownloadedImage(new byte[] {1}, "image/png"), ImageStorageResult.notStored(), "hello");
         TranslationWorkflowResult translation = new TranslationWorkflowResult(
                 "hello", "en", "zh-TW", new AiExecutionResult("你好", "openrouter", "model"),
                 20, TranslationRequestKind.IMAGE_OCR);
@@ -192,7 +189,7 @@ class ImageTranslationResultRenderingTests {
         UserPreferencesModule profiles = mock(UserPreferencesModule.class);
         when(profiles.profile("U-coverage")).thenReturn(profile);
         ImageTranslationContext context = new ImageTranslationContext(
-                new DownloadedImage(new byte[] {1}, "image/png"), ImageStorageResult.notStored(), "text", null);
+                new DownloadedImage(new byte[] {1}, "image/png"), ImageStorageResult.notStored(), "text");
         TranslationWorkflowResult translation = new TranslationWorkflowResult(
                 "text", "ja", "zh-TW", new AiExecutionResult("文字", "openrouter", "model"),
                 20, TranslationRequestKind.IMAGE_OCR);
@@ -233,7 +230,7 @@ class ImageTranslationResultRenderingTests {
         UserPreferencesModule profiles = mock(UserPreferencesModule.class);
         when(profiles.profile(userId)).thenReturn(profile);
         ImageTranslationContext context = new ImageTranslationContext(
-                new DownloadedImage(new byte[] {1}, "image/png"), ImageStorageResult.notStored(), "text", null);
+                new DownloadedImage(new byte[] {1}, "image/png"), ImageStorageResult.notStored(), "text");
         TranslationWorkflowResult translation = new TranslationWorkflowResult(
                 "text", "ja", "zh-TW", new AiExecutionResult("文字", "openrouter", "model"),
                 20, TranslationRequestKind.IMAGE_OCR);

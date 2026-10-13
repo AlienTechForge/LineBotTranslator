@@ -241,13 +241,10 @@ public class ImageTranslationPipeline {
             return new ImageTranslationOutcome.Failure(ImageTranslationFailureStage.NO_TEXT);
         }
 
-        // Recognized text is content, never a command: an image cannot choose its own
-        // target, so the workflow resolves it from User Preferences.
         ImageTranslationContext context = new ImageTranslationContext(
                 new DownloadedImage(image.bytes(), image.contentType()),
                 storage,
-                recognition.text(),
-                null);
+                recognition.text());
         TranslationWorkflowOutcome workflowOutcome;
         List<String> translatableRegionIds = List.of();
         long translationStarted = System.nanoTime();
@@ -273,7 +270,9 @@ public class ImageTranslationPipeline {
             workflowOutcome = translationWorkflowModule.execute(new TranslationWorkflowRequest(
                     request.userProfile(),
                     translatableText,
-                    context.requestedTargetLanguage(),
+                    // Recognized text is content, never a command: an image cannot choose its own
+                    // target, so the workflow resolves it from User Preferences.
+                    null,
                     TranslationRequestKind.IMAGE_OCR,
                     context.storage().url().orElse(null),
                     context.storage().stored(),

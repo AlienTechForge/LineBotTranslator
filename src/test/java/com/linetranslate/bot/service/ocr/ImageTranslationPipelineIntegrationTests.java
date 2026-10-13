@@ -633,7 +633,6 @@ class ImageTranslationPipelineIntegrationTests {
         ImageTranslationPipelineResult result =
                 successResult(pipeline.execute(request("message-embedded-command")));
 
-        assertThat(result.context().requestedTargetLanguage()).isNull();
         ArgumentCaptor<TranslationWorkflowRequest> workflow =
                 ArgumentCaptor.forClass(TranslationWorkflowRequest.class);
         verify(workflowModule).execute(workflow.capture());
