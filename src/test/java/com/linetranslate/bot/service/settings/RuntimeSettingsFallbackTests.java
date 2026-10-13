@@ -42,6 +42,7 @@ class RuntimeSettingsFallbackTests {
         assertThat(settings.openRouterDefaultModel()).isEqualTo("openai/gpt-4o-mini");
         assertThat(settings.ocrEnabled()).isTrue();
         assertThat(settings.imageTextReplyEnabled()).isTrue();
+        assertThat(settings.adminUserIds()).isEmpty();
         assertThat(settings.source()).isEqualTo(RuntimeSettings.Source.DEPLOYMENT_DEFAULTS);
     }
 }
