@@ -603,6 +603,50 @@ class OpenRouterModelCatalogTests {
     }
 
     @Test
+    void aJoinerOfAnAbandonedFlightIsWokenWithTheFailureWhenTheFallbackPageCannotBeBuilt() throws Exception {
+        AtomicInteger fetches = new AtomicInteger();
+        OkHttpClient client = client(fetches, fetch -> response(catalogJson("vendor/model-a")));
+        // An invalid configured model id makes the unstored default page impossible to build.
+        OpenRouterConfig config = config();
+        when(config.getModelName()).thenReturn("not a valid model id");
+        CountDownLatch fail = new CountDownLatch(1);
+        ThrowingExecutor refreshExecutor = new ThrowingExecutor(
+                new IllegalStateException("executor failed"), fail);
+        ExecutorService callers = Executors.newFixedThreadPool(2);
+        OpenRouterModelCatalog catalog = new OpenRouterModelCatalog(
+                config, client, new ObjectMapper(),
+                new MutableClock(Instant.parse("2026-08-11T00:00:00Z")), refreshExecutor);
+        try {
+            Future<?> warmUp = callers.submit(catalog::warmUp);
+            assertThat(refreshExecutor.failurePending.await(SAFETY_TIMEOUT_SECONDS, TimeUnit.SECONDS)).isTrue();
+            AtomicReference<Thread> lookupThread = new AtomicReference<>();
+            Future<AiModelPage> lookup = callers.submit(() -> {
+                lookupThread.set(Thread.currentThread());
+                return catalog.list("", 20);
+            });
+            awaitWaiting(lookupThread);
+
+            fail.countDown();
+
+            // The warm-up hands nothing back, and the joiner fails fast instead of waiting on a flight
+            // that was released but never completed.
+            warmUp.get(SAFETY_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            assertThatThrownBy(() -> lookup.get(SAFETY_TIMEOUT_SECONDS, TimeUnit.SECONDS))
+                    .isInstanceOf(ExecutionException.class)
+                    .hasRootCauseInstanceOf(IllegalArgumentException.class);
+            assertThat(fetches).hasValue(0);
+
+            // The slot is free: this lookup starts a refresh of its own and succeeds.
+            assertThat(within(() -> catalog.find("vendor/model-a"))).isPresent();
+            assertThat(fetches).hasValue(1);
+        } finally {
+            fail.countDown();
+            callers.shutdownNow();
+            catalog.shutdown();
+        }
+    }
+
+    @Test
     void aThreadThatCannotBeStartedFailsTheClaimingLookupButNotTheNextOne() throws Exception {
         AtomicInteger fetches = new AtomicInteger();
         OkHttpClient client = client(fetches, fetch -> response(catalogJson("vendor/model-a")));

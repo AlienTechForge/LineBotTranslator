@@ -101,8 +101,9 @@ public class OpenRouterModelCatalog implements AiModelCatalog {
      * a second fetch. A failed fetch is handled and logged by that path and leaves the
      * fallback snapshot, exactly as a failed first lookup would. Unlike a lookup, a warm-up
      * the executor refuses (it is shut down) never runs the fetch on the calling thread. A
-     * failure of the hand-off itself leaves the catalog lazy as well; only an {@link Error}
-     * from it (the worker thread could not be started) is rethrown, after the slot is freed.
+     * failure of the hand-off itself leaves the catalog lazy as well; it throws no
+     * {@link RuntimeException}, and only an {@link Error} from it (the worker thread could not
+     * be started) propagates, after the slot is freed.
      */
     @Override
     public void warmUp() {
@@ -216,8 +217,18 @@ public class OpenRouterModelCatalog implements AiModelCatalog {
         // Same order as runRefresh: free the slot first, then wake whoever joined the flight with
         // what is known now. Nothing is stored, so the next lookup starts a refresh of its own.
         inFlight.compareAndSet(flight, null);
-        Snapshot current = snapshot;
-        flight.complete(current != null ? current : fallback(clock.instant()));
+        try {
+            Snapshot current = snapshot;
+            flight.complete(current != null ? current : fallback(clock.instant()));
+        } catch (RuntimeException | Error unbuildable) {
+            // The default page cannot be built (an invalid configured model id). Whoever joined the
+            // flight is still woken, with that failure, so nobody waits on a flight nothing finishes.
+            // A lookup sees it through the flight; a warm-up has no caller to hand it to.
+            flight.completeExceptionally(unbuildable);
+            if (unbuildable instanceof Error error) {
+                throw error;
+            }
+        }
     }
 
     private void runRefresh(CompletableFuture<Snapshot> flight) {
