@@ -86,9 +86,14 @@ MINIO_REGION=us-east-1
 
 # 管理員配置
 ADMIN_USERS=U123456789abcdef,U987654321abcdef
+
+# 選填：圖片管理頁 /admin/images 的 Bearer token；留空（預設）則不註冊該頁面與 API
+ADMIN_WEB_TOKEN=
 ```
 
 `ADMIN_USERS` 只是管理員清單的 bootstrap seed：MongoDB `runtime_settings` 尚未保存管理員清單時才會使用。管理員以 `/admin add`、`/admin remove` 做的變更會保存在 MongoDB，重啟或重新部署後仍有效；清單一旦保存，之後修改 `ADMIN_USERS` 不會覆蓋它。最後一位管理員無法被移除。
+
+設定 `ADMIN_WEB_TOKEN` 後，可開啟 `https://<host>/admin/images`，輸入該 token 檢視、篩選並刪除機器人存入 MinIO 的圖片；使用者原圖不會自動刪除，這個頁面是人工清理的入口。部署細節見 [deployment-guide.md](deployment-guide.md)。
 
 翻譯快取採 `expire-after-write` TTL；超過 `TRANSLATION_CACHE_MAX_ENTRIES` 時，Caffeine 會依使用頻率與近期性淘汰項目。失敗、safety blocked 與 model mismatch 不會寫入；實際使用的 style preset ID、prompt version 與 glossary version 都納入 cache identity。
 

@@ -183,6 +183,7 @@ jobs:
           OCR_ENABLED: ${{ secrets.OCR_ENABLED }}
           GOOGLE_VISION_TIMEOUT_MS: ${{ vars.GOOGLE_VISION_TIMEOUT_MS || '60000' }}
           ADMIN_USERS: ${{ secrets.ADMIN_USERS }}
+          ADMIN_WEB_TOKEN: ${{ secrets.ADMIN_WEB_TOKEN }}
           MINIO_ENDPOINT: ${{ secrets.MINIO_ENDPOINT }}
           MINIO_PUBLIC_ENDPOINT: ${{ secrets.MINIO_PUBLIC_ENDPOINT }}
           MINIO_ACCESS_KEY: ${{ secrets.MINIO_ACCESS_KEY }}

@@ -129,6 +129,7 @@
 | Usage accounting | `AiUsageEventSink`、`UsageQuery` | attempt event、pricing snapshot、Mongo aggregation | accounting fail-open；report 不依賴 Translation Record 掃描。 |
 | Image translation | `ImageTranslationRequest` → `ImageTranslationOutcome` | download、storage、recognition、workflow bridge | request state 為 explicit value，optional storage failure 局部化。 |
 | Translated image delivery | `ImageTranslationReply` → LINE `ImageMessage` 與文字訊息 | direct signed URL、optional proxy/preview、optional 木雷 Adapter | 木雷 failure 回退 presigned URL，不影響翻譯。 |
+| Admin image gallery | `AdminImageGalleryController` → `MinioObjectBrowser` | `ADMIN_WEB_TOKEN` bearer 驗證、僅限 `images/` 與 `translated-images/` 的 list／preview／delete | 使用者原圖不自動刪除，營運人員由此頁手動清理；token 未設定時不註冊任何路由。 |
 
 ## Durable data ownership
 

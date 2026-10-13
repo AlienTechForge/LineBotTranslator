@@ -54,6 +54,7 @@ Self-hosted runner 必須：
 
 - `OCR_ENABLED`
 - `ADMIN_USERS`：管理員清單的 bootstrap seed。管理員以 `/admin add`、`/admin remove` 變更後，清單保存於 MongoDB `runtime_settings`；清單一旦保存，修改此環境變數不會覆蓋它
+- `ADMIN_WEB_TOKEN`，啟用 `/admin/images` 圖片管理頁時才需要
 - `MINIO_ENDPOINT`、`MINIO_ACCESS_KEY`、`MINIO_SECRET_KEY`、`MINIO_BUCKET_NAME`
 - `DWZ_API_TOKEN`，當管理員啟用木雷短網址時必要
 - `LANGUAGE_DETECTION_USE_AI`、`LANGUAGE_DETECTION_DEFAULT_CHINESE`
@@ -134,6 +135,10 @@ Translate production 預設使用 `DOCKER_NETWORK=host`，因此不能用 `dwz-s
 
 木雷需先在後台建立 Bearer API Token。`DWZ_SHORT_DOMAIN` 可留空使用預設
 domain。啟用指令：`/admin config short-url on`；停用使用 `off`。
+
+## 圖片管理頁
+
+使用者原圖會永久保留在 MinIO，不會自動刪除。設定 Secret `ADMIN_WEB_TOKEN`（建議 `openssl rand -hex 32`）後，開啟 `https://<host>/admin/images`，在登入欄輸入該 token（只存在該分頁的 `sessionStorage`，不會出現在 URL），即可依類型與日期篩選、預覽並批次刪除圖片。所有 `/admin/images/api/*` 請求都必須帶 `Authorization: Bearer <token>`，錯誤時回 `401`；頁面本身只是不含任何資料的靜態外殼（瀏覽器導覽無法附加 Authorization header），因此不需要 token。未設定或留空時不會註冊任何 `/admin/images` 路由（回 `404`）。更換 token 需重新部署；請經由 HTTPS reverse proxy 對外提供，並避免把 token 貼進 Issue、PR 或日誌。
 
 ## 手動部署
 
