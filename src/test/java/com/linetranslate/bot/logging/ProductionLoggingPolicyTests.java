@@ -23,6 +23,7 @@ class ProductionLoggingPolicyTests {
             Pattern.compile("\\b(?:userId|targetUserId|testUserId|displayName)\\b"),
             Pattern.compile("\\b(?:text|sourceText|recognizedText|message|prompt)\\b"),
             Pattern.compile("\\b(?:imageUrl|mongoUri|response|responseBody|result)\\b"),
+            Pattern.compile("\\b(?:targetLanguage|sourceLanguage)\\b"),
             Pattern.compile("\\b(?:endpoint|credentialsPath|envCredentialsPath|accessKey|secretKey|apiKey)\\b"),
             Pattern.compile("\\.(?:getAbsolutePath|getName)\\(\\)"),
             Pattern.compile("\\.getUserId\\(\\)"),
