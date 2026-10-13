@@ -31,21 +31,24 @@ public class TranslationService {
     private final TranslationWorkflowModule translationWorkflowModule;
     private final UserPreferencesModule userPreferencesModule;
 
+    // 所有指令模式都以 DOTALL 編譯，讓擷取的原文可跨越換行，多行輸入不會只剩指令所在的那一行。
+    // 文本在前的模式另以 ^ 錨定，指令前的全部文字（而非僅最後一行）都是原文。
+
     // 翻譯指令的正則表達式模式（中文語言名稱）
-    private static final Pattern TRANSLATION_COMMAND_PATTERN_CN = Pattern.compile("翻譯成([\\u4e00-\\u9fa5]+)\\s*(.*)");
+    private static final Pattern TRANSLATION_COMMAND_PATTERN_CN = Pattern.compile("翻譯成([\\u4e00-\\u9fa5]+)\\s*(.*)", Pattern.DOTALL);
 
     // 翻譯指令的正則表達式模式（語言代碼）
-    private static final Pattern TRANSLATION_COMMAND_PATTERN_CODE = Pattern.compile("翻譯成([a-zA-Z\\-]+)\\s*(.*)");
+    private static final Pattern TRANSLATION_COMMAND_PATTERN_CODE = Pattern.compile("翻譯成([a-zA-Z\\-]+)\\s*(.*)", Pattern.DOTALL);
     
     // 處理「文本 翻譯成XX文」格式的模式（中文語言名稱）
-    private static final Pattern TEXT_THEN_TRANSLATION_PATTERN_CN = Pattern.compile("(.+?)\\s+翻譯成([\\u4e00-\\u9fa5]+)\\s*(.*)");
+    private static final Pattern TEXT_THEN_TRANSLATION_PATTERN_CN = Pattern.compile("^(.+?)\\s+翻譯成([\\u4e00-\\u9fa5]+)\\s*(.*)", Pattern.DOTALL);
     
     // 處理「文本 翻譯成XX」格式的模式（語言代碼）
-    private static final Pattern TEXT_THEN_TRANSLATION_PATTERN_CODE = Pattern.compile("(.+?)\\s+翻譯成([a-zA-Z\\-]+)\\s*(.*)");
+    private static final Pattern TEXT_THEN_TRANSLATION_PATTERN_CODE = Pattern.compile("^(.+?)\\s+翻譯成([a-zA-Z\\-]+)\\s*(.*)", Pattern.DOTALL);
 
     // 多行翻譯指令的正則表達式模式（處理 "xxx\n翻譯成yyy" 的情況）
-    private static final Pattern MULTILINE_TRANSLATION_PATTERN_CN = Pattern.compile("(.*?)\\n翻譯成([\\u4e00-\\u9fa5]+)\\s*(.*)");
-    private static final Pattern MULTILINE_TRANSLATION_PATTERN_CODE = Pattern.compile("(.*?)\\n翻譯成([a-zA-Z\\-]+)\\s*(.*)");
+    private static final Pattern MULTILINE_TRANSLATION_PATTERN_CN = Pattern.compile("^(.*?)\\n翻譯成([\\u4e00-\\u9fa5]+)\\s*(.*)", Pattern.DOTALL);
+    private static final Pattern MULTILINE_TRANSLATION_PATTERN_CODE = Pattern.compile("^(.*?)\\n翻譯成([a-zA-Z\\-]+)\\s*(.*)", Pattern.DOTALL);
 
     @Autowired
     public TranslationService(
