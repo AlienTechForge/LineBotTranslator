@@ -35,6 +35,7 @@ public class WebhookIngestionModule {
     private final Counter processingPoisoned;
     private final Counter replySucceeded;
     private final Counter replyRetried;
+    private final Counter replyRejected;
 
     public WebhookIngestionModule(
             WebhookEventReceiptStore receiptStore,
@@ -54,6 +55,7 @@ public class WebhookIngestionModule {
         this.processingPoisoned = processingCounter(meterRegistry, "poisoned");
         this.replySucceeded = replyCounter(meterRegistry, "success");
         this.replyRetried = replyCounter(meterRegistry, "retry");
+        this.replyRejected = replyCounter(meterRegistry, "rejected");
     }
 
     public WebhookIngestionResult ingest(Event event) {
@@ -102,6 +104,11 @@ public class WebhookIngestionModule {
                 replySender.send(reply);
                 replySucceeded.increment();
                 return attempt;
+            } catch (WebhookReplyRejectedException rejected) {
+                replyRejected.increment();
+                log.warn("LINE rejected webhook reply, not retrying: status={}, attempt={}",
+                        SafeLog.httpStatus(rejected.status()), attempt);
+                throw new ReplyAttemptException(attempt, rejected);
             } catch (RuntimeException failure) {
                 lastFailure = new ReplyAttemptException(attempt, failure);
                 if (attempt < properties.getReplyMaxAttempts()) {

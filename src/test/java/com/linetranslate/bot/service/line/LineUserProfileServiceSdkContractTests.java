@@ -5,7 +5,6 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.net.URI;
-import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 
 import org.junit.jupiter.api.Test;
@@ -44,7 +43,7 @@ class LineUserProfileServiceSdkContractTests {
                 "Jason", userId, URI.create("https://example.com/avatar.jpg"), "Available", "zh-TW");
         when(messagingApiClient.getProfile(userId)).thenReturn(
                 CompletableFuture.completedFuture(new Result<>("request-id", null, profile)));
-        when(userProfileRepository.findByUserId(userId)).thenReturn(Optional.empty());
+        when(userPreferencesModule.profile(userId)).thenReturn(UserProfile.builder().userId(userId).build());
 
         new LineUserProfileService(
                 messagingApiClient, userProfileRepository, translationRecordRepository,
