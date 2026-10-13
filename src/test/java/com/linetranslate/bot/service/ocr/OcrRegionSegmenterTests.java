@@ -242,6 +242,52 @@ class OcrRegionSegmenterTests {
     }
 
     @Test
+    void mergesAChineseSentenceEndingBackWithoutInsertingASpace() {
+        OcrRegion paragraph = new OcrRegion("article-main",
+                "今天的天氣非常晴朗而且空氣清新所以我們決定一起到附近的公園散步順便買些水果回",
+                rectangle(20, 20, 540, 80),
+                List.of(
+                        word("今天的天氣非常晴朗而且空氣清新", 20, 20, 330, 26),
+                        word("所以我們決定一起到附近的公園散步順便買些水果回", 20, 70, 400, 26)),
+                .98f, true, OcrBlockType.TEXT,
+                List.of(new OcrDetectedLanguage("zh", .98f)), 0);
+        OcrRegion ending = new OcrRegion("article-ending", "家了。",
+                rectangle(20, 125, 72, 26),
+                List.of(word("家了。", 20, 125, 72, 26)),
+                .97f, true, OcrBlockType.TEXT,
+                List.of(new OcrDetectedLanguage("zh", .97f)), 1);
+
+        List<OcrRegion> result = new OcrRegionSegmenter().segment(List.of(paragraph, ending));
+
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).text()).endsWith("買些水果回家了。").doesNotContain(" ");
+    }
+
+    @Test
+    void mergesAKoreanSentenceEndingBackWithASpaceBetweenTheWords() {
+        OcrRegion paragraph = new OcrRegion("article-main",
+                "오늘 날씨가 정말 맑고 하늘도 높아서 산책하기에 아주",
+                rectangle(20, 20, 540, 80),
+                List.of(
+                        word("오늘 날씨가 정말 맑고 하늘도", 20, 20, 330, 26),
+                        word("높아서 산책하기에 아주", 20, 70, 250, 26)),
+                .98f, true, OcrBlockType.TEXT,
+                List.of(new OcrDetectedLanguage("ko", .98f)), 0);
+        OcrRegion ending = new OcrRegion("article-ending", "좋다.",
+                rectangle(20, 125, 60, 26),
+                List.of(word("좋다.", 20, 125, 60, 26)),
+                .97f, true, OcrBlockType.TEXT,
+                List.of(new OcrDetectedLanguage("ko", .97f)), 1);
+
+        List<OcrRegion> result = new OcrRegionSegmenter().segment(List.of(paragraph, ending));
+
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).text())
+                .isEqualTo("오늘 날씨가 정말 맑고 하늘도 높아서 산책하기에 아주 좋다.");
+        assertThat(result.get(0).words()).hasSize(3);
+    }
+
+    @Test
     void doesNotMergeANearbyShortLabelWithoutSentenceEndingPunctuation() {
         OcrRegion description = new OcrRegion("description",
                 "洗髮剪髮頭皮隔離染髮護理完整服務內容說明",
