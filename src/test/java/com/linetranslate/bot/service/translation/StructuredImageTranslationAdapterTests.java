@@ -15,8 +15,10 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.linetranslate.bot.service.ai.AiExecutionFailure;
 import com.linetranslate.bot.service.ai.AiExecutionOutcome;
 import com.linetranslate.bot.service.ai.AiExecutionResult;
+import com.linetranslate.bot.service.ai.AiProviderException;
 import com.linetranslate.bot.service.preference.UserPreferences;
 
 class StructuredImageTranslationAdapterTests {
@@ -58,6 +60,28 @@ class StructuredImageTranslationAdapterTests {
                 List.of(new ImageRegionTranslationInput("r1", "hello", "en", List.of())),
                 "zh-TW", TranslationStylePreset.FAITHFUL))
                 .isInstanceOf(StructuredTranslationException.class);
+        verify(provider, times(2)).translateValidated(eq(preferences), anyString(), eq("zh-TW"),
+                eq(TranslationStylePreset.FAITHFUL), eq(StructuredImageTranslationCodec.SCHEMA_VERSION), any());
+    }
+
+    @Test
+    void truncatedResponsesAreReportedAsProviderFailureRatherThanUnusableRegions() {
+        CachedTranslationAdapter provider = mock(CachedTranslationAdapter.class);
+        UserPreferences preferences = new UserPreferences("zh-TW", "en", "zh-TW", "model", List.of());
+        AiExecutionOutcome truncated = new AiExecutionOutcome.Failure(new AiExecutionFailure(
+                AiProviderException.Outcome.MALFORMED_RESPONSE, "openrouter", "model",
+                "TRUNCATED_OUTPUT", "correlation-1", 200, List.of()));
+        when(provider.translateValidated(eq(preferences), anyString(), eq("zh-TW"),
+                eq(TranslationStylePreset.FAITHFUL), eq(StructuredImageTranslationCodec.SCHEMA_VERSION), any()))
+                .thenReturn(truncated);
+        StructuredImageTranslationAdapter adapter = new StructuredImageTranslationAdapter(
+                provider, new StructuredImageTranslationCodec(new ObjectMapper()));
+
+        assertThatThrownBy(() -> adapter.translate(preferences,
+                List.of(new ImageRegionTranslationInput("r1", "hello", "en", List.of())),
+                "zh-TW", TranslationStylePreset.FAITHFUL))
+                .isInstanceOfSatisfying(StructuredTranslationException.class, failure -> assertThat(
+                        failure.reason()).isEqualTo(StructuredTranslationException.PROVIDER_FAILED));
         verify(provider, times(2)).translateValidated(eq(preferences), anyString(), eq("zh-TW"),
                 eq(TranslationStylePreset.FAITHFUL), eq(StructuredImageTranslationCodec.SCHEMA_VERSION), any());
     }
