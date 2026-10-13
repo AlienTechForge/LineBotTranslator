@@ -261,7 +261,8 @@ public class OpenRouterService implements AiProviderAdapter {
                             usage.path("prompt_tokens").asLong(-1),
                             usage.path("completion_tokens").asLong(-1),
                             usage.path("total_tokens").asLong(-1));
-            rejectUnfinishedCompletion(choice, requestedModel, correlationId, tokenUsage);
+            rejectUnfinishedCompletion(
+                    choice, responseModel(root, requestedModel), correlationId, tokenUsage);
             String text = contentText(choice.path("message").path("content")).trim();
             if (text.isEmpty()) {
                 throw failure(AiProviderException.Outcome.EMPTY_RESPONSE,
@@ -277,6 +278,15 @@ public class OpenRouterService implements AiProviderAdapter {
             throw failure(AiProviderException.Outcome.MALFORMED_RESPONSE,
                     "INVALID_JSON", requestedModel, correlationId, 200, failure);
         }
+    }
+
+    /**
+     * The model that actually ran. A routed or alias request such as openrouter/auto only
+     * resolves in the response, and a billed failure has to be priced under that model.
+     */
+    private static String responseModel(JsonNode root, String requestedModel) {
+        String reported = textValue(root.path("model")).trim();
+        return reported.isEmpty() ? requestedModel : reported;
     }
 
     /**
