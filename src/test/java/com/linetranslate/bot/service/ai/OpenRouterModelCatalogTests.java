@@ -2,6 +2,7 @@ package com.linetranslate.bot.service.ai;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
@@ -20,10 +21,12 @@ import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -33,12 +36,17 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.linetranslate.bot.config.OpenRouterConfig;
 import com.linetranslate.bot.service.usage.UsagePriceQuote;
 import com.linetranslate.bot.service.usage.UsagePricingCatalog;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import okhttp3.Call;
 import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
@@ -472,6 +480,160 @@ class OpenRouterModelCatalogTests {
         }
     }
 
+    @Test
+    void aLookupWhoseRefreshTheExecutorFailsToAcceptStillGetsAnAnswerAndLeavesTheSlotFree() throws Exception {
+        AtomicInteger fetches = new AtomicInteger();
+        OkHttpClient client = client(fetches, fetch -> response(catalogJson("vendor/model-a")));
+        // A decorating executor can fail with something other than a rejection.
+        ThrowingExecutor refreshExecutor = new ThrowingExecutor(
+                new IllegalStateException("Bearer sk-or-v1-secret https://openrouter.ai/api?key=abc"),
+                new CountDownLatch(0));
+        OpenRouterModelCatalog catalog = new OpenRouterModelCatalog(
+                config(), client, new ObjectMapper(),
+                new MutableClock(Instant.parse("2026-08-11T00:00:00Z")), refreshExecutor);
+        Logger logger = (Logger) LoggerFactory.getLogger(OpenRouterModelCatalog.class);
+        ListAppender<ILoggingEvent> logs = new ListAppender<>();
+        logs.start();
+        logger.addAppender(logs);
+        try {
+            // Answered from what is known without a fetch: the lookup neither throws nor waits forever.
+            AiModelPage page = within(() -> catalog.list("", 20));
+
+            assertThat(refreshExecutor.failed()).isEqualTo(1);
+            assertThat(page.stale()).isTrue();
+            assertThat(page.models()).extracting(AiModelDescriptor::id).containsExactly("vendor/default-model");
+            assertThat(fetches).hasValue(0);
+            assertThat(logs.list).filteredOn(event -> event.getLevel() == Level.WARN).singleElement()
+                    .satisfies(event -> {
+                        assertThat(event.getFormattedMessage())
+                                .contains("failure=IllegalStateException")
+                                .doesNotContain("sk-or-v1-secret", "key=abc");
+                        assertThat(event.getThrowableProxy()).isNull();
+                    });
+
+            // The failed submit gave the slot up and stored nothing, so this lookup fetches for itself.
+            assertThat(within(() -> catalog.find("vendor/model-a"))).isPresent();
+            assertThat(fetches).hasValue(1);
+        } finally {
+            logger.detachAppender(logs);
+            catalog.shutdown();
+        }
+    }
+
+    @Test
+    void warmUpTheExecutorFailsToAcceptReturnsWithoutFetchingAndLeavesTheSlotFree() throws Exception {
+        AtomicInteger fetches = new AtomicInteger();
+        OkHttpClient client = client(fetches, fetch -> response(catalogJson("vendor/model-a")));
+        ThrowingExecutor refreshExecutor = new ThrowingExecutor(
+                new IllegalStateException("Bearer sk-or-v1-secret https://openrouter.ai/api?key=abc"),
+                new CountDownLatch(0));
+        OpenRouterModelCatalog catalog = new OpenRouterModelCatalog(
+                config(), client, new ObjectMapper(),
+                new MutableClock(Instant.parse("2026-08-11T00:00:00Z")), refreshExecutor);
+        Logger logger = (Logger) LoggerFactory.getLogger(OpenRouterModelCatalog.class);
+        ListAppender<ILoggingEvent> logs = new ListAppender<>();
+        logs.start();
+        logger.addAppender(logs);
+        try {
+            assertThatCode(() -> within(() -> {
+                catalog.warmUp();
+                return null;
+            })).doesNotThrowAnyException();
+
+            assertThat(refreshExecutor.failed()).isEqualTo(1);
+            assertThat(fetches).hasValue(0);
+            assertThat(logs.list).filteredOn(event -> event.getLevel() == Level.WARN).singleElement()
+                    .satisfies(event -> {
+                        assertThat(event.getFormattedMessage())
+                                .contains("failure=IllegalStateException")
+                                .doesNotContain("sk-or-v1-secret", "key=abc");
+                        assertThat(event.getThrowableProxy()).isNull();
+                    });
+
+            // A failed warm-up must not leave a flight behind that no lookup could ever finish.
+            assertThat(within(() -> catalog.find("vendor/model-a"))).isPresent();
+            assertThat(fetches).hasValue(1);
+        } finally {
+            logger.detachAppender(logs);
+            catalog.shutdown();
+        }
+    }
+
+    @Test
+    void aLookupThatJoinedAWarmUpWhoseExecutorThrewAnErrorStillGetsAnAnswerAndTheErrorIsRethrown()
+            throws Exception {
+        AtomicInteger fetches = new AtomicInteger();
+        OkHttpClient client = client(fetches, fetch -> response(catalogJson("vendor/model-a")));
+        CountDownLatch fail = new CountDownLatch(1);
+        ThrowingExecutor refreshExecutor = new ThrowingExecutor(
+                new OutOfMemoryError("unable to create native thread"), fail);
+        ExecutorService callers = Executors.newFixedThreadPool(2);
+        OpenRouterModelCatalog catalog = new OpenRouterModelCatalog(
+                config(), client, new ObjectMapper(),
+                new MutableClock(Instant.parse("2026-08-11T00:00:00Z")), refreshExecutor);
+        try {
+            Future<?> warmUp = callers.submit(catalog::warmUp);
+            assertThat(refreshExecutor.failurePending.await(SAFETY_TIMEOUT_SECONDS, TimeUnit.SECONDS)).isTrue();
+            AtomicReference<Thread> lookupThread = new AtomicReference<>();
+            Future<AiModelPage> lookup = callers.submit(() -> {
+                lookupThread.set(Thread.currentThread());
+                return catalog.list("", 20);
+            });
+            // The lookup parks on the warm-up's flight, which is claimed but not yet failed.
+            awaitWaiting(lookupThread);
+
+            fail.countDown();
+
+            // The Error is not swallowed, but the joiner is not left waiting on a flight nobody will finish.
+            assertThatThrownBy(() -> warmUp.get(SAFETY_TIMEOUT_SECONDS, TimeUnit.SECONDS))
+                    .isInstanceOf(ExecutionException.class)
+                    .hasCauseInstanceOf(OutOfMemoryError.class);
+            AiModelPage page = lookup.get(SAFETY_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            assertThat(page.stale()).isTrue();
+            assertThat(page.models()).extracting(AiModelDescriptor::id).containsExactly("vendor/default-model");
+            assertThat(fetches).hasValue(0);
+
+            assertThat(within(() -> catalog.find("vendor/model-a"))).isPresent();
+            assertThat(fetches).hasValue(1);
+        } finally {
+            fail.countDown();
+            callers.shutdownNow();
+            catalog.shutdown();
+        }
+    }
+
+    @Test
+    void aThreadThatCannotBeStartedFailsTheClaimingLookupButNotTheNextOne() throws Exception {
+        AtomicInteger fetches = new AtomicInteger();
+        OkHttpClient client = client(fetches, fetch -> response(catalogJson("vendor/model-a")));
+        // The real ThreadPoolExecutor lets an Error from thread creation escape execute().
+        AtomicInteger threadRequests = new AtomicInteger();
+        ThreadFactory flakyThreads = runnable -> {
+            if (threadRequests.getAndIncrement() == 0) {
+                throw new OutOfMemoryError("unable to create native thread");
+            }
+            Thread thread = new Thread(runnable, "openrouter-catalog-refresh-test");
+            thread.setDaemon(true);
+            return thread;
+        };
+        ThreadPoolExecutor refreshExecutor = new ThreadPoolExecutor(
+                1, 1, 60, TimeUnit.SECONDS, new LinkedBlockingQueue<>(), flakyThreads);
+        OpenRouterModelCatalog catalog = new OpenRouterModelCatalog(
+                config(), client, new ObjectMapper(),
+                new MutableClock(Instant.parse("2026-08-11T00:00:00Z")), refreshExecutor);
+        try {
+            assertThatThrownBy(() -> within(() -> catalog.list("", 20)))
+                    .hasRootCauseInstanceOf(OutOfMemoryError.class);
+            assertThat(fetches).hasValue(0);
+
+            // Without the fix this lookup joins the claimed flight and waits for a refresh that never runs.
+            assertThat(within(() -> catalog.find("vendor/model-a"))).isPresent();
+            assertThat(fetches).hasValue(1);
+        } finally {
+            catalog.shutdown();
+        }
+    }
+
     private static OpenRouterConfig config() {
         OpenRouterConfig config = mock(OpenRouterConfig.class);
         when(config.getApiKey()).thenReturn("test-key");
@@ -516,6 +678,16 @@ class OpenRouterModelCatalogTests {
     /** The refresh executor is single-threaded, so a no-op runs after the pending refresh. */
     private static void drain(ExecutorService refreshExecutor) throws Exception {
         refreshExecutor.submit(() -> { }).get(SAFETY_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+    }
+
+    /** Waits until the thread is parked, so a joiner is known to be on the flight. */
+    private static void awaitWaiting(AtomicReference<Thread> thread) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(SAFETY_TIMEOUT_SECONDS);
+        while ((thread.get() == null || thread.get().getState() != Thread.State.WAITING)
+                && System.nanoTime() < deadline) {
+            TimeUnit.MILLISECONDS.sleep(1);
+        }
+        assertThat(thread.get().getState()).isEqualTo(Thread.State.WAITING);
     }
 
     @FunctionalInterface
@@ -575,6 +747,55 @@ class OpenRouterModelCatalogTests {
 
         int rejected() {
             return rejected.get();
+        }
+    }
+
+    /**
+     * Fails its first task with {@code failure} instead of a rejection, like a decorating executor or a
+     * thread that cannot be created, once {@code release} is released, then accepts the rest.
+     */
+    private static final class ThrowingExecutor extends ThreadPoolExecutor {
+
+        final CountDownLatch failurePending = new CountDownLatch(1);
+        private final Runnable raise;
+        private final CountDownLatch release;
+        private final AtomicInteger failed = new AtomicInteger();
+
+        ThrowingExecutor(RuntimeException failure, CountDownLatch release) {
+            this(() -> {
+                throw failure;
+            }, release);
+        }
+
+        ThrowingExecutor(Error failure, CountDownLatch release) {
+            this(() -> {
+                throw failure;
+            }, release);
+        }
+
+        private ThrowingExecutor(Runnable raise, CountDownLatch release) {
+            super(1, 1, 0L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<>());
+            this.raise = raise;
+            this.release = release;
+        }
+
+        @Override
+        public void execute(Runnable task) {
+            if (failed.get() == 0) {
+                failurePending.countDown();
+                try {
+                    release.await(SAFETY_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+                failed.incrementAndGet();
+                raise.run();
+            }
+            super.execute(task);
+        }
+
+        int failed() {
+            return failed.get();
         }
     }
 
