@@ -5,13 +5,12 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
-import java.util.Optional;
-
 import org.junit.jupiter.api.Test;
 
 import com.linetranslate.bot.model.UserProfile;
 import com.linetranslate.bot.repository.UserProfileRepository;
 import com.linetranslate.bot.service.ai.AiExecutionResult;
+import com.linetranslate.bot.service.preference.UserPreferencesModule;
 import com.linetranslate.bot.service.storage.ImageStorageResult;
 import com.linetranslate.bot.service.translation.TranslationRequestKind;
 import com.linetranslate.bot.service.translation.TranslationResponse;
@@ -24,7 +23,8 @@ class ImageTranslationResultRenderingTests {
         ImageTranslationPipeline pipeline = mock(ImageTranslationPipeline.class);
         UserProfileRepository repository = mock(UserProfileRepository.class);
         UserProfile profile = UserProfile.builder().userId("U-result").build();
-        when(repository.findByUserId("U-result")).thenReturn(Optional.of(profile));
+        UserPreferencesModule profiles = mock(UserPreferencesModule.class);
+        when(profiles.profile("U-result")).thenReturn(profile);
         when(repository.save(any(UserProfile.class))).thenAnswer(invocation -> invocation.getArgument(0));
         ImageTranslationContext context = new ImageTranslationContext(
                 new DownloadedImage(new byte[] {1}, "image/png"),
@@ -44,7 +44,7 @@ class ImageTranslationResultRenderingTests {
                         translation,
                         ImageStorageResult.stored("https://s3.example/result.png?signature=safe"),
                         1)));
-        ImageTranslationService service = new ImageTranslationService(pipeline, repository);
+        ImageTranslationService service = new ImageTranslationService(pipeline, repository, profiles);
 
         ImageTranslationReply reply = service.processImageTranslationReply("U-result", "message");
         TranslationResponse response = reply.response();
@@ -63,7 +63,8 @@ class ImageTranslationResultRenderingTests {
         ImageTranslationPipeline pipeline = mock(ImageTranslationPipeline.class);
         UserProfileRepository repository = mock(UserProfileRepository.class);
         UserProfile profile = UserProfile.builder().userId("U-result").build();
-        when(repository.findByUserId("U-result")).thenReturn(Optional.of(profile));
+        UserPreferencesModule profiles = mock(UserPreferencesModule.class);
+        when(profiles.profile("U-result")).thenReturn(profile);
         when(repository.save(any(UserProfile.class))).thenAnswer(invocation -> invocation.getArgument(0));
         ImageTranslationContext context = new ImageTranslationContext(
                 new DownloadedImage(new byte[] {1}, "image/png"),
@@ -80,7 +81,7 @@ class ImageTranslationResultRenderingTests {
                         translation,
                         ImageStorageResult.stored("http://user:secret@internal/result.png"),
                         0)));
-        ImageTranslationService service = new ImageTranslationService(pipeline, repository);
+        ImageTranslationService service = new ImageTranslationService(pipeline, repository, profiles);
 
         ImageTranslationReply reply = service.processImageTranslationReply("U-result", "message");
         TranslationResponse response = reply.response();
@@ -95,7 +96,8 @@ class ImageTranslationResultRenderingTests {
         ImageTranslationPipeline pipeline = mock(ImageTranslationPipeline.class);
         UserProfileRepository repository = mock(UserProfileRepository.class);
         UserProfile profile = UserProfile.builder().userId("U-safe").build();
-        when(repository.findByUserId("U-safe")).thenReturn(Optional.of(profile));
+        UserPreferencesModule profiles = mock(UserPreferencesModule.class);
+        when(profiles.profile("U-safe")).thenReturn(profile);
         when(repository.save(any(UserProfile.class))).thenAnswer(invocation -> invocation.getArgument(0));
         ImageTranslationContext context = new ImageTranslationContext(
                 new DownloadedImage(new byte[] {1}, "image/png"), ImageStorageResult.notStored(), "hello", null);
@@ -106,7 +108,7 @@ class ImageTranslationResultRenderingTests {
                 new ImageTranslationPipelineResult(context, translation, ImageStorageResult.notStored(), 1,
                         ImageOverlayDisposition.SAFETY_DEGRADED)));
 
-        TranslationResponse response = new ImageTranslationService(pipeline, repository)
+        TranslationResponse response = new ImageTranslationService(pipeline, repository, profiles)
                 .processImageTranslationResponse("U-safe", "message");
 
         assertThat(response.displayText())
@@ -121,7 +123,8 @@ class ImageTranslationResultRenderingTests {
         ImageTranslationPipeline pipeline = mock(ImageTranslationPipeline.class);
         UserProfileRepository repository = mock(UserProfileRepository.class);
         UserProfile profile = UserProfile.builder().userId("U-coverage").build();
-        when(repository.findByUserId("U-coverage")).thenReturn(Optional.of(profile));
+        UserPreferencesModule profiles = mock(UserPreferencesModule.class);
+        when(profiles.profile("U-coverage")).thenReturn(profile);
         when(repository.save(any(UserProfile.class))).thenAnswer(invocation -> invocation.getArgument(0));
         ImageTranslationContext context = new ImageTranslationContext(
                 new DownloadedImage(new byte[] {1}, "image/png"), ImageStorageResult.notStored(), "text", null);
@@ -133,7 +136,7 @@ class ImageTranslationResultRenderingTests {
                         ImageOverlayDisposition.SAFETY_DEGRADED,
                         OverlayDegradationSummary.single(OverlayDegradationReason.COVERAGE, 3))));
 
-        String display = new ImageTranslationService(pipeline, repository)
+        String display = new ImageTranslationService(pipeline, repository, profiles)
                 .processImageTranslationResponse("U-coverage", "message").displayText();
 
         assertThat(display).doesNotContain("個文字區域", "低信心區塊", "覆蓋範圍");
@@ -162,7 +165,8 @@ class ImageTranslationResultRenderingTests {
         ImageTranslationPipeline pipeline = mock(ImageTranslationPipeline.class);
         UserProfileRepository repository = mock(UserProfileRepository.class);
         UserProfile profile = UserProfile.builder().userId(userId).build();
-        when(repository.findByUserId(userId)).thenReturn(Optional.of(profile));
+        UserPreferencesModule profiles = mock(UserPreferencesModule.class);
+        when(profiles.profile(userId)).thenReturn(profile);
         when(repository.save(any(UserProfile.class))).thenAnswer(invocation -> invocation.getArgument(0));
         ImageTranslationContext context = new ImageTranslationContext(
                 new DownloadedImage(new byte[] {1}, "image/png"), ImageStorageResult.notStored(), "text", null);
@@ -173,7 +177,7 @@ class ImageTranslationResultRenderingTests {
                 new ImageTranslationPipelineResult(context, translation, ImageStorageResult.notStored(), 0,
                         ImageOverlayDisposition.SAFETY_DEGRADED, degradation)));
 
-        return new ImageTranslationService(pipeline, repository)
+        return new ImageTranslationService(pipeline, repository, profiles)
                 .processImageTranslationResponse(userId, "message").displayText();
     }
 }

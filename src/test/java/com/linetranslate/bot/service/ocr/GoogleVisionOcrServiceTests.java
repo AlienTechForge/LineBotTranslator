@@ -21,6 +21,7 @@ import com.google.cloud.vision.v1.Page;
 import com.google.cloud.vision.v1.Paragraph;
 import com.google.cloud.vision.v1.Symbol;
 import com.google.cloud.vision.v1.TextAnnotation;
+import com.google.cloud.vision.v1.TextAnnotation.DetectedBreak.BreakType;
 import com.google.cloud.vision.v1.Vertex;
 import com.google.cloud.vision.v1.Word;
 
@@ -138,6 +139,89 @@ class GoogleVisionOcrServiceTests {
             assertThat(region.compactLabel()).isTrue();
             assertThat(region.confidenceKnown()).isTrue();
         });
+    }
+
+    @Test
+    void joinsParagraphWordsWithTheBreaksVisionDetected() {
+        Paragraph paragraph = Paragraph.newBuilder()
+                .setBoundingBox(box(10, 10, 400, 60))
+                .setConfidence(.95f)
+                .addWords(word("南")).addWords(word("洋")).addWords(word("綠")).addWords(word("咖"))
+                .addWords(word("哩", BreakType.EOL_SURE_SPACE))
+                .addWords(word("雞")).addWords(word("飯", BreakType.SPACE))
+                .addWords(word("Green", BreakType.SPACE))
+                .addWords(word("curry", BreakType.SURE_SPACE))
+                .addWords(word("chick", BreakType.HYPHEN))
+                .addWords(word("en", BreakType.EOL_SURE_SPACE))
+                .addWords(word("rice", BreakType.SPACE))
+                .addWords(word("套", BreakType.UNKNOWN)).addWords(word("餐"))
+                .addWords(word("NT$110", BreakType.LINE_BREAK))
+                .build();
+
+        List<OcrRegion> regions = recognize(paragraph);
+
+        assertThat(regions).singleElement().satisfies(region -> {
+            assertThat(region.text()).isEqualTo("南洋綠咖哩雞飯 Green curry chick-en rice 套餐NT$110");
+            assertThat(region.words()).extracting(OcrWord::text).containsExactly(
+                    "南", "洋", "綠", "咖", "哩", "雞", "飯", "Green", "curry", "chick", "en", "rice",
+                    "套", "餐", "NT$110");
+        });
+    }
+
+    @Test
+    void joinsParagraphWordsByScriptWhenVisionReportsNoBreaks() {
+        Paragraph paragraph = Paragraph.newBuilder()
+                .setBoundingBox(box(10, 10, 400, 30))
+                .setConfidence(.95f)
+                .addWords(word("南")).addWords(word("洋")).addWords(word("綠")).addWords(word("咖"))
+                .addWords(word("哩")).addWords(word("雞")).addWords(word("飯"))
+                .addWords(word("Green")).addWords(word("curry")).addWords(word("rice"))
+                .build();
+
+        assertThat(recognize(paragraph)).extracting(OcrRegion::text)
+                .containsExactly("南洋綠咖哩雞飯 Green curry rice");
+    }
+
+    @Test
+    void honoursABreakThatVisionAttachesBeforeTheNextWord() {
+        Word world = Word.newBuilder()
+                .addSymbols(Symbol.newBuilder().setText("w")
+                        .setProperty(TextAnnotation.TextProperty.newBuilder()
+                                .setDetectedBreak(TextAnnotation.DetectedBreak.newBuilder()
+                                        .setType(BreakType.SPACE).setIsPrefix(true))))
+                .addSymbols(Symbol.newBuilder().setText("orld"))
+                .build();
+        Paragraph paragraph = Paragraph.newBuilder()
+                .setBoundingBox(box(10, 10, 200, 30))
+                .setConfidence(.95f)
+                .addWords(word("Hello")).addWords(world)
+                .build();
+
+        assertThat(recognize(paragraph)).extracting(OcrRegion::text).containsExactly("Hello world");
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<OcrRegion> recognize(Paragraph paragraph) {
+        ImageAnnotatorClient client = mock(ImageAnnotatorClient.class);
+        ObjectProvider<ImageAnnotatorClient> provider = mock(ObjectProvider.class);
+        when(provider.getIfAvailable()).thenReturn(client);
+        TextAnnotation annotation = TextAnnotation.newBuilder().addPages(Page.newBuilder()
+                .addBlocks(Block.newBuilder().setBlockType(Block.BlockType.TEXT)
+                        .addParagraphs(paragraph))).build();
+        when(client.batchAnnotateImages(anyList())).thenReturn(BatchAnnotateImagesResponse.newBuilder()
+                .addResponses(AnnotateImageResponse.newBuilder().setFullTextAnnotation(annotation)).build());
+        return new GoogleVisionOcrService(provider)
+                .recognizeRegions(new ByteArrayInputStream(new byte[] {1}));
+    }
+
+    /** A word whose last symbol carries the break Vision detected after it. */
+    private static Word word(String value, BreakType breakType) {
+        Word.Builder word = word(value).toBuilder();
+        int last = word.getSymbolsCount() - 1;
+        word.setSymbols(last, word.getSymbols(last).toBuilder()
+                .setProperty(TextAnnotation.TextProperty.newBuilder()
+                        .setDetectedBreak(TextAnnotation.DetectedBreak.newBuilder().setType(breakType))));
+        return word.build();
     }
 
     private static Word word(String value) {

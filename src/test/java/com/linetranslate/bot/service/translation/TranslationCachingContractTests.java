@@ -9,24 +9,38 @@ import static org.mockito.Mockito.when;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.github.benmanes.caffeine.cache.Ticker;
 
+import com.linetranslate.bot.config.OpenRouterConfig;
 import com.linetranslate.bot.service.preference.UserPreferences;
 import static com.linetranslate.bot.testing.UserPreferencesFixtures.preferences;
 import com.linetranslate.bot.service.ai.AiExecutionFailure;
 import com.linetranslate.bot.service.ai.AiExecutionOutcome;
 import com.linetranslate.bot.service.ai.AiExecutionResult;
+import com.linetranslate.bot.service.ai.AiModelCatalog;
 import com.linetranslate.bot.service.ai.AiProviderException;
 import com.linetranslate.bot.service.ai.AiProviderExecutionModule;
+import com.linetranslate.bot.service.ai.AiProviderOperation;
 import com.linetranslate.bot.service.ai.AiProviderRoute;
 import com.linetranslate.bot.service.ai.AiTokenUsage;
+import com.linetranslate.bot.service.ai.OpenRouterService;
+import com.linetranslate.bot.service.settings.RuntimeSettings;
 
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import okhttp3.Call;
+import okhttp3.MediaType;
+import okhttp3.OkHttpClient;
+import okhttp3.Protocol;
+import okhttp3.Request;
+import okhttp3.Response;
+import okhttp3.ResponseBody;
 
 class TranslationCachingContractTests {
 
@@ -203,6 +217,45 @@ class TranslationCachingContractTests {
     }
 
     @Test
+    void completionTruncatedByMaxTokensIsANormalizedFailureAndIsNeverCached() throws Exception {
+        String model = "openai/gpt-4o-mini";
+        OpenRouterConfig config = mock(OpenRouterConfig.class);
+        when(config.getApiKey()).thenReturn("test-key");
+        when(config.getModelName()).thenReturn(model);
+        when(config.normalizedApiUrl()).thenReturn("https://openrouter.ai/api/v1");
+        AiModelCatalog catalog = mock(AiModelCatalog.class);
+        when(catalog.modelIds()).thenReturn(Set.of(model));
+        when(catalog.supports(model, AiProviderOperation.TRANSLATE_TEXT)).thenReturn(true);
+        OkHttpClient httpClient = mock(OkHttpClient.class);
+        Call call = mock(Call.class);
+        when(httpClient.newCall(any(Request.class))).thenReturn(call);
+        when(call.execute()).thenAnswer(invocation -> openRouterResponse("""
+                {"model":"openai/gpt-4o-mini",
+                 "choices":[{"message":{"content":"你好，這段譯文在中途被截"},"finish_reason":"length"}],
+                 "usage":{"prompt_tokens":12,"completion_tokens":1024,"total_tokens":1036}}
+                """));
+        AiProviderExecutionModule executionModule = new AiProviderExecutionModule(
+                List.of(new OpenRouterService(config, httpClient, new ObjectMapper(), catalog)),
+                () -> new RuntimeSettings("en", "zh-TW", model, true,
+                        2, 1, null, "U-admin", RuntimeSettings.Source.PERSISTED));
+        CachedTranslationAdapter realChain = new CachedTranslationAdapter(executionModule, cacheStore, properties);
+        UserPreferences preferences = new UserPreferences("en", "en", "en", model, List.of());
+
+        AiExecutionOutcome first = realChain.translate(preferences, "hello", "zh-TW");
+        AiExecutionOutcome second = realChain.translate(preferences, "hello", "zh-TW");
+
+        assertThat(List.of(first, second)).allSatisfy(outcome -> assertThat(outcome)
+                .isInstanceOfSatisfying(AiExecutionOutcome.Failure.class, failure -> {
+                    assertThat(failure.failure().outcome())
+                            .isEqualTo(AiProviderException.Outcome.MALFORMED_RESPONSE);
+                    assertThat(failure.failure().reason()).isEqualTo("TRUNCATED_OUTPUT");
+                }));
+        verify(httpClient, times(2)).newCall(any(Request.class));
+        assertThat(cacheStore.estimatedSize()).isZero();
+        assertThat(cacheStore.stats().hitCount()).isZero();
+    }
+
+    @Test
     void nonFallbackRouteMismatchIsNeverCached() {
         AiExecutionOutcome unexpectedRoute = success("unexpected", "gemini", "gemini-a", false);
         when(providerModule.translateTextOutcome(
@@ -277,6 +330,16 @@ class TranslationCachingContractTests {
                 -1,
                 null);
         return new AiExecutionOutcome.Failure(AiExecutionFailure.from(error, List.of()));
+    }
+
+    private static Response openRouterResponse(String body) {
+        return new Response.Builder()
+                .request(new Request.Builder().url("https://openrouter.ai/api/v1/chat/completions").build())
+                .protocol(Protocol.HTTP_1_1)
+                .code(200)
+                .message("OK")
+                .body(ResponseBody.create(body, MediaType.get("application/json")))
+                .build();
     }
 
     private static final class MutableTicker implements Ticker {

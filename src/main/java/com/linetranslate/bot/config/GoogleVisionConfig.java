@@ -4,6 +4,8 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+import com.google.api.gax.core.CredentialsProvider;
+import com.google.api.gax.retrying.RetrySettings;
 import com.google.auth.oauth2.GoogleCredentials;
 import com.google.cloud.vision.v1.ImageAnnotatorClient;
 import com.google.cloud.vision.v1.ImageAnnotatorSettings;
@@ -17,6 +19,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.time.Duration;
 
 @Configuration
 @Getter
@@ -25,6 +28,9 @@ public class GoogleVisionConfig {
 
     @Value("${GOOGLE_APPLICATION_CREDENTIALS:./linebot.json}")
     private String credentialsPath;
+
+    @Value("${google.cloud.vision.timeout-ms:${GOOGLE_VISION_TIMEOUT_MS:60000}}")
+    private long timeoutMs = 60000;
 
     @Bean
     public ImageAnnotatorClient imageAnnotatorClient() {
@@ -39,7 +45,7 @@ public class GoogleVisionConfig {
                 Path path = Paths.get(envCredentialsPath);
                 if (Files.exists(path)) {
                     log.info("環境變數指定的認證文件存在");
-                    return ImageAnnotatorClient.create();
+                    return ImageAnnotatorClient.create(visionSettings(null));
                 } else {
                     log.error("環境變數指定的 Google Vision 認證文件不存在");
                 }
@@ -54,9 +60,7 @@ public class GoogleVisionConfig {
 
                 try (FileInputStream serviceAccountStream = new FileInputStream(credentialsFile.toFile())) {
                     GoogleCredentials credentials = GoogleCredentials.fromStream(serviceAccountStream);
-                    ImageAnnotatorSettings settings = ImageAnnotatorSettings.newBuilder()
-                            .setCredentialsProvider(() -> credentials)
-                            .build();
+                    ImageAnnotatorSettings settings = visionSettings(() -> credentials);
 
                     log.info("成功載入Google Vision認證文件");
                     return ImageAnnotatorClient.create(settings);
@@ -72,5 +76,34 @@ public class GoogleVisionConfig {
             log.error("無法創建 Google Vision 客戶端: failure={}", SafeLog.failure(e));
             return null;
         }
+    }
+
+    /**
+     * Bounds batchAnnotateImages, whose library default is ten minutes per attempt and in total,
+     * so a hung OCR call cannot outlive the webhook processing lease or pin a worker thread. The
+     * library's retry codes and delays are kept; a retry only gets the time left in the budget.
+     * A {@code null} provider keeps the library's default (environment) credentials.
+     */
+    ImageAnnotatorSettings visionSettings(CredentialsProvider credentialsProvider) throws IOException {
+        Duration timeout = Duration.ofMillis(positive(timeoutMs, "timeout"));
+        ImageAnnotatorSettings.Builder builder = ImageAnnotatorSettings.newBuilder();
+        if (credentialsProvider != null) {
+            builder.setCredentialsProvider(credentialsProvider);
+        }
+        RetrySettings retrySettings = builder.batchAnnotateImagesSettings().getRetrySettings().toBuilder()
+                .setInitialRpcTimeoutDuration(timeout)
+                .setMaxRpcTimeoutDuration(timeout)
+                .setTotalTimeoutDuration(timeout)
+                .build();
+        builder.batchAnnotateImagesSettings().setRetrySettings(retrySettings);
+        log.info("Google Vision 呼叫上限已設定: timeoutMs={}", timeout.toMillis());
+        return builder.build();
+    }
+
+    private long positive(long value, String propertyName) {
+        if (value <= 0) {
+            throw new IllegalArgumentException("Google Vision " + propertyName + " must be greater than zero");
+        }
+        return value;
     }
 }

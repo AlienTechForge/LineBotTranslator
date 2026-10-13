@@ -26,7 +26,7 @@ import com.linetranslate.bot.service.storage.MinioStorageService;
         properties = "openrouter.api.key=test-openrouter-key")
 @AutoConfigureTestRestTemplate
 @ActiveProfiles("test")
-class HealthEndpointTests {
+class HealthEndpointIntegrationTests {
 
     @Autowired
     private TestRestTemplate restTemplate;

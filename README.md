@@ -44,6 +44,7 @@ MONGODB_DATABASE=linebot_translator
 TRANSLATION_CACHE_TTL=PT30M
 TRANSLATION_CACHE_MAX_ENTRIES=1000
 TRANSLATION_GLOSSARY_VERSION=none
+TRANSLATION_ACTION_CLAIM_LEASE=PT5M
 
 # Webhook 非同步處理、去重與 LINE 回覆重試
 WEBHOOK_CORE_THREADS=2
@@ -62,6 +63,7 @@ OPEN_ROUTE_API_URL=https://openrouter.ai/api/v1
 # Google Cloud Vision API 配置 (OCR)
 # 指向 Google service account JSON；正式環境改由 GOOGLE_CREDENTIALS_JSON secret 傳入（見 deployment-guide.md）
 GOOGLE_APPLICATION_CREDENTIALS=./linebot.json
+GOOGLE_VISION_TIMEOUT_MS=60000
 
 # 應用程式配置
 OCR_ENABLED=true

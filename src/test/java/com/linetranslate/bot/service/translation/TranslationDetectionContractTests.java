@@ -39,6 +39,8 @@ import com.linetranslate.bot.service.preference.UserPreferences;
 import com.linetranslate.bot.service.preference.UserPreferencesModule;
 import com.linetranslate.bot.util.LanguageUtils;
 
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+
 @ExtendWith(MockitoExtension.class)
 class TranslationDetectionContractTests {
 
@@ -134,6 +136,8 @@ class TranslationDetectionContractTests {
 
         LanguageDetectionService realDetectionService = new LanguageDetectionService();
         ReflectionTestUtils.setField(realDetectionService, "aiLanguageDetectionService", aiDetector);
+        ReflectionTestUtils.setField(realDetectionService, "detectionCache", new LanguageDetectionCache(
+                new TranslationCacheProperties(), new SimpleMeterRegistry()));
         ReflectionTestUtils.setField(realDetectionService, "useAiDetection", true);
         TranslationService service = createService(realDetectionService);
 

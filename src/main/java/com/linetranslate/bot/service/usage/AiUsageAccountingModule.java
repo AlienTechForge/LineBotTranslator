@@ -151,10 +151,14 @@ public class AiUsageAccountingModule implements AiUsageEventSink {
                 : failure.attempts();
         List<AiUsageEvent> events = new ArrayList<>();
         for (int index = 0; index < attempts.size(); index++) {
+            AiProviderAttempt attempt = attempts.get(index);
+            // A failed final attempt can still be billed, e.g. a completion cut off by max_tokens.
+            boolean finalFailure = index == attempts.size() - 1
+                    && attempt.status() == AiProviderAttempt.Status.FAILURE;
             events.add(event(
                     operation,
-                    attempts.get(index),
-                    AiTokenUsage.UNKNOWN,
+                    attempt,
+                    finalFailure ? failure.tokenUsage() : AiTokenUsage.UNKNOWN,
                     attempts.size() > 1,
                     index + 1,
                     occurredAt));

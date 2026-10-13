@@ -358,7 +358,7 @@ public interface TranslationRecordRepository extends MongoRepository<Translation
 
 ### 異步處理
 
-`WebhookIngestionModule` 使用 bounded `Executor` 非同步處理已 claim 的 LINE event。Queue 滿時釋放 claim 並回 `503`，由 LINE redelivery；reply retry 不重複執行 business operation。
+`WebhookIngestionModule` 使用 bounded `Executor` 非同步處理已 claim 的 LINE event。Queue 滿時釋放 claim 並回 `503`，由 LINE redelivery；reply retry 不重複執行 business operation。Reply 只對 429、5xx、逾時與 I/O 失敗重試；LINE 以其他 4xx 拒絕（例如 reply token 過期或訊息無效）時不再重送，直接記為 poison 並計入 `line.webhook.reply{result="rejected"}`。
 
 ## 安全性考慮
 
