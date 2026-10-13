@@ -10,7 +10,6 @@ import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.lenient;
 
 import java.io.ByteArrayInputStream;
-import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -91,13 +90,14 @@ class ImageTranslationDetectionContractTests {
                 userPreferencesModule,
                 messagingApiBlobClient,
                 minioStorageService);
-        imageTranslationService = new ImageTranslationService(pipeline, userProfileRepository);
+        imageTranslationService = new ImageTranslationService(
+                pipeline, userProfileRepository, userPreferencesModule);
 
         userProfile = UserProfile.builder()
                 .userId("U-test")
                 .preferredModel("gpt-test")
                 .build();
-        when(userProfileRepository.findByUserId("U-test")).thenReturn(Optional.of(userProfile));
+        when(userPreferencesModule.profile("U-test")).thenReturn(userProfile);
         when(userProfileRepository.save(any(UserProfile.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
         lenient().when(translationRecordRepository.save(any(TranslationRecord.class)))
