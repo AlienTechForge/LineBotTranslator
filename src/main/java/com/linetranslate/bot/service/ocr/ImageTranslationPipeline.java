@@ -211,8 +211,7 @@ public class ImageTranslationPipeline {
                             decision.region().id(), decision.region().text(),
                             decision.region().languages().stream().findFirst()
                                     .map(OcrDetectedLanguage::code).orElse(sourceLanguage),
-                            decision.qualification() == OcrQualification.PRESERVE
-                                    ? List.of(decision.region().text()) : decision.protectedTokens(),
+                            protectedTokens(decision),
                             decision.qualification() == OcrQualification.TRANSLATE,
                             decision.region().readingOrder(),
                             layout(decision.region())))
@@ -267,6 +266,22 @@ public class ImageTranslationPipeline {
                         overlay.lowConfidenceBlockCount(),
                         overlay.disposition(),
                         overlay.degradation()));
+    }
+
+    /**
+     * A preserved region is sent with translatable=false and its tokens are never encoded or
+     * checked, so it carries none. A translatable region's tokens are bounded to the input
+     * contract so a dense receipt or menu cannot fail the whole image.
+     */
+    private static List<String> protectedTokens(OcrRegionDecision decision) {
+        if (decision.qualification() != OcrQualification.TRANSLATE) return List.of();
+        List<String> derived = decision.protectedTokens();
+        List<String> bounded = ImageRegionTranslationInput.boundedProtectedTokens(derived);
+        if (bounded.size() < derived.size()) {
+            log.info("Image region protected tokens bounded: region={}, derived={}, kept={}",
+                    decision.region().id(), derived.size(), bounded.size());
+        }
+        return bounded;
     }
 
     private static long elapsedMillis(long startedAt) {
