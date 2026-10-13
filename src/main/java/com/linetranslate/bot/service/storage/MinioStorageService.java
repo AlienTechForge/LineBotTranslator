@@ -2,11 +2,13 @@ package com.linetranslate.bot.service.storage;
 
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 import java.util.function.LongSupplier;
 
 import org.springframework.beans.factory.ObjectProvider;
@@ -17,6 +19,7 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import com.linetranslate.bot.logging.SafeLog;
+import com.linetranslate.bot.service.imageproxy.ImageProxyLinkService;
 
 import io.minio.BucketExistsArgs;
 import io.minio.GetPresignedObjectUrlArgs;
@@ -39,6 +42,11 @@ public class MinioStorageService {
     static final String ORIGINAL_IMAGE_PREFIX = "images/";
     /** Key prefix of rendered translations; shared with the admin object browser. */
     static final String TRANSLATED_IMAGE_PREFIX = "translated-images/";
+    /**
+     * Suffix of the LINE preview stored beside a translated image, sharing its retention folder so
+     * the cleanup job removes both together.
+     */
+    static final String TRANSLATED_PREVIEW_SUFFIX = "-preview.jpg";
     private static final int TRANSLATED_URL_EXPIRY_SECONDS = 3_600;
     private static final long TRANSLATED_RETENTION_SECONDS = 86_400;
 
@@ -47,6 +55,7 @@ public class MinioStorageService {
     private final String bucketName;
     private final long retryIntervalMs;
     private final LongSupplier currentTimeMs;
+    private final BooleanSupplier previewRenditionNeeded;
     private final AtomicReference<State> state;
     private final AtomicLong retryAfterMs = new AtomicLong(0);
     private final AtomicBoolean bucketReady = new AtomicBoolean(false);
@@ -57,14 +66,21 @@ public class MinioStorageService {
             @Qualifier("minioPublicClient") ObjectProvider<MinioClient> publicUrlSignerProvider,
             @Value("${minio.bucket-name}") String bucketName,
             @Value("${minio.enabled:${MINIO_ENABLED:true}}") boolean enabled,
-            @Value("${minio.retry-interval-ms:${MINIO_RETRY_INTERVAL_MS:30000}}") long retryIntervalMs) {
+            @Value("${minio.retry-interval-ms:${MINIO_RETRY_INTERVAL_MS:30000}}") long retryIntervalMs,
+            ObjectProvider<ImageProxyLinkService> imageProxyProvider) {
         this(
                 minioClientProvider.getIfAvailable(),
                 publicUrlSignerProvider.getIfAvailable(minioClientProvider::getIfAvailable),
                 bucketName,
                 enabled,
                 retryIntervalMs,
-                System::currentTimeMillis);
+                System::currentTimeMillis,
+                // The image proxy already serves a bounded preview; only without it does LINE need
+                // a separately stored one.
+                () -> {
+                    ImageProxyLinkService proxy = imageProxyProvider.getIfAvailable();
+                    return proxy == null || !proxy.isEnabled();
+                });
     }
 
     MinioStorageService(
@@ -83,6 +99,17 @@ public class MinioStorageService {
             boolean enabled,
             long retryIntervalMs,
             LongSupplier currentTimeMs) {
+        this(minioClient, publicUrlSigner, bucketName, enabled, retryIntervalMs, currentTimeMs, () -> true);
+    }
+
+    MinioStorageService(
+            MinioClient minioClient,
+            MinioClient publicUrlSigner,
+            String bucketName,
+            boolean enabled,
+            long retryIntervalMs,
+            LongSupplier currentTimeMs,
+            BooleanSupplier previewRenditionNeeded) {
         if (retryIntervalMs <= 0) {
             throw new IllegalArgumentException("MinIO retry interval must be greater than zero");
         }
@@ -91,6 +118,7 @@ public class MinioStorageService {
         this.bucketName = bucketName;
         this.retryIntervalMs = retryIntervalMs;
         this.currentTimeMs = currentTimeMs;
+        this.previewRenditionNeeded = previewRenditionNeeded;
         this.state = new AtomicReference<>(enabled && minioClient != null ? State.UNKNOWN : State.DISABLED);
 
         if (this.state.get() == State.DISABLED) {
@@ -144,6 +172,11 @@ public class MinioStorageService {
     /**
      * Stores a generated PNG or JPEG behind a one-hour signed URL and a 24-hour retention key.
      * Any other content type is refused, since the object is served to LINE as an image.
+     *
+     * <p>Unless the image proxy is serving previews, a 240 px JPEG rendition is stored beside it
+     * ({@code <name>-preview.jpg}, same retention folder) because LINE rejects a preview above
+     * 1 MB. The rendition is best effort: when it cannot be built or stored, the result simply has
+     * no preview URL and the caller reuses the original.
      */
     public ImageStorageResult uploadTranslatedImage(byte[] imageBytes, String contentType) {
         String extension = translatedImageExtension(contentType);
@@ -173,7 +206,8 @@ public class MinioStorageService {
                                 .build());
                 markAvailable();
                 log.info("MinIO translated image stored: object={}", objectName);
-                return ImageStorageResult.stored(url);
+                return ImageStorageResult.stored(
+                        url, storeTranslatedPreview(imageBytes, objectName).orElse(null));
             } catch (Exception failure) {
                 markUnavailable(failure);
                 return ImageStorageResult.storedWithoutUrl();
@@ -182,6 +216,66 @@ public class MinioStorageService {
             markUnavailable(failure);
             return ImageStorageResult.notStored();
         }
+    }
+
+    /**
+     * Stores the preview rendition of an already stored translated image. Never throws and never
+     * touches the circuit state: the original is safely stored, so a failure here only costs the
+     * separate preview. Logs byte sizes and pixel counts, never URLs.
+     */
+    private Optional<String> storeTranslatedPreview(byte[] imageBytes, String objectName) {
+        String previewName = previewObjectName(objectName);
+        try {
+            if (!previewRenditionNeeded.getAsBoolean()) {
+                return Optional.empty();
+            }
+            Optional<TranslatedImagePreview.Rendition> rendition = TranslatedImagePreview.create(imageBytes);
+            if (rendition.isEmpty()) {
+                log.info("MinIO translated image preview skipped: object={}, originalBytes={}",
+                        objectName, imageBytes.length);
+                return Optional.empty();
+            }
+            byte[] previewBytes = rendition.get().bytes();
+            try (InputStream inputStream = new ByteArrayInputStream(previewBytes)) {
+                minioClient.putObject(
+                        PutObjectArgs.builder()
+                                .bucket(bucketName)
+                                .object(previewName)
+                                .stream(inputStream, Long.valueOf(previewBytes.length), Long.valueOf(-1))
+                                .contentType(TranslatedImagePreview.CONTENT_TYPE)
+                                .build());
+            }
+            String url = publicUrlSigner.getPresignedObjectUrl(
+                    GetPresignedObjectUrlArgs.builder()
+                            .bucket(bucketName)
+                            .object(previewName)
+                            .method(Method.GET)
+                            .expiry(TRANSLATED_URL_EXPIRY_SECONDS, TimeUnit.SECONDS)
+                            .build());
+            log.info("MinIO translated image preview stored: object={}, previewBytes={}, width={}, height={}",
+                    previewName, previewBytes.length, rendition.get().width(), rendition.get().height());
+            return Optional.of(url);
+        } catch (Exception failure) {
+            log.warn("MinIO translated image preview unavailable: object={}, failure={}",
+                    previewName, safeFailure(failure));
+            return Optional.empty();
+        }
+    }
+
+    /** True for the preview rendition stored beside a translated image. */
+    static boolean isTranslatedPreview(String objectName) {
+        return objectName != null
+                && objectName.startsWith(TRANSLATED_IMAGE_PREFIX)
+                && objectName.endsWith(TRANSLATED_PREVIEW_SUFFIX);
+    }
+
+    /** Key of the preview rendition of a translated image: same folder and id, JPEG suffix. */
+    static String previewObjectName(String translatedObjectName) {
+        int extension = translatedObjectName.lastIndexOf('.');
+        String stem = extension > translatedObjectName.lastIndexOf('/')
+                ? translatedObjectName.substring(0, extension)
+                : translatedObjectName;
+        return stem + TRANSLATED_PREVIEW_SUFFIX;
     }
 
     /** Deletes generated-image objects after their retention timestamp encoded in the key. */

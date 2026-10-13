@@ -66,6 +66,67 @@ class ImageTranslationResultRenderingTests {
     }
 
     @Test
+    void storedPreviewRenditionIsCarriedSeparatelyFromTheOriginalUrl() {
+        ImageTranslationReply reply = replyFor(ImageStorageResult.stored(
+                "https://s3.example/result.png?signature=safe",
+                "https://s3.example/result-preview.jpg?signature=safe"));
+
+        assertThat(reply.renderedImageUrl()).contains("https://s3.example/result.png?signature=safe");
+        assertThat(reply.renderedPreviewUrl()).contains("https://s3.example/result-preview.jpg?signature=safe");
+        assertThat(reply.renderedPreviewUrl()).isNotEqualTo(reply.renderedImageUrl());
+        assertThat(reply.response().displayText()).doesNotContain("result-preview.jpg");
+    }
+
+    @Test
+    void insecurePreviewUrlIsDroppedButTheOriginalStillRenders() {
+        ImageTranslationReply reply = replyFor(ImageStorageResult.stored(
+                "https://s3.example/result.png?signature=safe",
+                "http://user:secret@internal/result-preview.jpg"));
+
+        assertThat(reply.renderedImageUrl()).contains("https://s3.example/result.png?signature=safe");
+        assertThat(reply.renderedPreviewUrl()).isEmpty();
+    }
+
+    @Test
+    void anImageWithoutAStoredPreviewKeepsAnEmptyPreviewUrl() {
+        ImageTranslationReply reply = replyFor(ImageStorageResult.stored("https://s3.example/result.png?signature=safe"));
+
+        assertThat(reply.renderedPreviewUrl()).isEmpty();
+    }
+
+    @Test
+    void aPreviewWithoutAnOriginalIsNeverReported() {
+        assertThat(ImageStorageResult.stored(null, "https://s3.example/result-preview.jpg").previewUrl()).isEmpty();
+        assertThat(ImageStorageResult.notStored().previewUrl()).isEmpty();
+        assertThat(new ImageStorageResult(false, java.util.Optional.of("https://s3.example/a"),
+                java.util.Optional.of("https://s3.example/b")).previewUrl()).isEmpty();
+        assertThat(new ImageTranslationReply(TranslationResponse.plain("x"), java.util.Optional.empty(),
+                java.util.Optional.of("https://s3.example/b")).renderedPreviewUrl()).isEmpty();
+    }
+
+    private static ImageTranslationReply replyFor(ImageStorageResult rendered) {
+        ImageTranslationPipeline pipeline = mock(ImageTranslationPipeline.class);
+        UserProfileRepository repository = mock(UserProfileRepository.class);
+        UserProfile profile = UserProfile.builder().userId("U-result").build();
+        UserPreferencesModule profiles = mock(UserPreferencesModule.class);
+        when(profiles.profile("U-result")).thenReturn(profile);
+        when(repository.save(any(UserProfile.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        ImageTranslationContext context = new ImageTranslationContext(
+                new DownloadedImage(new byte[] {1}, "image/png"),
+                ImageStorageResult.notStored(),
+                "hello",
+                null);
+        TranslationWorkflowResult translation = new TranslationWorkflowResult(
+                "hello", "en", "zh-TW",
+                new AiExecutionResult("你好", "openrouter", "model"),
+                20, TranslationRequestKind.IMAGE_OCR);
+        when(pipeline.execute(any())).thenReturn(new ImageTranslationOutcome.Success(
+                new ImageTranslationPipelineResult(context, translation, rendered, 0)));
+        return new ImageTranslationService(pipeline, repository, profiles)
+                .processImageTranslationReply("U-result", "message");
+    }
+
+    @Test
     void insecureOrMalformedArtifactUrlIsNotReturned() {
         ImageTranslationPipeline pipeline = mock(ImageTranslationPipeline.class);
         UserProfileRepository repository = mock(UserProfileRepository.class);

@@ -20,7 +20,11 @@ MinIO upload、1 小時 presigned URL 與 24 小時 object retention 已有獨�
 
 - MinIO 儲存流程維持不變。
 - Output layer 只接受內部 pipeline 產生、位於 `translated-images/` 的 HTTPS URL。
-- 無 proxy config 時，presigned URL 直接同時作為 LINE original 與 preview URL；不再輸出長網址文字。
+- 無 proxy config 時，presigned URL 直接作為 LINE original URL，不再輸出長網址文字；preview 另存一份
+  最長邊 240 px 的 JPEG（`<id>-preview.jpg`，與原圖同一個 `translated-images/<expiresAt>/` 保留資料夾，
+  presigned 1 小時），因為 LINE 要求 `previewImageUrl` 不得超過 1 MB，而 original 可大到
+  `IMAGE_TRANSLATION_MAX_OUTPUT_BYTES`。縮圖失敗時才退回 original 同時作為 preview。
+  已配置 proxy 時由 proxy 自己產生有界 preview，不另存縮圖。
 - 以 128-bit opaque token 建立短期 `/i/{token}` capability；server-side fetch 禁止 redirect，
   限制 content type、bytes、dimensions 與 pixels。這是需要獨立 preview 時的選配。
 - 木雷 Adapter 在 proxy 未配置時可縮短 MinIO presigned URL；僅接受有完整
@@ -36,8 +40,8 @@ MinIO upload、1 小時 presigned URL 與 24 小時 object retention 已有獨�
 
 - 使用者收到圖片，而非帶有 S3 query 的文字連結。
 - 木雷資料庫會保存 presigned URL；短網址有效期不能超過 S3 簽名的 1 小時。
-- 無 proxy 時 original 與 preview 使用同一 URL；超過 LINE preview 限制的圖片可能無法顯示
-  preview，此時應配置 proxy 產生縮圖。
+- 無 proxy 時每張翻譯圖多存一個小型 preview 物件；admin 圖庫不單獨列出它，刪除原圖時一併刪除。
+  preview URL 不經木雷縮短。
 - Proxy token registry 為 process-local bounded cache；應用重啟會使尚未過期但尚未由 LINE
   抓取的 proxy URL 失效。LINE 正常會在 reply 後立即抓取；若未來要求跨重啟的可重播連結，
   應另建 Mongo TTL capability store。

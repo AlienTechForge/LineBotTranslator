@@ -186,7 +186,11 @@ public class LineMessageRenderer {
             if (shorten && dwzShortLinkService != null) {
                 selected = dwzShortLinkService.shortenSignedImage(selected).orElse(selected);
             }
-            return new ImageMessage(selected, selected);
+            // Without the proxy nothing resizes the original, and LINE rejects a preview above
+            // 1 MB. The storage service saved a 240 px rendition for that case; it stays a signed
+            // URL because LINE's servers are the only ones that fetch it.
+            URI preview = reply.renderedPreviewUrl().flatMap(LineMessageRenderer::safeHttpsUri).orElse(selected);
+            return new ImageMessage(selected, preview);
         }
         return interactiveTranslation(reply.response());
     }
