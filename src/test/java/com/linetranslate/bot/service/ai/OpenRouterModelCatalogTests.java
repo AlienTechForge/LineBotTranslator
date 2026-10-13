@@ -23,9 +23,11 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -400,6 +402,76 @@ class OpenRouterModelCatalogTests {
         assertThat(fetches).hasValue(0);
     }
 
+    @Test
+    void warmUpTheExecutorRefusesReturnsWithoutFetchingAndLeavesTheSlotFree() throws Exception {
+        AtomicInteger fetches = new AtomicInteger();
+        OkHttpClient client = client(fetches, fetch -> response(catalogJson("vendor/model-a")));
+        // Shutdown can begin right after warmUp() has started: the executor refuses the task itself.
+        RejectingExecutor refreshExecutor = new RejectingExecutor(new CountDownLatch(0));
+        OpenRouterModelCatalog catalog = new OpenRouterModelCatalog(
+                config(), client, new ObjectMapper(),
+                new MutableClock(Instant.parse("2026-08-11T00:00:00Z")), refreshExecutor);
+        try {
+            within(() -> {
+                catalog.warmUp();
+                return null;
+            });
+
+            assertThat(refreshExecutor.rejected()).isEqualTo(1);
+            assertThat(fetches).hasValue(0);
+
+            // The refused warm-up gave the slot up, so this lookup starts a refresh of its own
+            // instead of joining the abandoned flight and being answered without a fetch.
+            assertThat(within(() -> catalog.find("vendor/model-a"))).isPresent();
+            assertThat(fetches).hasValue(1);
+        } finally {
+            catalog.shutdown();
+        }
+    }
+
+    @Test
+    void aLookupThatJoinedAWarmUpTheExecutorRefusesStillGetsAnAnswer() throws Exception {
+        AtomicInteger fetches = new AtomicInteger();
+        OkHttpClient client = client(fetches, fetch -> response(catalogJson("vendor/model-a")));
+        CountDownLatch refuse = new CountDownLatch(1);
+        RejectingExecutor refreshExecutor = new RejectingExecutor(refuse);
+        ExecutorService callers = Executors.newFixedThreadPool(2);
+        OpenRouterModelCatalog catalog = new OpenRouterModelCatalog(
+                config(), client, new ObjectMapper(),
+                new MutableClock(Instant.parse("2026-08-11T00:00:00Z")), refreshExecutor);
+        try {
+            Future<?> warmUp = callers.submit(catalog::warmUp);
+            assertThat(refreshExecutor.refusalPending.await(SAFETY_TIMEOUT_SECONDS, TimeUnit.SECONDS)).isTrue();
+            AtomicReference<Thread> lookupThread = new AtomicReference<>();
+            Future<AiModelPage> lookup = callers.submit(() -> {
+                lookupThread.set(Thread.currentThread());
+                return catalog.list("", 20);
+            });
+            // The lookup parks on the warm-up's flight, which is claimed but not yet refused.
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(SAFETY_TIMEOUT_SECONDS);
+            while ((lookupThread.get() == null || lookupThread.get().getState() != Thread.State.WAITING)
+                    && System.nanoTime() < deadline) {
+                TimeUnit.MILLISECONDS.sleep(1);
+            }
+            assertThat(lookupThread.get().getState()).isEqualTo(Thread.State.WAITING);
+
+            refuse.countDown();
+            warmUp.get(SAFETY_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            AiModelPage page = lookup.get(SAFETY_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+
+            // Answered from what is known without a fetch; the joiner neither fails nor fetches inline.
+            assertThat(page.stale()).isTrue();
+            assertThat(page.models()).extracting(AiModelDescriptor::id).containsExactly("vendor/default-model");
+            assertThat(fetches).hasValue(0);
+            assertThat(catalog.find("vendor/model-a")).isPresent();
+            assertThat(fetches).hasValue(1);
+        } finally {
+            refuse.countDown();
+            callers.shutdownNow();
+            catalog.shutdown();
+        }
+    }
+
     private static OpenRouterConfig config() {
         OpenRouterConfig config = mock(OpenRouterConfig.class);
         when(config.getApiKey()).thenReturn("test-key");
@@ -468,6 +540,41 @@ class OpenRouterModelCatalogTests {
 
         int submitted() {
             return submitted.get();
+        }
+    }
+
+    /**
+     * Refuses its first task like an executor that was shut down just before the catalog submitted it,
+     * once {@code refuse} is released, then accepts the rest.
+     */
+    private static final class RejectingExecutor extends ThreadPoolExecutor {
+
+        final CountDownLatch refusalPending = new CountDownLatch(1);
+        private final CountDownLatch refuse;
+        private final AtomicInteger rejected = new AtomicInteger();
+
+        RejectingExecutor(CountDownLatch refuse) {
+            super(1, 1, 0L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<>());
+            this.refuse = refuse;
+        }
+
+        @Override
+        public void execute(Runnable task) {
+            if (rejected.get() == 0) {
+                refusalPending.countDown();
+                try {
+                    refuse.await(SAFETY_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+                rejected.incrementAndGet();
+                throw new RejectedExecutionException("test executor refuses the first task");
+            }
+            super.execute(task);
+        }
+
+        int rejected() {
+            return rejected.get();
         }
     }
 

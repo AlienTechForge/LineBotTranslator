@@ -99,15 +99,12 @@ public class OpenRouterModelCatalog implements AiModelCatalog {
      * through the same single-flight path as a lookup: a refresh that is already running is
      * joined, and a snapshot that is still fresh is left alone, so repeated calls never start
      * a second fetch. A failed fetch is handled and logged by that path and leaves the
-     * fallback snapshot, exactly as a failed first lookup would.
+     * fallback snapshot, exactly as a failed first lookup would. Unlike a lookup, a warm-up
+     * the executor refuses (it is shut down) never runs the fetch on the calling thread.
      */
     @Override
     public void warmUp() {
-        if (refreshExecutor.isShutdown()) {
-            // A rejected task would run the fetch on the calling thread; warm-up must not block.
-            return;
-        }
-        refresh();
+        refresh(false);
     }
 
     @Override
@@ -147,6 +144,15 @@ public class OpenRouterModelCatalog implements AiModelCatalog {
 
     /** Single-flight: joins the running refresh or starts exactly one. */
     private CompletableFuture<Snapshot> refresh() {
+        return refresh(true);
+    }
+
+    /**
+     * @param runInlineWhenRejected a lookup needs an answer, so when the executor refuses the task
+     *        (it is shut down) the fetch runs on the calling thread; a warm-up must never block its
+     *        caller and gives the slot up instead
+     */
+    private CompletableFuture<Snapshot> refresh(boolean runInlineWhenRejected) {
         while (true) {
             CompletableFuture<Snapshot> running = inFlight.get();
             if (running != null) {
@@ -166,10 +172,25 @@ public class OpenRouterModelCatalog implements AiModelCatalog {
             try {
                 refreshExecutor.execute(() -> runRefresh(flight));
             } catch (RejectedExecutionException shutDown) {
-                runRefresh(flight);
+                if (runInlineWhenRejected) {
+                    runRefresh(flight);
+                } else {
+                    abandon(flight, shutDown);
+                }
             }
             return flight;
         }
+    }
+
+    /** Gives up a claimed refresh that never started, without fetching. */
+    private void abandon(CompletableFuture<Snapshot> flight, RejectedExecutionException shutDown) {
+        log.info("OpenRouter model catalog warm-up skipped, the refresh executor is shut down: failure={}",
+                SafeLog.failure(shutDown));
+        // Same order as runRefresh: free the slot first, then wake whoever joined the flight with
+        // what is known now. Nothing is stored, so the next lookup starts a refresh of its own.
+        inFlight.compareAndSet(flight, null);
+        Snapshot current = snapshot;
+        flight.complete(current != null ? current : fallback(clock.instant()));
     }
 
     private void runRefresh(CompletableFuture<Snapshot> flight) {
