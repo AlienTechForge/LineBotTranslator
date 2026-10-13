@@ -34,20 +34,24 @@ public class TranslationService {
     // 所有指令模式都以 DOTALL 編譯，讓擷取的原文可跨越換行，多行輸入不會只剩指令所在的那一行。
     // 文本在前的模式另以 ^ 錨定，指令前的全部文字（而非僅最後一行）都是原文。
 
+    // 中文語言名稱的模式只擷取「翻譯成」後連續的中文字。語言名稱與原文之間可以沒有空白
+    // （翻譯成英文我愛你），所以這段中文由 chineseTarget 依已知語言名稱切成語言與原文，
+    // 中文字之後的內容則由呼叫端自該 group 的結尾取回。
+
     // 翻譯指令的正則表達式模式（中文語言名稱）
-    private static final Pattern TRANSLATION_COMMAND_PATTERN_CN = Pattern.compile("翻譯成([\\u4e00-\\u9fa5]+)\\s*(.*)", Pattern.DOTALL);
+    private static final Pattern TRANSLATION_COMMAND_PATTERN_CN = Pattern.compile("翻譯成([\\u4e00-\\u9fa5]+)", Pattern.DOTALL);
 
     // 翻譯指令的正則表達式模式（語言代碼）
     private static final Pattern TRANSLATION_COMMAND_PATTERN_CODE = Pattern.compile("翻譯成([a-zA-Z\\-]+)\\s*(.*)", Pattern.DOTALL);
     
     // 處理「文本 翻譯成XX文」格式的模式（中文語言名稱）
-    private static final Pattern TEXT_THEN_TRANSLATION_PATTERN_CN = Pattern.compile("^(.+?)\\s+翻譯成([\\u4e00-\\u9fa5]+)\\s*(.*)", Pattern.DOTALL);
+    private static final Pattern TEXT_THEN_TRANSLATION_PATTERN_CN = Pattern.compile("^(.+?)\\s+翻譯成([\\u4e00-\\u9fa5]+)", Pattern.DOTALL);
     
     // 處理「文本 翻譯成XX」格式的模式（語言代碼）
     private static final Pattern TEXT_THEN_TRANSLATION_PATTERN_CODE = Pattern.compile("^(.+?)\\s+翻譯成([a-zA-Z\\-]+)\\s*(.*)", Pattern.DOTALL);
 
     // 多行翻譯指令的正則表達式模式（處理 "xxx\n翻譯成yyy" 的情況）
-    private static final Pattern MULTILINE_TRANSLATION_PATTERN_CN = Pattern.compile("^(.*?)\\n翻譯成([\\u4e00-\\u9fa5]+)\\s*(.*)", Pattern.DOTALL);
+    private static final Pattern MULTILINE_TRANSLATION_PATTERN_CN = Pattern.compile("^(.*?)\\n翻譯成([\\u4e00-\\u9fa5]+)", Pattern.DOTALL);
     private static final Pattern MULTILINE_TRANSLATION_PATTERN_CODE = Pattern.compile("^(.*?)\\n翻譯成([a-zA-Z\\-]+)\\s*(.*)", Pattern.DOTALL);
 
     @Autowired
@@ -87,12 +91,14 @@ public class TranslationService {
         // 處理多行翻譯格式
         if (multilineMatcherCN.find()) {
             sourceText = multilineMatcherCN.group(1).trim();
-            String languageName = multilineMatcherCN.group(2);
-            targetLanguage = supportedTargetLanguage(languageName);
-            if (targetLanguage == null) {
+            ChineseTarget target = chineseTarget(multilineMatcherCN.group(2));
+            if (target == null) {
                 return handleDefaultTranslation(userId, text, userProfile, start);
             }
-            String additionalText = multilineMatcherCN.group(3).trim();
+            String languageName = target.languageName();
+            targetLanguage = target.languageCode();
+            String additionalText =
+                    (target.trailingText() + text.substring(multilineMatcherCN.end(2))).trim();
 
             // 如果有額外文本，添加到源文本
             if (!additionalText.isEmpty()) {
@@ -135,12 +141,14 @@ public class TranslationService {
             if (textThenTranslationMatcherCN.find()) {
                 // 使用用戶指定的中文語言名稱
                 sourceText = textThenTranslationMatcherCN.group(1).trim();
-                String languageName = textThenTranslationMatcherCN.group(2);
-                targetLanguage = supportedTargetLanguage(languageName);
-                if (targetLanguage == null) {
+                ChineseTarget target = chineseTarget(textThenTranslationMatcherCN.group(2));
+                if (target == null) {
                     return handleDefaultTranslation(userId, text, userProfile, start);
                 }
-                String additionalText = textThenTranslationMatcherCN.group(3).trim();
+                String languageName = target.languageName();
+                targetLanguage = target.languageCode();
+                String additionalText =
+                        (target.trailingText() + text.substring(textThenTranslationMatcherCN.end(2))).trim();
                 
                 // 如果有額外文本，添加到源文本
                 if (!additionalText.isEmpty()) {
@@ -174,12 +182,13 @@ public class TranslationService {
 
                 if (matcherCN.find()) {
                     // 使用用戶指定的中文語言名稱
-                    String languageName = matcherCN.group(1);
-                    targetLanguage = supportedTargetLanguage(languageName);
-                    if (targetLanguage == null) {
+                    ChineseTarget target = chineseTarget(matcherCN.group(1));
+                    if (target == null) {
                         return handleDefaultTranslation(userId, text, userProfile, start);
                     }
-                    sourceText = matcherCN.group(2).trim();
+                    String languageName = target.languageName();
+                    targetLanguage = target.languageCode();
+                    sourceText = (target.trailingText() + text.substring(matcherCN.end(1))).trim();
 
                     if (sourceText.isEmpty()) {
                         return TranslationResponse.plain(
@@ -236,6 +245,30 @@ public class TranslationService {
         return LanguageUtils.isSupported(languageNameOrCode)
                 ? LanguageUtils.toLanguageCode(languageNameOrCode)
                 : null;
+    }
+
+    /**
+     * 「翻譯成」後連續中文字的切分結果：已知的語言名稱、對應的語言代碼，
+     * 以及緊接在語言名稱後、屬於原文的中文字（可為空字串）。
+     */
+    private record ChineseTarget(String languageName, String languageCode, String trailingText) {
+    }
+
+    /**
+     * 把「翻譯成」後連續的中文字切成語言名稱與原文，讓「翻譯成英文我愛你」的語言是「英文」、
+     * 原文是「我愛你」，而不是把整段中文當成語言名稱。以最長的已知語言名稱開頭；
+     * 開頭不是已知語言（或不是支援的目標語言）時回傳 null，整段訊息視為一般文字翻譯。
+     */
+    private static ChineseTarget chineseTarget(String chineseRun) {
+        String languageName = LanguageUtils.leadingChineseName(chineseRun);
+        if (languageName == null) {
+            return null;
+        }
+        String languageCode = supportedTargetLanguage(languageName);
+        if (languageCode == null) {
+            return null;
+        }
+        return new ChineseTarget(languageName, languageCode, chineseRun.substring(languageName.length()));
     }
 
     /**
