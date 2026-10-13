@@ -435,38 +435,6 @@ public class TranslationService {
                 preset.id());
     }
 
-    /**
-     * 處理多行文本翻譯
-     *
-     * @param userId 用戶 ID
-     * @param text 多行文本
-     * @return 翻譯結果
-     */
-    public String processBatchTranslation(String userId, String text) {
-        if (text == null || text.trim().isEmpty()) {
-            return "請提供要翻譯的文本。";
-        }
-
-        // 檢查文本是否包含多行
-        String[] lines = text.split("\n");
-        if (lines.length <= 1) {
-            // 如果只有一行，直接使用標準翻譯處理
-            return processTranslationRequest(userId, text);
-        }
-
-        Instant start = Instant.now();
-        UserProfile userProfile = ensureUserProfileExists(userId);
-
-        return performTranslation(
-                userId,
-                userProfile,
-                text,
-                null,
-                TranslationRequestKind.BATCH_TEXT,
-                start,
-                false).displayText();
-    }
-
     private void logTranslationFailure(String userId, AiExecutionFailure failure) {
         log.warn(
                 "AI 翻譯未完成: user={}, provider={}, model={}, outcome={}, reason={}, correlation={}",

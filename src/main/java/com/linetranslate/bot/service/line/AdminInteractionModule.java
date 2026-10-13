@@ -38,11 +38,6 @@ public class AdminInteractionModule {
         this.pushFallback = pushFallback;
     }
 
-    /** Compatibility seam for focused tests that do not exercise the push quota command. */
-    public AdminInteractionModule(AdminService adminService, AdminCardRenderer renderer) {
-        this(adminService, renderer, null);
-    }
-
     public Message execute(String userId, AdminIntent intent) {
         if (!adminService.isAdmin(userId)) {
             return renderer.accessDenied();

@@ -237,7 +237,8 @@ class TranslationCachingContractTests {
         AiProviderExecutionModule executionModule = new AiProviderExecutionModule(
                 List.of(new OpenRouterService(config, httpClient, new ObjectMapper(), catalog)),
                 () -> new RuntimeSettings("en", "zh-TW", model, true,
-                        2, 1, null, "U-admin", RuntimeSettings.Source.PERSISTED));
+                        2, 1, null, "U-admin", RuntimeSettings.Source.PERSISTED),
+                (operation, outcome) -> { });
         CachedTranslationAdapter realChain = new CachedTranslationAdapter(executionModule, cacheStore, properties);
         UserPreferences preferences = new UserPreferences("en", "en", "en", model, List.of());
 

@@ -34,11 +34,6 @@ public class AiLanguageDetectionService {
         this.promptFactory = promptFactory;
     }
 
-    /** Compatibility constructor for focused tests. */
-    public AiLanguageDetectionService(AiProviderExecutionModule aiProviderExecutionModule) {
-        this(aiProviderExecutionModule, new TranslationPromptFactory());
-    }
-
     /**
      * 使用 AI 模型檢測文本的語言
      * 

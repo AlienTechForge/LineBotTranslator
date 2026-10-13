@@ -13,16 +13,11 @@ class LineControllerArchitectureContractTests {
     @Test
     void controllersAreThinLineAdaptersWithoutParsingOrMessageAssembly() throws IOException {
         String lineController = source("LineBotController.java");
-        String adminController = source("AdminController.java");
 
         assertThat(lineController)
                 .doesNotContain("switch (")
                 .doesNotContain("startsWith(\"/\")")
                 .doesNotContain("new TextMessage")
-                .doesNotContain("StringBuilder");
-        assertThat(adminController)
-                .doesNotContain("switch (")
-                .doesNotContain("split(\"\\\\s+\"")
                 .doesNotContain("StringBuilder");
     }
 

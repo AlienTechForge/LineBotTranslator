@@ -45,13 +45,6 @@ public class AiProviderExecutionModule {
         }
     }
 
-    /** Compatibility constructor for focused unit tests. */
-    public AiProviderExecutionModule(
-            List<AiProviderAdapter> adapters,
-            RuntimeSettingsSource runtimeSettingsSource) {
-        this(adapters, runtimeSettingsSource, noOpUsageSink());
-    }
-
     public AiExecutionOutcome translateTextOutcome(
             UserPreferences preferences,
             String text,
@@ -246,10 +239,5 @@ public class AiProviderExecutionModule {
 
     private static long elapsedMillis(long startedAt) {
         return Math.max(0, (System.nanoTime() - startedAt) / 1_000_000);
-    }
-
-    private static AiUsageEventSink noOpUsageSink() {
-        return (operation, outcome) -> {
-        };
     }
 }

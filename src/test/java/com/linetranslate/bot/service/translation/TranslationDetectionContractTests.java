@@ -108,26 +108,6 @@ class TranslationDetectionContractTests {
     }
 
     @Test
-    void batchTranslationDetectsWholeBatchExactlyOnceAndPersistsIt() {
-        String batch = "hello\nworld";
-        when(languageDetectionService.detectLanguage(batch)).thenReturn("en");
-
-        translationService.processBatchTranslation(USER_ID, batch);
-
-        verify(languageDetectionService, times(1)).detectLanguage(batch);
-        assertThat(savedRecord().getSourceLanguage()).isEqualTo("en");
-    }
-
-    @Test
-    void singleLineBatchDelegatesWithoutAddingAnotherDetection() {
-        when(languageDetectionService.detectLanguage("hello")).thenReturn("en");
-
-        translationService.processBatchTranslation(USER_ID, "hello");
-
-        verify(languageDetectionService, times(1)).detectLanguage("hello");
-    }
-
-    @Test
     void aiDetectionProviderIsCalledOnceForOrdinaryRequest() {
         AiLanguageDetectionService aiDetector = org.mockito.Mockito.mock(AiLanguageDetectionService.class);
         when(aiDetector.detectLanguage("hello")).thenReturn("en");
