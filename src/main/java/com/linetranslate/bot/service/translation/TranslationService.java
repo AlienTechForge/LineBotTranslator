@@ -85,7 +85,10 @@ public class TranslationService {
         if (multilineMatcherCN.find()) {
             sourceText = multilineMatcherCN.group(1).trim();
             String languageName = multilineMatcherCN.group(2);
-            targetLanguage = LanguageUtils.toLanguageCode(languageName);
+            targetLanguage = supportedTargetLanguage(languageName);
+            if (targetLanguage == null) {
+                return handleDefaultTranslation(userId, text, userProfile, start);
+            }
             String additionalText = multilineMatcherCN.group(3).trim();
 
             // 如果有額外文本，添加到源文本
@@ -103,7 +106,10 @@ public class TranslationService {
         else if (multilineMatcherCode.find()) {
             sourceText = multilineMatcherCode.group(1).trim();
             String languageCode = multilineMatcherCode.group(2);
-            targetLanguage = languageCode.toLowerCase();
+            targetLanguage = supportedTargetLanguage(languageCode);
+            if (targetLanguage == null) {
+                return handleDefaultTranslation(userId, text, userProfile, start);
+            }
             String additionalText = multilineMatcherCode.group(3).trim();
 
             // 如果有額外文本，添加到源文本
@@ -127,7 +133,10 @@ public class TranslationService {
                 // 使用用戶指定的中文語言名稱
                 sourceText = textThenTranslationMatcherCN.group(1).trim();
                 String languageName = textThenTranslationMatcherCN.group(2);
-                targetLanguage = LanguageUtils.toLanguageCode(languageName);
+                targetLanguage = supportedTargetLanguage(languageName);
+                if (targetLanguage == null) {
+                    return handleDefaultTranslation(userId, text, userProfile, start);
+                }
                 String additionalText = textThenTranslationMatcherCN.group(3).trim();
                 
                 // 如果有額外文本，添加到源文本
@@ -141,7 +150,10 @@ public class TranslationService {
                 // 使用用戶指定的語言代碼
                 sourceText = textThenTranslationMatcherCode.group(1).trim();
                 String languageCode = textThenTranslationMatcherCode.group(2);
-                targetLanguage = languageCode.toLowerCase();
+                targetLanguage = supportedTargetLanguage(languageCode);
+                if (targetLanguage == null) {
+                    return handleDefaultTranslation(userId, text, userProfile, start);
+                }
                 String additionalText = textThenTranslationMatcherCode.group(3).trim();
                 
                 // 如果有額外文本，添加到源文本
@@ -160,7 +172,10 @@ public class TranslationService {
                 if (matcherCN.find()) {
                     // 使用用戶指定的中文語言名稱
                     String languageName = matcherCN.group(1);
-                    targetLanguage = LanguageUtils.toLanguageCode(languageName);
+                    targetLanguage = supportedTargetLanguage(languageName);
+                    if (targetLanguage == null) {
+                        return handleDefaultTranslation(userId, text, userProfile, start);
+                    }
                     sourceText = matcherCN.group(2).trim();
 
                     if (sourceText.isEmpty()) {
@@ -173,7 +188,10 @@ public class TranslationService {
                 } else if (matcherCode.find()) {
                     // 使用用戶指定的語言代碼
                     String languageCode = matcherCode.group(1);
-                    targetLanguage = languageCode.toLowerCase();
+                    targetLanguage = supportedTargetLanguage(languageCode);
+                    if (targetLanguage == null) {
+                        return handleDefaultTranslation(userId, text, userProfile, start);
+                    }
                     sourceText = matcherCode.group(2).trim();
 
                     if (sourceText.isEmpty()) {
@@ -204,6 +222,17 @@ public class TranslationService {
                 TranslationRequestKind.STANDARD_TEXT,
                 start,
                 true);
+    }
+
+    /**
+     * 將「翻譯成」後擷取的語言名稱或代碼轉為標準語言代碼；不支援時回傳 null。
+     * 擷取到的文字會成為 prompt 中的目標語言，因此只接受支援的語言，
+     * 其餘情況整段訊息視為一般文字翻譯，不當作指令。
+     */
+    private static String supportedTargetLanguage(String languageNameOrCode) {
+        return LanguageUtils.isSupported(languageNameOrCode)
+                ? LanguageUtils.toLanguageCode(languageNameOrCode)
+                : null;
     }
 
     /**
