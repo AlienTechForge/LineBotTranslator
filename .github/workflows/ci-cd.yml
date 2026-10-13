@@ -52,11 +52,13 @@ jobs:
 
       - name: Start MinIO integration dependency
         run: |
+          # MinIO withdrew its public images from Docker Hub and Quay in September 2026.
+          # bitnamilegacy ships the same upstream server binary and stays anonymously pullable.
           docker run -d --rm --name linebot-ci-minio \
             -p 127.0.0.1:9000:9000 \
             -e MINIO_ROOT_USER="$MINIO_ACCESS_KEY" \
             -e MINIO_ROOT_PASSWORD="$MINIO_SECRET_KEY" \
-            minio/minio:RELEASE.2025-09-07T16-13-09Z server /data
+            bitnamilegacy/minio:2025.7.23-debian-12-r5
           for _ in $(seq 1 30); do
             if curl --fail --silent http://127.0.0.1:9000/minio/health/ready >/dev/null; then
               exit 0
