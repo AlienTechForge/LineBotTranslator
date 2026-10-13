@@ -158,7 +158,136 @@ class RuntimeSettingsModuleIntegrationTests {
         assertThat(settings.shortUrlEnabled()).isEqualTo(appConfig.isShortUrlEnabled());
         assertThat(settings.imageTextReplyEnabled()).isEqualTo(appConfig.isImageTextReplyEnabled());
         assertThat(settings.imageTextReplyEnabled()).isTrue();
+        assertThat(settings.adminUserIds()).isEmpty();
         assertThat(settings.source()).isEqualTo(RuntimeSettings.Source.DEPLOYMENT_DEFAULTS);
         assertThat(mongoTemplate.collectionExists(COLLECTION)).isFalse();
+    }
+
+    @Test
+    void adminUserIdsPersistWithAuditAndReloadAcrossModuleRestart() {
+        RuntimeSettings first = module.updateAdminUserIds(
+                List.of("U-admin-a", "U-admin-b", "U-admin-a"), OPERATOR);
+
+        assertThat(first.adminUserIds()).containsExactly("U-admin-a", "U-admin-b");
+        assertThat(first.source()).isEqualTo(RuntimeSettings.Source.PERSISTED);
+        assertThat(first.updatedBy()).isEqualTo(OPERATOR);
+
+        module.updateAdminUserIds(List.of("U-admin-b"), "U-admin-b");
+
+        RuntimeSettings reloaded = restartedModule().current();
+        assertThat(reloaded.adminUserIds()).containsExactly("U-admin-b");
+        assertThat(reloaded.revision()).isEqualTo(2);
+        assertThat(reloaded.updatedBy()).isEqualTo("U-admin-b");
+        assertThat(reloaded.source()).isEqualTo(RuntimeSettings.Source.PERSISTED);
+
+        Document stored = mongoTemplate.getCollection(COLLECTION).find().first();
+        assertThat(stored).isNotNull();
+        assertThat(stored.getInteger("schemaVersion")).isEqualTo(4);
+        assertThat(stored.getList("adminUserIds", String.class)).containsExactly("U-admin-b");
+        List<Document> changes = stored.getList("changes", Document.class);
+        assertThat(changes).hasSize(2);
+        assertThat(changes.get(0).getString("key")).isEqualTo("ADMIN_USER_IDS");
+        assertThat(changes.get(0).getList("previousValue", String.class)).isEmpty();
+        assertThat(changes.get(0).getList("newValue", String.class))
+                .containsExactly("U-admin-a", "U-admin-b");
+        assertThat(changes.get(0).getString("updatedBy")).isEqualTo(OPERATOR);
+        assertThat(changes.get(1).getList("previousValue", String.class))
+                .containsExactly("U-admin-a", "U-admin-b");
+        assertThat(changes.get(1).getList("newValue", String.class))
+                .containsExactly("U-admin-b");
+        assertThat(changes.get(1).getString("updatedBy")).isEqualTo("U-admin-b");
+    }
+
+    @Test
+    void adminUserIdsUpdateKeepsOtherSettingsAndUpgradesAnEarlierSchema() {
+        mongoTemplate.getCollection(COLLECTION).insertOne(new Document("_id", RuntimeSettingsModule.DOCUMENT_ID)
+                .append("schemaVersion", 3)
+                .append("ocrEnabled", false)
+                .append("shortUrlEnabled", true)
+                .append("revision", 4L)
+                .append("changes", List.of()));
+
+        RuntimeSettings legacy = module.current();
+        assertThat(legacy.adminUserIds()).isEmpty();
+        assertThat(legacy.ocrEnabled()).isFalse();
+
+        RuntimeSettings updated = module.updateAdminUserIds(List.of("U-admin-a"), OPERATOR);
+
+        assertThat(updated.adminUserIds()).containsExactly("U-admin-a");
+        assertThat(updated.ocrEnabled()).isFalse();
+        assertThat(updated.shortUrlEnabled()).isTrue();
+        assertThat(updated.revision()).isEqualTo(5);
+        Document stored = mongoTemplate.getCollection(COLLECTION).find().first();
+        assertThat(stored).isNotNull();
+        assertThat(stored.getInteger("schemaVersion")).isEqualTo(4);
+    }
+
+    @Test
+    void currentSchemaDocumentWithoutAdminUserIdsHasNoPersistedAdministrators() {
+        mongoTemplate.getCollection(COLLECTION).insertOne(new Document("_id", RuntimeSettingsModule.DOCUMENT_ID)
+                .append("schemaVersion", 4)
+                .append("ocrEnabled", false)
+                .append("revision", 1L)
+                .append("changes", List.of()));
+
+        RuntimeSettings settings = module.current();
+
+        assertThat(settings.adminUserIds()).isEmpty();
+        assertThat(settings.ocrEnabled()).isFalse();
+        assertThat(settings.imageTextReplyEnabled()).isEqualTo(appConfig.isImageTextReplyEnabled());
+        assertThat(settings.source()).isEqualTo(RuntimeSettings.Source.PERSISTED);
+    }
+
+    @Test
+    void administratorListAndImageTextSwitchCoexistInTheCurrentSchema() {
+        module.update(RuntimeSettingKey.IMAGE_TEXT_REPLY_ENABLED, "off", OPERATOR);
+        module.updateAdminUserIds(List.of("U-admin-a", "U-admin-b"), OPERATOR);
+
+        RuntimeSettings settings = restartedModule().current();
+
+        assertThat(settings.imageTextReplyEnabled()).isFalse();
+        assertThat(settings.adminUserIds()).containsExactly("U-admin-a", "U-admin-b");
+        assertThat(settings.revision()).isEqualTo(2);
+
+        module.update(RuntimeSettingKey.IMAGE_TEXT_REPLY_ENABLED, "on", OPERATOR);
+
+        RuntimeSettings afterSwitch = restartedModule().current();
+        assertThat(afterSwitch.imageTextReplyEnabled()).isTrue();
+        assertThat(afterSwitch.adminUserIds()).containsExactly("U-admin-a", "U-admin-b");
+    }
+
+    @Test
+    void otherSettingUpdatesLeaveThePersistedAdministratorsAlone() {
+        module.updateAdminUserIds(List.of("U-admin-a", "U-admin-b"), OPERATOR);
+
+        module.update(RuntimeSettingKey.OCR_ENABLED, "off", OPERATOR);
+
+        assertThat(restartedModule().current().adminUserIds())
+                .containsExactly("U-admin-a", "U-admin-b");
+    }
+
+    @Test
+    void invalidAdministratorListsAreRejectedBeforeAnyDocumentIsWritten() {
+        assertThatThrownBy(() -> module.updateAdminUserIds(List.of(), OPERATOR))
+                .isInstanceOf(InvalidRuntimeSettingException.class);
+        assertThatThrownBy(() -> module.updateAdminUserIds(null, OPERATOR))
+                .isInstanceOf(InvalidRuntimeSettingException.class);
+        assertThatThrownBy(() -> module.updateAdminUserIds(List.of("  "), OPERATOR))
+                .isInstanceOf(InvalidRuntimeSettingException.class);
+        assertThatThrownBy(() -> module.updateAdminUserIds(List.of("U".repeat(129)), OPERATOR))
+                .isInstanceOf(InvalidRuntimeSettingException.class);
+        assertThatThrownBy(() -> module.updateAdminUserIds(List.of("U-admin-a"), " "))
+                .isInstanceOf(InvalidRuntimeSettingException.class);
+
+        assertThat(mongoTemplate.collectionExists(COLLECTION)).isFalse();
+    }
+
+    private RuntimeSettingsModule restartedModule() {
+        return new RuntimeSettingsModule(
+                mongoTemplate,
+                appConfig,
+                openRouterConfig,
+                modelCatalog,
+                Clock.systemUTC());
     }
 }

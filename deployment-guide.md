@@ -53,7 +53,7 @@ Self-hosted runner 必須：
 依功能設定：
 
 - `OCR_ENABLED`
-- `ADMIN_USERS`
+- `ADMIN_USERS`：管理員清單的 bootstrap seed。管理員以 `/admin add`、`/admin remove` 變更後，清單保存於 MongoDB `runtime_settings`；清單一旦保存，修改此環境變數不會覆蓋它
 - `MINIO_ENDPOINT`、`MINIO_ACCESS_KEY`、`MINIO_SECRET_KEY`、`MINIO_BUCKET_NAME`
 - `DWZ_API_TOKEN`，當管理員啟用木雷短網址時必要
 - `LANGUAGE_DETECTION_USE_AI`、`LANGUAGE_DETECTION_DEFAULT_CHINESE`
