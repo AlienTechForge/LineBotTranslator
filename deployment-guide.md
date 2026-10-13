@@ -96,8 +96,8 @@ Secrets 只作為容器環境變數傳入，不會寫入 image、Repository 或 
 | `JAVA_TOOL_OPTIONS` | `-XX:MaxRAMPercentage=75.0 -XX:+ExitOnOutOfMemoryError` | 容器 JVM 參數；覆寫時應保留 heap 上限與 OOM 結束設定 |
 | `OPEN_ROUTE_MODEL_NAME` | `openai/gpt-4o-mini` | OpenRouter 全域預設模型 slug |
 | `OPEN_ROUTE_API_URL` | `https://openrouter.ai/api/v1` | OpenRouter API base URL |
-| `OPEN_ROUTE_HTTP_REFERER` | `https://github.com/AlienTechForge/LineBotTranslator` | 送往 OpenRouter 的 `HTTP-Referer` 標頭 |
-| `OPEN_ROUTE_APP_TITLE` | `LineBotTranslator` | 送往 OpenRouter 的 `X-OpenRouter-Title` 標頭 |
+| `OPEN_ROUTE_HTTP_REFERER` | `https://github.com/AlienTechForge/LineBotTranslator` | 送往 OpenRouter 的 `HTTP-Referer` 標頭。未設定使用預設值；設為 `none`（不分大小寫）則不送出此標頭（空白變數與未設定相同，會回到預設值）。本機 `.env` 留空也不送出。 |
+| `OPEN_ROUTE_APP_TITLE` | `LineBotTranslator` | 送往 OpenRouter 的 `X-OpenRouter-Title` 標頭；規則同 `OPEN_ROUTE_HTTP_REFERER`，設為 `none` 則不送出。 |
 | `OPEN_ROUTE_CATALOG_TTL` | `PT15M` | OpenRouter 模型 catalog 快取存活時間 |
 | `TRANSLATION_ACTION_CLAIM_LEASE` | `PT5M` | 翻譯 action claim 處理中的租約；逾期仍未完成時由下一次點擊原子接手重試，需長於一次翻譯的最長耗時 |
 | `MONGODB_CONNECT_TIMEOUT_MS` | `3000` | Mongo socket 連線 timeout |

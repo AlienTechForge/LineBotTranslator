@@ -12,6 +12,9 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.NullAndEmptySource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -393,6 +396,67 @@ class OpenRouterServiceContractTests {
                 "openai/gpt-4o-mini", "hello", "zh-TW")))
                 .isInstanceOfSatisfying(AiProviderException.class,
                         failure -> assertThat(failure.getModel()).isEqualTo("openai/gpt-4o-mini"));
+    }
+
+    @Test
+    void attributionHeadersAreSentWhenConfigured() throws Exception {
+        Request sent = requestSentWith("https://example.com/app", "My App");
+
+        assertThat(sent.header("HTTP-Referer")).isEqualTo("https://example.com/app");
+        assertThat(sent.header("X-OpenRouter-Title")).isEqualTo("My App");
+    }
+
+    @ParameterizedTest
+    @NullAndEmptySource
+    @ValueSource(strings = {"   ", "none", "NONE", "None", "  none  "})
+    void blankOrNoneOptsOutOfTheAttributionHeader(String optOut) throws Exception {
+        Request refererOptedOut = requestSentWith(optOut, "My App");
+        Request titleOptedOut = requestSentWith("https://example.com/app", optOut);
+
+        assertThat(refererOptedOut.header("HTTP-Referer")).isNull();
+        assertThat(refererOptedOut.header("X-OpenRouter-Title")).isEqualTo("My App");
+        assertThat(titleOptedOut.header("HTTP-Referer")).isEqualTo("https://example.com/app");
+        assertThat(titleOptedOut.header("X-OpenRouter-Title")).isNull();
+    }
+
+    @Test
+    void noneIsOnlyAnOptOutWhenItIsTheWholeValue() throws Exception {
+        Request sent = requestSentWith("https://example.com/none", "none of the above");
+
+        assertThat(sent.header("HTTP-Referer")).isEqualTo("https://example.com/none");
+        assertThat(sent.header("X-OpenRouter-Title")).isEqualTo("none of the above");
+    }
+
+    @Test
+    void optingOutOfAttributionHeadersKeepsAuthenticationAndContentType() throws Exception {
+        Request sent = requestSentWith("none", "none");
+
+        assertThat(sent.header("HTTP-Referer")).isNull();
+        assertThat(sent.header("X-OpenRouter-Title")).isNull();
+        assertThat(sent.header("Authorization")).isEqualTo("Bearer test-key");
+        assertThat(sent.header("Content-Type")).isEqualTo("application/json");
+    }
+
+    private Request requestSentWith(String httpReferer, String appTitle) throws Exception {
+        OpenRouterConfig config = config();
+        when(config.getHttpReferer()).thenReturn(httpReferer);
+        when(config.getAppTitle()).thenReturn(appTitle);
+        OkHttpClient httpClient = mock(OkHttpClient.class);
+        Call call = mock(Call.class);
+        AtomicReference<Request> captured = new AtomicReference<>();
+        when(httpClient.newCall(any(Request.class))).thenAnswer(invocation -> {
+            captured.set(invocation.getArgument(0));
+            return call;
+        });
+        when(call.execute()).thenReturn(response(200, """
+                {"model":"openai/gpt-4o-mini","choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}
+                """));
+        OpenRouterService adapter = new OpenRouterService(
+                config, httpClient, objectMapper, catalog("openai/gpt-4o-mini", Set.of("text")));
+
+        adapter.execute(AiProviderRequest.generate("openai/gpt-4o-mini", "hello"));
+
+        return captured.get();
     }
 
     private OpenRouterService adapterReturning(String body, Set<String> inputModalities) throws IOException {

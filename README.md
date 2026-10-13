@@ -95,7 +95,7 @@ ADMIN_USERS=U123456789abcdef,U987654321abcdef
 ADMIN_WEB_TOKEN=
 ```
 
-上列只是常用設定；應用程式綁定的完整環境變數、預設值與用途見 [`.env.example`](.env.example)，正式部署的傳遞方式見 [deployment-guide.md](deployment-guide.md)。
+上列只是常用設定；應用程式綁定的完整環境變數、預設值與用途見 [`.env.example`](.env.example)，正式部署的傳遞方式見 [deployment-guide.md](deployment-guide.md)。選填的 `OPEN_ROUTE_HTTP_REFERER`、`OPEN_ROUTE_APP_TITLE` 在本機 `.env` 留空即不送出對應的 OpenRouter 標頭；GitHub Actions 部署路徑中空白變數會回到預設值，請設為 `none` 才會不送出，未設定則使用預設值。
 
 `ADMIN_USERS` 只是管理員清單的 bootstrap seed：MongoDB `runtime_settings` 尚未保存管理員清單時才會使用。管理員以 `/admin add`、`/admin remove` 做的變更會保存在 MongoDB，重啟或重新部署後仍有效；清單一旦保存，之後修改 `ADMIN_USERS` 不會覆蓋它。最後一位管理員無法被移除。
 
