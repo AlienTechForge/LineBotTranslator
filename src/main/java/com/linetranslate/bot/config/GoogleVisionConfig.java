@@ -47,7 +47,7 @@ public class GoogleVisionConfig {
                     log.info("環境變數指定的認證文件存在");
                     return ImageAnnotatorClient.create(visionSettings(null));
                 } else {
-                    log.error("環境變數指定的 Google Vision 認證文件不存在");
+                    log.error("GOOGLE_APPLICATION_CREDENTIALS 指定的 Google Vision 認證文件不存在");
                 }
             }
 
@@ -65,11 +65,14 @@ public class GoogleVisionConfig {
                     log.info("成功載入Google Vision認證文件");
                     return ImageAnnotatorClient.create(settings);
                 } catch (IOException e) {
-                    log.error("讀取認證文件失敗: failure={}", SafeLog.failure(e));
+                    log.error("無法載入 GOOGLE_APPLICATION_CREDENTIALS 指定的 Google Vision 認證文件，"
+                            + "請確認檔案權限與 service account JSON 格式: failure={}", SafeLog.failure(e));
                     return null;
                 }
             } else {
-                log.warn("未找到已配置的 Google Vision API 認證文件");
+                log.warn("未找到 Google Vision 認證文件，OCR 將無法使用；請將 GOOGLE_APPLICATION_CREDENTIALS "
+                        + "指向 service account JSON（預設 ./linebot.json），正式環境由 GOOGLE_CREDENTIALS_JSON "
+                        + "secret 提供（見 deployment-guide.md）");
                 return null;
             }
         } catch (IOException e) {
