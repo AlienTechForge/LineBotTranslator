@@ -37,6 +37,20 @@ class ImageProxyLinkServiceTests {
     }
 
     @Test
+    void isEnabledOnlyWithAValidPublicBaseAndMinioEndpoint() {
+        assertThat(proxy("https://translate.azndev.com", "https://s3.azndev.com").isEnabled()).isTrue();
+        assertThat(proxy("", "https://s3.azndev.com").isEnabled()).isFalse();
+        assertThat(proxy("http://translate.azndev.com", "https://s3.azndev.com").isEnabled()).isFalse();
+        assertThat(proxy("https://translate.azndev.com", "").isEnabled()).isFalse();
+        assertThat(proxy(null, null).isEnabled()).isFalse();
+    }
+
+    private static ImageProxyLinkService proxy(String publicBase, String minioEndpoint) {
+        return new ImageProxyLinkService(
+                publicBase, minioEndpoint, "line-bot", Duration.ofMinutes(55), 100, () -> "0123456789abcdefghij-_");
+    }
+
+    @Test
     void rejectsUrlsThatCouldTurnTheProxyIntoAnSsrfPrimitive() {
         ImageProxyLinkService service = new ImageProxyLinkService(
                 "https://translate.azndev.com",

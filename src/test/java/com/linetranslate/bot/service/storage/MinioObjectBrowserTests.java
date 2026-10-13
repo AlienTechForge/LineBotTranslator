@@ -176,6 +176,17 @@ class MinioObjectBrowserTests {
     }
 
     @Test
+    void previewRenditionsAreNotListedBesideTheirTranslatedImage() throws Exception {
+        String preview = "translated-images/1760000000/00000000-0000-4000-8000-00000000000c-preview.jpg";
+        stored(Map.of("translated-images/", List.of(
+                item(TRANSLATED_C, 30, T0), item(preview, 2, T0))));
+
+        Page page = browser.list(query(Kind.TRANSLATED, null, null, 50, null));
+
+        assertThat(page.items()).extracting(Entry::name).containsExactly(TRANSLATED_C);
+    }
+
+    @Test
     void unknownExtensionsAreReportedAsOctetStream() throws Exception {
         stored(Map.of("images/", List.of(item("images/00000000-0000-4000-8000-000000000001.bin", 1, T0))));
 
@@ -275,10 +286,38 @@ class MinioObjectBrowserTests {
         assertThat(outcome.deleted()).isEqualTo(2);
         assertThat(outcome.failed()).isEmpty();
         ArgumentCaptor<RemoveObjectArgs> args = ArgumentCaptor.forClass(RemoveObjectArgs.class);
-        verify(minioClient, org.mockito.Mockito.times(2)).removeObject(args.capture());
-        assertThat(args.getAllValues()).extracting(RemoveObjectArgs::object)
-                .containsExactly(ORIGINAL_A, TRANSLATED_C);
+        verify(minioClient, org.mockito.Mockito.times(3)).removeObject(args.capture());
+        // Deleting a translated image also deletes the preview rendition stored beside it.
+        assertThat(args.getAllValues()).extracting(RemoveObjectArgs::object).containsExactly(
+                ORIGINAL_A,
+                TRANSLATED_C,
+                "translated-images/1760000000/00000000-0000-4000-8000-00000000000c-preview.jpg");
         assertThat(args.getAllValues()).extracting(RemoveObjectArgs::bucket).containsOnly(BUCKET);
+    }
+
+    @Test
+    void aFailedPreviewDeleteDoesNotFailTheTranslatedImageDelete() throws Exception {
+        // Lenient: the translated image's own delete is the call that does not match this stub.
+        org.mockito.Mockito.lenient().doThrow(new IllegalStateException("backend down"))
+                .when(minioClient).removeObject(org.mockito.ArgumentMatchers.argThat(
+                        (RemoveObjectArgs args) -> args.object().endsWith("-preview.jpg")));
+
+        DeleteOutcome outcome = browser.delete(List.of(TRANSLATED_C));
+
+        assertThat(outcome.deleted()).isEqualTo(1);
+        assertThat(outcome.failed()).isEmpty();
+    }
+
+    @Test
+    void aFailedTranslatedDeleteLeavesItsPreviewAlone() throws Exception {
+        org.mockito.Mockito.doThrow(new IllegalStateException("backend down"))
+                .when(minioClient).removeObject(org.mockito.ArgumentMatchers.argThat(
+                        (RemoveObjectArgs args) -> args.object().equals(TRANSLATED_C)));
+
+        DeleteOutcome outcome = browser.delete(List.of(TRANSLATED_C));
+
+        assertThat(outcome.failed()).containsExactly(TRANSLATED_C);
+        verify(minioClient, org.mockito.Mockito.times(1)).removeObject(any(RemoveObjectArgs.class));
     }
 
     @ParameterizedTest

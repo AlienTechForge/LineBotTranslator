@@ -98,6 +98,9 @@ public class ImageTranslationService {
         StringBuilder display = new StringBuilder();
         Optional<String> renderedImageUrl = result.renderedImage().url()
                 .filter(ImageTranslationService::isSafeRenderedImageUrl);
+        Optional<String> renderedPreviewUrl = renderedImageUrl.isEmpty()
+                ? Optional.empty()
+                : result.renderedImage().previewUrl().filter(ImageTranslationService::isSafeRenderedImageUrl);
         renderedImageUrl.ifPresent(url -> display.append("【翻譯圖片（連結 1 小時內有效）】\n")
                         .append(url)
                         .append("\n\n"));
@@ -117,7 +120,8 @@ public class ImageTranslationService {
         logOverlayOutcome(result);
         return new ImageTranslationReply(
                 TranslationResponse.success(translation, display.toString()),
-                renderedImageUrl);
+                renderedImageUrl,
+                renderedPreviewUrl);
     }
 
     /**
