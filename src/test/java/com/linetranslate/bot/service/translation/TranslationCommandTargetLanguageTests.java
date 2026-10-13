@@ -107,7 +107,12 @@ class TranslationCommandTargetLanguageTests {
                 Arguments.of("翻譯成繁體中文hello", "hello", "zh-TW"),
                 Arguments.of("翻譯成日語早安 你好", "早安 你好", "ja"),
                 Arguments.of("你好 翻譯成英文", "你好", "en"),
-                Arguments.of("你好\n翻譯成簡體中文", "你好", "zh-CN"));
+                Arguments.of("你好\n翻譯成簡體中文", "你好", "zh-CN"),
+                Arguments.of("翻譯成匈牙利文 你好", "你好", "hu"),
+                Arguments.of("你好\n翻譯成希伯來文", "你好", "he"),
+                Arguments.of("你好 翻譯成菲律賓文", "你好", "tl"),
+                Arguments.of("翻譯成他加祿語早安", "早安", "tl"),
+                Arguments.of("翻譯成冰島語你好", "你好", "is"));
     }
 
     private static Stream<Arguments> unsupportedTargetRequests() {

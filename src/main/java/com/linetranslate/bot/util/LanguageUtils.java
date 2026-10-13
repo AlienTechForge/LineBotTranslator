@@ -46,6 +46,10 @@ public class LanguageUtils {
         addLanguageMapping("印地文", "hi", "Hindi");
         addLanguageMapping("挪威文", "nb", "Norwegian Bokmal");
         addLanguageMapping("烏克蘭文", "uk", "Ukrainian");
+        addLanguageMapping("匈牙利文", "hu", "Hungarian");
+        addLanguageMapping("希伯來文", "he", "Hebrew");
+        addLanguageMapping("菲律賓文", "tl", "Filipino");
+        addLanguageMapping("冰島文", "is", "Icelandic");
 
         // 添加別名
         LANGUAGE_NAME_TO_CODE.put("英語", "en");
@@ -71,6 +75,12 @@ public class LanguageUtils {
         LANGUAGE_NAME_TO_CODE.put("丹麥語", "da");
         LANGUAGE_NAME_TO_CODE.put("芬蘭語", "fi");
         LANGUAGE_NAME_TO_CODE.put("印地語", "hi");
+        LANGUAGE_NAME_TO_CODE.put("匈牙利語", "hu");
+        LANGUAGE_NAME_TO_CODE.put("希伯來語", "he");
+        LANGUAGE_NAME_TO_CODE.put("菲律賓語", "tl");
+        LANGUAGE_NAME_TO_CODE.put("他加祿文", "tl");
+        LANGUAGE_NAME_TO_CODE.put("他加祿語", "tl");
+        LANGUAGE_NAME_TO_CODE.put("冰島語", "is");
         LANGUAGE_NAME_TO_CODE.put("jp", "ja");
         LANGUAGE_NAME_TO_CODE.put("jap", "ja");
         LANGUAGE_NAME_TO_CODE.put("japan", "ja");
