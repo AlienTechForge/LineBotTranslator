@@ -1,5 +1,6 @@
 package com.linetranslate.bot.service.ocr;
 
+import java.awt.image.BufferedImage;
 import java.io.InputStream;
 import java.util.Base64;
 import java.util.EnumMap;
@@ -245,6 +246,10 @@ public class ImageTranslationPipeline {
                 new DownloadedImage(image.bytes(), image.contentType()),
                 storage,
                 recognition.text());
+        // Storage, OCR and the context were the last readers of the encoded bytes. The overlay
+        // stage is the only one left that needs the image, so it becomes its sole owner.
+        SourceImage source = new SourceImage(image);
+        image = null;
         TranslationWorkflowOutcome workflowOutcome;
         List<String> translatableRegionIds = List.of();
         long translationStarted = System.nanoTime();
@@ -313,7 +318,7 @@ public class ImageTranslationPipeline {
         }
         long translationMillis = elapsedMillis(translationStarted);
         long renderingStarted = System.nanoTime();
-        OverlayOutcome overlay = renderAndStore(image, recognition, translation, translatableRegionIds)
+        OverlayOutcome overlay = renderAndStore(source, recognition, translation, translatableRegionIds)
                 .omitting(omittedRegions);
         long renderingMillis = elapsedMillis(renderingStarted);
         log.info("Image translation timing: downloadMs={}, storageMs={}, recognitionMs={}, "
@@ -488,8 +493,14 @@ public class ImageTranslationPipeline {
         return OcrRecognition.plain(result.text());
     }
 
+    /**
+     * Draws, uploads and previews the translated image. The source is taken out of its holder only
+     * by the renderer call, and nothing here keeps a local to the image or its raster, so the
+     * source pixels are collectable once the overlay is drawn and the rendered raster is dropped
+     * as soon as the upload (and with it the preview) is done.
+     */
     private OverlayOutcome renderAndStore(
-            ValidatedImage image,
+            SourceImage source,
             OcrRecognition recognition,
             TranslationWorkflowResult translation,
             List<String> translatableRegionIds) {
@@ -516,9 +527,10 @@ public class ImageTranslationPipeline {
                     .map(region -> new ImageRegionOverlay(region, replacements.get(region.id())))
                     .toList();
             OverlayContentMode contentMode = contentClassifier.classify(
-                    image.image(), candidates.stream().map(ImageRegionOverlay::region).toList());
+                    source.raster(), candidates.stream().map(ImageRegionOverlay::region).toList());
             OverlaySafetyPlan plan = overlaySafetyPolicy.evaluate(
-                    candidates, image.image().getWidth(), image.image().getHeight(), properties, contentMode);
+                    candidates, source.raster().getWidth(), source.raster().getHeight(),
+                    properties, contentMode);
             log.info("Image overlay decision: mode={}, candidates={}, accepted={}, preserved={}, "
                             + "unmappedRegions={}, reason={}",
                     contentMode, candidates.size(), plan.overlays().size(), plan.skipped(),
@@ -531,7 +543,7 @@ public class ImageTranslationPipeline {
                         ImageOverlayDisposition.SAFETY_DEGRADED, degradation);
             }
             long rendererStarted = System.nanoTime();
-            RenderedImage rendered = overlayRenderer.render(image, plan);
+            RenderedImage rendered = overlayRenderer.render(source.take(), plan);
             long rendererMillis = elapsedMillis(rendererStarted);
             byte[] renderedBytes = rendered.bytes();
             if (rendered.renderedBlockCount() == 0) {
@@ -543,7 +555,7 @@ public class ImageTranslationPipeline {
             }
             long uploadStarted = System.nanoTime();
             ImageStorageResult storage = minioStorageService.uploadTranslatedImage(
-                    renderedBytes, rendered.contentType());
+                    renderedBytes, rendered.contentType(), rendered.raster());
             long uploadMillis = elapsedMillis(uploadStarted);
             log.info("Image overlay timing: rendererMs={}, uploadMs={}, renderedRegions={}, outputBytes={}",
                     rendererMillis, uploadMillis, rendered.renderedBlockCount(), renderedBytes.length);
@@ -595,6 +607,35 @@ public class ImageTranslationPipeline {
                 : Math.max(geometricCapacity, sourceCharacters * 2);
         return new ImageRegionLayout(region.groupId(), bounds.x, bounds.y,
                 localWidth, localHeight, maxLines, maxCharacters, region.compactLabel());
+    }
+
+    /**
+     * Hands a request's decoded image to the one stage that consumes it. {@link #take()} gives the
+     * image to its caller and forgets it, so that stage is the image's only owner and can let it
+     * go when it no longer needs it; a plain local in the pipeline would keep it reachable until
+     * the whole request ends. Confined to one request, never shared between threads.
+     */
+    private static final class SourceImage {
+
+        private ValidatedImage image;
+
+        SourceImage(ValidatedImage image) {
+            this.image = image;
+        }
+
+        /**
+         * The decoded pixels, for reading before {@link #take()}. Use the result inline: a local
+         * holding it would pin the raster for as long as the local is in scope.
+         */
+        BufferedImage raster() {
+            return image.image();
+        }
+
+        ValidatedImage take() {
+            ValidatedImage taken = image;
+            image = null;
+            return taken;
+        }
     }
 
     private record OverlayOutcome(

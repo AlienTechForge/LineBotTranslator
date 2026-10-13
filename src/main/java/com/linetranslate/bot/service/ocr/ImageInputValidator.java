@@ -37,6 +37,10 @@ public class ImageInputValidator {
         return new ImageInputValidator(properties, false);
     }
 
+    /**
+     * Validates and decodes an upload. The result keeps {@code bytes} itself rather than a copy
+     * (see {@link ValidatedImage}), so the caller hands the array over and must not write to it.
+     */
     public ValidatedImage validate(byte[] bytes, String claimedContentType) {
         if (bytes == null || bytes.length == 0) {
             throw new InvalidImageException("Image is empty");
@@ -70,11 +74,13 @@ public class ImageInputValidator {
                 validateDimensions(width, height);
                 BufferedImage decoded = reader.read(0);
                 int orientation = "image/jpeg".equals(contentType) ? readExifOrientation(bytes) : 1;
-                BufferedImage normalized = applyOrientation(decoded, orientation);
-                if (orientation != 1) {
-                    return new ValidatedImage(encodePng(normalized), "image/png", normalized);
+                if (orientation == 1) {
+                    return new ValidatedImage(bytes, contentType, decoded);
                 }
-                return new ValidatedImage(bytes, contentType, decoded);
+                BufferedImage normalized = applyOrientation(decoded, orientation);
+                // The upright raster replaces the decoded one; do not keep both while the PNG is encoded.
+                decoded = null;
+                return new ValidatedImage(encodePng(normalized), "image/png", normalized);
             } finally {
                 reader.dispose();
             }

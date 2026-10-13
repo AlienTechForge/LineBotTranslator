@@ -1,5 +1,6 @@
 package com.linetranslate.bot.service.storage;
 
+import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.util.Optional;
@@ -179,6 +180,18 @@ public class MinioStorageService {
      * no preview URL and the caller reuses the original.
      */
     public ImageStorageResult uploadTranslatedImage(byte[] imageBytes, String contentType) {
+        return uploadTranslatedImage(imageBytes, contentType, null);
+    }
+
+    /**
+     * As {@link #uploadTranslatedImage(byte[], String)}, for a caller that still holds the image
+     * decoded. {@code raster} must be the image exactly as {@code imageBytes} encodes it (a
+     * lossless PNG of it); the preview is then scaled from it instead of decoding the bytes into
+     * a second full-size raster. Pass {@code null} when the bytes are lossy or rescaled, and the
+     * preview is built from them as before. The raster is only read, and not kept after the call.
+     */
+    public ImageStorageResult uploadTranslatedImage(
+            byte[] imageBytes, String contentType, BufferedImage raster) {
         String extension = translatedImageExtension(contentType);
         if (imageBytes == null || imageBytes.length == 0 || extension == null || !beginAttempt()) {
             return ImageStorageResult.notStored();
@@ -207,7 +220,7 @@ public class MinioStorageService {
                 markAvailable();
                 log.info("MinIO translated image stored: object={}", objectName);
                 return ImageStorageResult.stored(
-                        url, storeTranslatedPreview(imageBytes, objectName).orElse(null));
+                        url, storeTranslatedPreview(imageBytes, raster, objectName).orElse(null));
             } catch (Exception failure) {
                 markUnavailable(failure);
                 return ImageStorageResult.storedWithoutUrl();
@@ -223,13 +236,16 @@ public class MinioStorageService {
      * touches the circuit state: the original is safely stored, so a failure here only costs the
      * separate preview. Logs byte sizes and pixel counts, never URLs.
      */
-    private Optional<String> storeTranslatedPreview(byte[] imageBytes, String objectName) {
+    private Optional<String> storeTranslatedPreview(
+            byte[] imageBytes, BufferedImage raster, String objectName) {
         String previewName = previewObjectName(objectName);
         try {
             if (!previewRenditionNeeded.getAsBoolean()) {
                 return Optional.empty();
             }
-            Optional<TranslatedImagePreview.Rendition> rendition = TranslatedImagePreview.create(imageBytes);
+            Optional<TranslatedImagePreview.Rendition> rendition = raster == null
+                    ? TranslatedImagePreview.create(imageBytes)
+                    : TranslatedImagePreview.create(raster);
             if (rendition.isEmpty()) {
                 log.info("MinIO translated image preview skipped: object={}, originalBytes={}",
                         objectName, imageBytes.length);

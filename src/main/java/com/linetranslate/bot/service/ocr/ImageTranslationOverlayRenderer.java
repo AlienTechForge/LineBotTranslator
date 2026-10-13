@@ -83,13 +83,27 @@ public class ImageTranslationOverlayRenderer {
         this(new ImageTranslationFontProvider());
     }
 
-    /** Polygon-aware production path. Refuses plans not approved by safety policy. */
+    /**
+     * Polygon-aware production path. Refuses plans not approved by safety policy.
+     *
+     * <p>The source pixels are needed only while drawing. The method lets go of {@code source}
+     * before it encodes, so a caller that passes on its last reference (the image pipeline does)
+     * has the source raster collectable while the encoder, the largest allocator of the request,
+     * runs on the rendered raster alone.
+     */
     public RenderedImage render(ValidatedImage source, OverlaySafetyPlan plan) {
         if (plan == null || !plan.safe()) return new RenderedImage(
                 encode(copy(source.image())), 0, plan == null ? 0 : plan.skipped(),
                 plan == null ? List.of() : plan.decisions());
-        BufferedImage output = copy(source.image());
-        BufferedImage pristine = source.image();
+        Drawn drawn = draw(source.image(), plan);
+        source = null;
+        return new RenderedImage(
+                encode(drawn.output()), drawn.rendered(), drawn.skipped(), drawn.decisions());
+    }
+
+    /** Draws the approved overlays onto a copy of {@code pristine}; the source stays untouched. */
+    private Drawn draw(BufferedImage pristine, OverlaySafetyPlan plan) {
+        BufferedImage output = copy(pristine);
         Graphics2D graphics = output.createGraphics();
         int rendered = 0;
         int fontSkipped = 0;
@@ -203,7 +217,7 @@ public class ImageTranslationOverlayRenderer {
         } finally {
             graphics.dispose();
         }
-        return new RenderedImage(encode(output), rendered, plan.skipped() + fontSkipped, decisions);
+        return new Drawn(output, rendered, plan.skipped() + fontSkipped, decisions);
     }
 
     /**
@@ -753,12 +767,16 @@ public class ImageTranslationOverlayRenderer {
      * nothing. Oversized opaque output therefore falls back to JPEG, then any output is downscaled
      * in bounded steps. Output that still does not fit is refused like an unencodable image, which
      * degrades the reply to text.
+     *
+     * <p>The result carries {@code image} itself only when the bytes are its lossless PNG, so that a
+     * consumer wanting the pixels need not decode them again. Package-private so a test can observe
+     * what is still reachable when the encoder starts.
      */
-    private RenderedImage.Encoded encode(BufferedImage image) {
+    RenderedImage.Encoded encode(BufferedImage image) {
         try {
             byte[] png = writePng(image);
             if (png.length <= maxOutputBytes) {
-                return new RenderedImage.Encoded(png, PNG_CONTENT_TYPE);
+                return new RenderedImage.Encoded(png, PNG_CONTENT_TYPE, image);
             }
             // JPEG cannot carry alpha, so transparent output only ever shrinks as PNG.
             boolean opaque = !image.getColorModel().hasAlpha();
@@ -800,7 +818,7 @@ public class ImageTranslationOverlayRenderer {
                         + "outputBytes={}, format={}, scale={}, maxOutputBytes={}",
                 image.getWidth(), image.getHeight(), pngBytes, bytes.length, contentType,
                 String.format(java.util.Locale.ROOT, "%.3f", scale), maxOutputBytes);
-        return new RenderedImage.Encoded(bytes, contentType);
+        return new RenderedImage.Encoded(bytes, contentType, null);
     }
 
     private static byte[] writePng(BufferedImage image) throws IOException {
@@ -848,6 +866,11 @@ public class ImageTranslationOverlayRenderer {
     }
 
     private record Layout(Font font, List<String> lines, boolean fits) {
+    }
+
+    /** The rendered raster and the bookkeeping of one draw, before it is encoded. */
+    private record Drawn(
+            BufferedImage output, int rendered, int skipped, List<OverlayRenderDecision> decisions) {
     }
 
     private record PreparedOverlay(

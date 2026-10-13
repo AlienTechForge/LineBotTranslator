@@ -188,6 +188,48 @@ class MinioStorageServiceTests {
     }
 
     @Test
+    void aSuppliedRasterBuildsThePreviewWithoutDecodingTheStoredBytes() throws Exception {
+        // The stored bytes are not an image at all, so a preview can only have come from the raster.
+        byte[] undecodable = {1, 2, 3};
+
+        ImageStorageResult result = storage.uploadTranslatedImage(
+                undecodable, "image/png", noisyRaster(900, 700));
+
+        assertThat(result.stored()).isTrue();
+        assertThat(result.previewUrl()).isPresent();
+        List<PutObjectArgs> puts = puts();
+        assertThat(puts).hasSize(2);
+        assertThat(puts.get(0).stream().readAllBytes()).isEqualTo(undecodable);
+        assertThat(puts.get(1).object()).endsWith("-preview.jpg");
+        BufferedImage preview = ImageIO.read(new ByteArrayInputStream(puts.get(1).stream().readAllBytes()));
+        assertThat(Math.max(preview.getWidth(), preview.getHeight())).isEqualTo(240);
+    }
+
+    @Test
+    void aSuppliedRasterGivesTheSamePreviewAsDecodingItsLosslessBytes() throws Exception {
+        BufferedImage raster = noisyRaster(900, 700);
+
+        storage.uploadTranslatedImage(encode(raster, "png"), "image/png", raster);
+        storage.uploadTranslatedImage(encode(raster, "png"), "image/png");
+
+        List<PutObjectArgs> puts = puts();
+        assertThat(puts).hasSize(4);
+        assertThat(puts.get(1).stream().readAllBytes()).isEqualTo(puts.get(3).stream().readAllBytes());
+    }
+
+    @Test
+    void aSuppliedRasterIsNotUsedWhenTheImageProxyAlreadyServesAPreview() throws Exception {
+        previewNeeded.set(false);
+
+        ImageStorageResult result = storage.uploadTranslatedImage(
+                noisyPng(300, 300), "image/png", noisyRaster(300, 300));
+
+        assertThat(result.stored()).isTrue();
+        assertThat(result.previewUrl()).isEmpty();
+        assertThat(puts()).hasSize(1);
+    }
+
+    @Test
     void aFailedPreviewUploadKeepsTheStoredOriginalAndDoesNotTripTheCircuit() throws Exception {
         doThrow(new IllegalStateException("backend hiccup")).when(client).putObject(
                 org.mockito.ArgumentMatchers.argThat((PutObjectArgs args) ->
@@ -319,6 +361,10 @@ class MinioStorageServiceTests {
 
     /** Random pixels do not compress, so the PNG is large without a large raster. */
     private static byte[] noisyPng(int width, int height) throws IOException {
+        return encode(noisyRaster(width, height), "png");
+    }
+
+    private static BufferedImage noisyRaster(int width, int height) {
         Random random = new Random(7);
         BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
         for (int y = 0; y < height; y++) {
@@ -326,7 +372,7 @@ class MinioStorageServiceTests {
                 image.setRGB(x, y, random.nextInt(0xFFFFFF));
             }
         }
-        return encode(image, "png");
+        return image;
     }
 
     private static byte[] png(int width, int height, Color color) throws IOException {

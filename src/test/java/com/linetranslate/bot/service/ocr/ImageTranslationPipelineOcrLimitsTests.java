@@ -101,7 +101,7 @@ class ImageTranslationPipelineOcrLimitsTests {
         image("message-menus", whitePng(660, 1950));
         when(ocrService.recognizeRegions(any(InputStream.class))).thenReturn(segmented);
         when(workflowModule.execute(any())).thenAnswer(invocation -> translated(invocation.getArgument(0)));
-        when(minioStorageService.uploadTranslatedImage(any(byte[].class), anyString()))
+        when(minioStorageService.uploadTranslatedImage(any(byte[].class), anyString(), any()))
                 .thenReturn(ImageStorageResult.stored("https://storage.example/menus.png"));
 
         ImageTranslationOutcome outcome = pipeline.execute(request("message-menus"));
