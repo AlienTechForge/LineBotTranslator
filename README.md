@@ -55,6 +55,11 @@ WEBHOOK_PROCESSING_LEASE=PT5M
 WEBHOOK_REPLY_MAX_ATTEMPTS=3
 WEBHOOK_REPLY_RETRY_BACKOFF=PT1S
 
+# MongoDB 資料保留（ISO-8601 duration）；留空或 PT0S 停用該集合的保留
+TRANSLATION_RECORD_RETENTION=P90D
+TRANSLATION_ACTION_CLAIM_RETENTION=P7D
+AI_USAGE_EVENT_RETENTION=P730D
+
 # OpenRouter 配置（API key 的名稱固定為 OPEN_ROUTE_API_KEY）
 OPEN_ROUTE_API_KEY=your_openrouter_api_key
 OPEN_ROUTE_MODEL_NAME=openai/gpt-4o-mini
@@ -83,6 +88,8 @@ ADMIN_USERS=U123456789abcdef,U987654321abcdef
 翻譯快取採 `expire-after-write` TTL；超過 `TRANSLATION_CACHE_MAX_ENTRIES` 時，Caffeine 會依使用頻率與近期性淘汰項目。失敗、safety blocked 與 model mismatch 不會寫入；實際使用的 style preset ID、prompt version 與 glossary version 都納入 cache identity。
 
 Webhook 先驗證 LINE signature，再以 `webhookEventId` 建立 MongoDB TTL receipt 並交給 bounded executor。重送事件不重複處理；queue 已滿或 receipt store 暫時不可用時回傳 `503`，讓 LINE 稍後 redeliver。receipt 僅保存事件 ID、時間與處理狀態，不保存訊息內容或 reply token。
+
+`translation_records`（預設 90 天）、`translation_action_claims`（7 天）與 `ai_usage_events`（730 天）以 MongoDB TTL index 自動清除舊資料；啟動完成後由 `RetentionIndexInitializer` 建立或更新索引，保留期可用上列 `*_RETENTION` 調整（`user_profiles` 與 `runtime_settings` 不在此範圍）。舊紀錄過期後，翻譯結果的 postback 會回覆「找不到可操作的翻譯結果」，管理員統計的總量只涵蓋仍保留的紀錄。
 
 ## 建立與運行
 

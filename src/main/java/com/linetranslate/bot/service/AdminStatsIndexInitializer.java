@@ -44,6 +44,12 @@ public class AdminStatsIndexInitializer {
 
     private void ensureIndex(Class<?> documentType, String name, String field) {
         try {
+            if (hasTtl(documentType, name)) {
+                // RetentionIndexInitializer turned this index into a TTL index; creating it
+                // again with plain options would be refused as a conflict on every start.
+                log.info("統計查詢索引已就緒（含資料保留 TTL）: index={}", name);
+                return;
+            }
             mongoTemplate.indexOps(documentType).createIndex(
                     new Index().named(name).on(field, Sort.Direction.DESC));
             log.info("統計查詢索引已就緒: index={}", name);
@@ -51,5 +57,12 @@ public class AdminStatsIndexInitializer {
             log.warn("無法建立統計查詢索引，統計將以全集合掃描執行: index={}, failure={}",
                     name, SafeLog.failure(exception));
         }
+    }
+
+    private boolean hasTtl(Class<?> documentType, String name) {
+        return mongoTemplate.collectionExists(documentType)
+                && mongoTemplate.indexOps(documentType).getIndexInfo().stream()
+                        .anyMatch(index -> name.equals(index.getName())
+                                && index.getExpireAfter().isPresent());
     }
 }
