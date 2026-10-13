@@ -298,6 +298,54 @@ class TranslationWorkflowModuleTests {
                 preferences, "保護自己", "zh-TW", TranslationStylePreset.FAITHFUL);
     }
 
+    @Test
+    void aStructuredProviderBugIsKeptOnTheSuccessEvenWhenThePlainTextFallbackServesTheImage() {
+        UserProfile profile = profile();
+        StructuredImageTranslationAdapter structured = Mockito.mock(StructuredImageTranslationAdapter.class);
+        module = new TranslationWorkflowModule(languageDetection, translationAdapter, recordRepository,
+                userPreferencesModule, structured);
+        List<ImageRegionTranslationInput> inputs = List.of(
+                new ImageRegionTranslationInput("r1", "保護自己", "ja", List.of()));
+        AiExecutionFailure bug = new AiExecutionFailure(AiProviderException.Outcome.UNEXPECTED_ERROR,
+                "openrouter", "model", "NullPointerException", "correlation-1", -1, List.of());
+        when(structured.translate(preferences, inputs, "zh-TW", TranslationStylePreset.FAITHFUL))
+                .thenThrow(new StructuredTranslationException(
+                        StructuredTranslationException.PROVIDER_FAILED, "attempts failed", bug));
+        when(translationAdapter.translate(preferences, "保護自己", "zh-TW", TranslationStylePreset.FAITHFUL))
+                .thenReturn(success("保護自己"));
+
+        TranslationWorkflowOutcome outcome = module.execute(new TranslationWorkflowRequest(
+                profile, "保護自己", null, TranslationRequestKind.IMAGE_OCR,
+                null, false, Instant.now(), null, "ja", inputs));
+
+        assertThat(outcome).isInstanceOfSatisfying(TranslationWorkflowOutcome.Success.class, success -> {
+            assertThat(success.result().translatedText()).isEqualTo("保護自己");
+            assertThat(success.unexpectedFailure()).isSameAs(bug);
+        });
+    }
+
+    @Test
+    void aStructuredProviderBugBehindAnAcceptedAnswerIsKeptOnTheSuccess() {
+        UserProfile profile = profile();
+        StructuredImageTranslationAdapter structured = Mockito.mock(StructuredImageTranslationAdapter.class);
+        module = new TranslationWorkflowModule(languageDetection, translationAdapter, recordRepository,
+                userPreferencesModule, structured);
+        List<ImageRegionTranslationInput> inputs = List.of(
+                new ImageRegionTranslationInput("r1", "xin chào", "vi", List.of()));
+        AiExecutionFailure bug = new AiExecutionFailure(AiProviderException.Outcome.UNEXPECTED_ERROR,
+                "openrouter", "model", "NullPointerException", "correlation-1", -1, List.of());
+        when(structured.translate(preferences, inputs, "zh-TW", TranslationStylePreset.FAITHFUL))
+                .thenReturn(new StructuredImageTranslationAdapter.Result(
+                        new AiExecutionResult("你好", "openrouter", "model"),
+                        List.of(new ImageRegionTranslation("r1", "你好")), bug));
+
+        TranslationWorkflowOutcome outcome = module.execute(new TranslationWorkflowRequest(
+                profile, "xin chào", null, TranslationRequestKind.IMAGE_OCR,
+                null, false, Instant.now(), null, "vi", inputs));
+
+        assertThat(((TranslationWorkflowOutcome.Success) outcome).unexpectedFailure()).isSameAs(bug);
+    }
+
     private static Stream<Arguments> translationKinds() {
         return Stream.of(
                 Arguments.of(TranslationRequestKind.STANDARD_TEXT),

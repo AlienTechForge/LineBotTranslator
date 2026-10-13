@@ -10,6 +10,7 @@ import static org.mockito.Mockito.when;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.time.Duration;
 import java.util.List;
 
@@ -308,6 +309,35 @@ class GoogleVisionOcrServiceTests {
                 .hasCause(unavailable);
 
         assertThat(logs.list).filteredOn(event -> event.getLevel() == Level.WARN).isEmpty();
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void aBugInTheAdapterIsADefectButATransportFailureIsNot() {
+        ImageAnnotatorClient client = mock(ImageAnnotatorClient.class);
+        ObjectProvider<ImageAnnotatorClient> provider = mock(ObjectProvider.class);
+        when(provider.getIfAvailable()).thenReturn(client);
+        GoogleVisionOcrService service = new GoogleVisionOcrService(provider);
+
+        // A null response makes the adapter's own parsing throw: not a provider failure.
+        when(client.batchAnnotateImages(anyList())).thenReturn(null);
+        assertThatThrownBy(() -> service.recognize(new ByteArrayInputStream(new byte[] {1})))
+                .isExactlyInstanceOf(OcrDefectException.class)
+                .isInstanceOf(OcrProcessingException.class)
+                .hasCauseInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> service.recognizeText(new ByteArrayInputStream(new byte[] {1})))
+                .isExactlyInstanceOf(OcrDefectException.class)
+                .hasCauseInstanceOf(NullPointerException.class);
+
+        // A transport failure raised unchecked is still the provider's.
+        UncheckedIOException transport = new UncheckedIOException(new IOException("socket closed"));
+        when(client.batchAnnotateImages(anyList())).thenThrow(transport);
+        assertThatThrownBy(() -> service.recognize(new ByteArrayInputStream(new byte[] {1})))
+                .isExactlyInstanceOf(OcrProcessingException.class)
+                .hasCause(transport);
+        assertThatThrownBy(() -> service.recognizeText(new ByteArrayInputStream(new byte[] {1})))
+                .isExactlyInstanceOf(OcrProcessingException.class)
+                .hasCause(transport);
     }
 
     private static ImageAnnotatorSettings settingsWithTimeout(Duration timeout) {

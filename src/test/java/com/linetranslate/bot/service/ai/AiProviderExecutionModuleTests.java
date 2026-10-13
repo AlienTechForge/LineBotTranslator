@@ -1,6 +1,7 @@
 package com.linetranslate.bot.service.ai;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -48,6 +49,49 @@ class AiProviderExecutionModuleTests {
         AiExecutionFailure failure = ((AiExecutionOutcome.Failure) outcome).failure();
         assertThat(failure.outcome()).isEqualTo(AiProviderException.Outcome.RATE_LIMITED);
         assertThat(failure.attempts()).hasSize(1);
+    }
+
+    @Test
+    void aBugInTheAdapterIsAnUnexpectedErrorThatKeepsItsCauseOnEveryPath() {
+        FakeAdapter adapter = new FakeAdapter("openai/gpt-4o-mini", Set.of("openai/gpt-4o-mini"));
+        NullPointerException bug = new NullPointerException("seeded-private-detail");
+        adapter.bug = bug;
+
+        AiExecutionOutcome outcome = module(adapter).processImageOutcome(
+                preferences("openai/gpt-4o-mini"), "read", "data:image/jpeg;base64,AA==");
+
+        AiExecutionFailure failure = ((AiExecutionOutcome.Failure) outcome).failure();
+        assertThat(failure.outcome()).isEqualTo(AiProviderException.Outcome.UNEXPECTED_ERROR);
+        assertThat(failure.reason()).isEqualTo("NullPointerException");
+        assertThat(failure.cause()).isSameAs(bug);
+        assertThat(failure.toException().getCause()).isSameAs(bug);
+        assertThatThrownBy(outcome::resultOrThrow)
+                .isInstanceOfSatisfying(AiProviderException.class, thrown -> {
+                    assertThat(thrown.getOutcome()).isEqualTo(AiProviderException.Outcome.UNEXPECTED_ERROR);
+                    assertThat(thrown.getCause()).isSameAs(bug);
+                });
+        assertThat(failure.toString()).doesNotContain("seeded-private-detail");
+    }
+
+    @Test
+    void anAdapterThatNormalizedItsOwnBugKeepsTheCauseButProviderFailuresDoNot() {
+        FakeAdapter adapter = new FakeAdapter("openai/gpt-4o-mini", Set.of("openai/gpt-4o-mini"));
+        IllegalStateException bug = new IllegalStateException("seeded-private-detail");
+        adapter.failure = new AiProviderException(AiProviderException.Outcome.UNEXPECTED_ERROR,
+                "openrouter", "openai/gpt-4o-mini", "IllegalStateException", "correlation-1", -1, bug);
+        AiProviderExecutionModule module = module(adapter);
+
+        AiExecutionFailure unexpected = ((AiExecutionOutcome.Failure) module.translateTextOutcome(
+                preferences("openai/gpt-4o-mini"), "hello", "zh-TW")).failure();
+        assertThat(unexpected.cause()).isSameAs(bug);
+
+        adapter.failure = new AiProviderException(AiProviderException.Outcome.TRANSPORT_ERROR,
+                "openrouter", "openai/gpt-4o-mini", "IO_FAILURE", "correlation-2", -1,
+                new java.io.IOException("socket closed"));
+        AiExecutionFailure transport = ((AiExecutionOutcome.Failure) module.translateTextOutcome(
+                preferences("openai/gpt-4o-mini"), "hello", "zh-TW")).failure();
+        assertThat(transport.outcome()).isEqualTo(AiProviderException.Outcome.TRANSPORT_ERROR);
+        assertThat(transport.cause()).isNull();
     }
 
     @Test
@@ -152,6 +196,7 @@ class AiProviderExecutionModuleTests {
         private final Set<String> models;
         private final List<AiProviderRequest> requests = new ArrayList<>();
         private AiProviderException failure;
+        private RuntimeException bug;
 
         private FakeAdapter(String defaultModel, Set<String> models) {
             this.defaultModel = defaultModel;
@@ -166,6 +211,7 @@ class AiProviderExecutionModuleTests {
         public AiProviderResponse execute(AiProviderRequest request) {
             requests.add(request);
             if (failure != null) throw failure;
+            if (bug != null) throw bug;
             return new AiProviderResponse("translated", request.model(), new AiTokenUsage(10, 4, 14));
         }
     }

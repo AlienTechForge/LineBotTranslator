@@ -293,6 +293,7 @@ public interface TranslationRecordRepository extends MongoRepository<Translation
    - 檢測識別出的文字語言
    - 翻譯文字並返回結果
    - 保存翻譯記錄並更新用戶資料
+   - 辨識、儲存、翻譯或渲染階段拋出已知 OCR、provider、結構化對應、渲染或資料庫失敗以外的例外時（包含 OCR adapter 與 provider execution 包裝起來的程式缺陷：`OcrDefectException`、`UNEXPECTED_ERROR`，以及結構化翻譯嘗試遇到、由純文字回退補上的 `UNEXPECTED_ERROR`），使用者仍收到同一則降級回覆（OCR adapter 的缺陷仍會改用 AI 辨識），但以 ERROR 記錄（含移除訊息的 stack frames）並計入 `image.translation.unexpected{stage="recognition|storage|translation|rendering"}`，以區分程式缺陷與服務中斷
 
 ### AI 服務整合
 

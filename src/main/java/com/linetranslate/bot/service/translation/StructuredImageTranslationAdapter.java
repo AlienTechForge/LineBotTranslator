@@ -1,12 +1,15 @@
 package com.linetranslate.bot.service.translation;
 
 import java.util.List;
+import java.util.stream.Stream;
 
 import org.springframework.stereotype.Component;
 import org.springframework.beans.factory.annotation.Autowired;
 
+import com.linetranslate.bot.service.ai.AiExecutionFailure;
 import com.linetranslate.bot.service.ai.AiExecutionOutcome;
 import com.linetranslate.bot.service.ai.AiExecutionResult;
+import com.linetranslate.bot.service.ai.AiProviderException;
 import com.linetranslate.bot.service.preference.UserPreferences;
 
 /** Strict structured translation with one bounded repair attempt. */
@@ -38,9 +41,10 @@ public class StructuredImageTranslationAdapter {
             String targetLanguage,
             TranslationStylePreset style) {
         Attempt first = execute(preferences, regions, targetLanguage, style, false);
-        if (first.complete()) return first.result(regions);
+        if (first.complete()) return first.result(regions, null);
         Attempt repaired = execute(preferences, regions, targetLanguage, style, true);
-        if (repaired.complete()) return repaired.result(regions);
+        AiExecutionFailure defect = unexpectedFailure(first, repaired);
+        if (repaired.complete()) return repaired.result(regions, defect);
 
         // Both attempts are imperfect. Keep the regions the provider answered correctly instead of
         // discarding the whole overlay; unanswered regions keep their source pixels.
@@ -51,9 +55,20 @@ public class StructuredImageTranslationAdapter {
                     providerFailed
                             ? StructuredTranslationException.PROVIDER_FAILED
                             : StructuredTranslationException.NO_USABLE_REGION,
-                    "Structured response and repair are invalid");
+                    "Structured response and repair are invalid",
+                    defect);
         }
-        return best.result(regions);
+        return best.result(regions, defect);
+    }
+
+    /** A provider bug an attempt hit, kept because the caller may still succeed without it. */
+    private static AiExecutionFailure unexpectedFailure(Attempt... attempts) {
+        return Stream.of(attempts)
+                .map(Attempt::failure)
+                .filter(failure -> failure != null
+                        && failure.outcome() == AiProviderException.Outcome.UNEXPECTED_ERROR)
+                .findFirst()
+                .orElse(null);
     }
 
     private Attempt execute(
@@ -67,15 +82,15 @@ public class StructuredImageTranslationAdapter {
                 preferences, wire, targetLanguage, style,
                 StructuredImageTranslationCodec.SCHEMA_VERSION,
                 result -> isValid(result.text(), regions, targetLanguage));
-        if (outcome instanceof AiExecutionOutcome.Failure) {
-            return Attempt.none();
+        if (outcome instanceof AiExecutionOutcome.Failure failed) {
+            return Attempt.failed(failed.failure());
         }
         AiExecutionResult raw = ((AiExecutionOutcome.Success) outcome).result();
         List<ImageRegionTranslation> accepted = codec.decodeAvailable(raw.text(), regions).stream()
                 .filter(value -> localePolicy.accepts(value.translatedText(), targetLanguage))
                 .toList();
         long expected = regions.stream().filter(ImageRegionTranslationInput::translatable).count();
-        return new Attempt(raw, accepted, accepted.size() == expected);
+        return new Attempt(raw, accepted, accepted.size() == expected, null);
     }
 
     private boolean isValid(String response, List<ImageRegionTranslationInput> regions, String targetLanguage) {
@@ -91,13 +106,14 @@ public class StructuredImageTranslationAdapter {
     private record Attempt(
             AiExecutionResult raw,
             List<ImageRegionTranslation> translations,
-            boolean complete) {
+            boolean complete,
+            AiExecutionFailure failure) {
 
-        static Attempt none() {
-            return new Attempt(null, List.of(), false);
+        static Attempt failed(AiExecutionFailure failure) {
+            return new Attempt(null, List.of(), false, failure);
         }
 
-        Result result(List<ImageRegionTranslationInput> regions) {
+        Result result(List<ImageRegionTranslationInput> regions, AiExecutionFailure unexpectedFailure) {
             String readable = regions.stream()
                     .sorted(java.util.Comparator.comparingInt(ImageRegionTranslationInput::readingOrder)
                             .thenComparing(ImageRegionTranslationInput::regionId))
@@ -111,13 +127,24 @@ public class StructuredImageTranslationAdapter {
             AiExecutionResult normalized = new AiExecutionResult(
                     readable, raw.providerName(), raw.modelName(), raw.tokenUsage(), raw.latencyMillis(),
                     raw.fallbackUsed(), raw.attempts());
-            return new Result(normalized, translations);
+            return new Result(normalized, translations, unexpectedFailure);
         }
     }
 
-    public record Result(AiExecutionResult execution, List<ImageRegionTranslation> translations) {
+    /**
+     * @param unexpectedFailure a provider bug ({@code UNEXPECTED_ERROR}) that an attempt hit
+     *        before the answer that was used, or {@code null}
+     */
+    public record Result(
+            AiExecutionResult execution,
+            List<ImageRegionTranslation> translations,
+            AiExecutionFailure unexpectedFailure) {
         public Result {
             translations = List.copyOf(translations);
+        }
+
+        public Result(AiExecutionResult execution, List<ImageRegionTranslation> translations) {
+            this(execution, translations, null);
         }
     }
 }

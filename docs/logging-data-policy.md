@@ -9,13 +9,14 @@
 - AI provider、model、HTTP status、處理時間與功能是否可用
 - 已移除帳密、query string 與 fragment 的服務 endpoint
 - 例外類型與 cause 類型鏈，不包含例外訊息或 stack trace
+- 未預期內部錯誤（不屬於已知 OCR、provider、資料庫等失敗的 `RuntimeException`）的 stack frames（類別、方法、行號）；必須以 `SafeLog.redacted(...)` 取得移除所有例外訊息與 suppressed exception、只留類型名稱的副本再交給 logger
 
 ## 禁止記錄
 
 - API key、channel token、channel secret、密碼、authorization header 或完整連線字串
 - LINE user ID、顯示名稱、群組 ID、原始文字、OCR 結果、翻譯結果或廣播內容
 - Base64 圖片、物件儲存 signed URL、第三方 API request/response body
-- 可能包含 payload、URL、token 或帳密的例外訊息與 stack trace
+- 可能包含 payload、URL、token 或帳密的例外訊息，以及未經 `SafeLog.redacted(...)` 移除訊息的 stack trace（直接把例外物件交給 logger 會印出其訊息）
 
 ## 保留與存取
 

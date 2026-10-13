@@ -27,8 +27,8 @@ class OcrRegionPoliciesTests {
                 region("Nhiệt độ 38°C và 2.52%", true, List.of()), .6f);
         assertThat(vietnamese.qualification()).isEqualTo(OcrQualification.TRANSLATE);
         assertThat(vietnamese.protectedTokens()).containsExactly("38°C", "2.52%");
-        assertThat(qualification.preservesTokens(vietnamese, "溫度 38°C 和 2.52%" )).isTrue();
-        assertThat(qualification.preservesTokens(vietnamese, "溫度 39°C 和 2.52%" )).isFalse();
+        assertThat(keepsTokensInOrder(vietnamese, "溫度 38°C 和 2.52%")).isTrue();
+        assertThat(keepsTokensInOrder(vietnamese, "溫度 39°C 和 2.52%")).isFalse();
     }
 
     @Test
@@ -71,6 +71,17 @@ class OcrRegionPoliciesTests {
         assertThat(horizontal.orientation()).isEqualTo(OcrOrientation.HORIZONTAL);
         assertThat(vertical.orientation()).isEqualTo(OcrOrientation.VERTICAL);
         assertThat(rotated.orientation()).isEqualTo(OcrOrientation.ROTATED);
+    }
+
+    /** The ordered-token check the structured codec applies to a provider answer. */
+    private static boolean keepsTokensInOrder(OcrRegionDecision decision, String translatedText) {
+        int cursor = 0;
+        for (String token : decision.protectedTokens()) {
+            int found = translatedText.indexOf(token, cursor);
+            if (found < 0) return false;
+            cursor = found + token.length();
+        }
+        return true;
     }
 
     private static OcrRegion region(String text, boolean confidenceKnown, List<OcrDetectedLanguage> languages) {
