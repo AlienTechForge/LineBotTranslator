@@ -1,6 +1,7 @@
 package com.linetranslate.bot.service.ai;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
@@ -272,6 +273,131 @@ class OpenRouterModelCatalogTests {
         } finally {
             catalog.shutdown();
         }
+    }
+
+    @Test
+    void warmUpSchedulesOneRefreshAndDoesNotStartASecondWhileOneIsInFlight() throws Exception {
+        MutableClock clock = new MutableClock(Instant.parse("2026-08-11T00:00:00Z"));
+        AtomicInteger fetches = new AtomicInteger();
+        CountDownLatch fetchStarted = new CountDownLatch(1);
+        CountDownLatch releaseFetch = new CountDownLatch(1);
+        OkHttpClient client = client(fetches, fetch -> {
+            fetchStarted.countDown();
+            await(releaseFetch);
+            return response(catalogJson("vendor/model-a"));
+        });
+        CountingExecutor refreshExecutor = new CountingExecutor();
+        ExecutorService callers = Executors.newSingleThreadExecutor();
+        OpenRouterModelCatalog catalog = new OpenRouterModelCatalog(
+                config(), client, new ObjectMapper(), clock, refreshExecutor);
+        try {
+            within(() -> {
+                catalog.warmUp();
+                return null;
+            });
+            assertThat(fetchStarted.await(SAFETY_TIMEOUT_SECONDS, TimeUnit.SECONDS)).isTrue();
+
+            catalog.warmUp();
+            catalog.warmUp();
+            // A lookup made while the warm-up fetch runs joins it instead of fetching again.
+            Future<Optional<AiModelDescriptor>> lookup = callers.submit(() -> catalog.find("vendor/model-a"));
+
+            assertThat(refreshExecutor.submitted()).isEqualTo(1);
+
+            releaseFetch.countDown();
+            assertThat(lookup.get(SAFETY_TIMEOUT_SECONDS, TimeUnit.SECONDS)).isPresent();
+            drain(refreshExecutor);
+            int scheduled = refreshExecutor.submitted();
+
+            // The snapshot is loaded and fresh, so neither another warm-up nor a lookup fetches.
+            catalog.warmUp();
+            assertThat(catalog.find("vendor/model-a")).isPresent();
+
+            assertThat(refreshExecutor.submitted()).isEqualTo(scheduled);
+            assertThat(fetches).hasValue(1);
+        } finally {
+            releaseFetch.countDown();
+            callers.shutdownNow();
+            catalog.shutdown();
+        }
+    }
+
+    @Test
+    void warmUpDoesNotWaitForTheFetchAndTheFirstLookupFindsTheSnapshotLoaded() throws Exception {
+        AtomicInteger fetches = new AtomicInteger();
+        CountDownLatch releaseFetch = new CountDownLatch(1);
+        OkHttpClient client = client(fetches, fetch -> {
+            await(releaseFetch);
+            return response(catalogJson("vendor/model-a"));
+        });
+        ExecutorService refreshExecutor = Executors.newSingleThreadExecutor();
+        OpenRouterModelCatalog catalog = new OpenRouterModelCatalog(
+                config(), client, new ObjectMapper(),
+                new MutableClock(Instant.parse("2026-08-11T00:00:00Z")), refreshExecutor);
+        try {
+            // The fetch is blocked, so this only returns because warmUp() hands it off.
+            within(() -> {
+                catalog.warmUp();
+                return null;
+            });
+            releaseFetch.countDown();
+            drain(refreshExecutor);
+
+            assertThat(within(() -> catalog.find("vendor/model-a"))).isPresent();
+            assertThat(fetches).hasValue(1);
+        } finally {
+            releaseFetch.countDown();
+            catalog.shutdown();
+        }
+    }
+
+    @Test
+    void failedWarmUpIsHandledByTheRefreshAndTheCatalogStaysLazy() throws Exception {
+        MutableClock clock = new MutableClock(Instant.parse("2026-08-11T00:00:00Z"));
+        AtomicInteger fetches = new AtomicInteger();
+        OkHttpClient client = client(fetches, fetch -> {
+            if (fetch == 1) {
+                throw new IOException("catalog unavailable");
+            }
+            return response(catalogJson("vendor/model-a"));
+        });
+        ExecutorService refreshExecutor = Executors.newSingleThreadExecutor();
+        OpenRouterModelCatalog catalog = new OpenRouterModelCatalog(
+                config(), client, new ObjectMapper(), clock, refreshExecutor);
+        try {
+            assertThatCode(catalog::warmUp).doesNotThrowAnyException();
+            drain(refreshExecutor);
+
+            AiModelPage degraded = catalog.list("", 20);
+            assertThat(degraded.stale()).isTrue();
+            assertThat(degraded.models()).extracting(AiModelDescriptor::id)
+                    .containsExactly("vendor/default-model");
+            assertThat(fetches).hasValue(1);
+
+            // Later lookups retry on demand once the retry window has passed, as without a warm-up.
+            clock.advance(Duration.ofSeconds(61));
+            assertThat(within(() -> catalog.list("", 20)).stale()).isTrue();
+            drain(refreshExecutor);
+
+            assertThat(fetches).hasValue(2);
+            assertThat(catalog.find("vendor/model-a")).isPresent();
+        } finally {
+            catalog.shutdown();
+        }
+    }
+
+    @Test
+    void warmUpAfterShutdownDoesNotFetchOnTheCallingThread() throws Exception {
+        AtomicInteger fetches = new AtomicInteger();
+        OkHttpClient client = client(fetches, fetch -> response(catalogJson("vendor/model-a")));
+        OpenRouterModelCatalog catalog = new OpenRouterModelCatalog(
+                config(), client, new ObjectMapper(),
+                new MutableClock(Instant.parse("2026-08-11T00:00:00Z")), Executors.newSingleThreadExecutor());
+        catalog.shutdown();
+
+        assertThatCode(catalog::warmUp).doesNotThrowAnyException();
+
+        assertThat(fetches).hasValue(0);
     }
 
     private static OpenRouterConfig config() {

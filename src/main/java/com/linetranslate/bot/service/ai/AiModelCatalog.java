@@ -10,6 +10,14 @@ public interface AiModelCatalog {
 
     Optional<AiModelDescriptor> find(String modelId);
 
+    /**
+     * Hints that lookups are coming, so an implementation may load its snapshot
+     * in the background. Must return without waiting and never throw; the default
+     * does nothing, which leaves the catalog lazy.
+     */
+    default void warmUp() {
+    }
+
     default boolean contains(String modelId) {
         return find(modelId).isPresent();
     }

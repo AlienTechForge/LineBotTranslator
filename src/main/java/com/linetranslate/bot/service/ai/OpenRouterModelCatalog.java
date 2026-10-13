@@ -42,7 +42,9 @@ import okhttp3.ResponseBody;
  *
  * <p>An expired snapshot is served as-is while one background refresh runs, so
  * callers never wait on the provider once a snapshot exists. Only lookups made
- * before any snapshot exists wait, and they all share a single fetch.
+ * before any snapshot exists wait, and they all share a single fetch. {@link #warmUp()}
+ * starts that first fetch in the background once the application is ready, so the
+ * first lookup normally finds the snapshot already loaded.
  */
 @Service
 @Slf4j
@@ -90,6 +92,22 @@ public class OpenRouterModelCatalog implements AiModelCatalog {
     @PreDestroy
     void shutdown() {
         refreshExecutor.shutdownNow();
+    }
+
+    /**
+     * Hands one refresh to the refresh executor and returns without waiting for it. It goes
+     * through the same single-flight path as a lookup: a refresh that is already running is
+     * joined, and a snapshot that is still fresh is left alone, so repeated calls never start
+     * a second fetch. A failed fetch is handled and logged by that path and leaves the
+     * fallback snapshot, exactly as a failed first lookup would.
+     */
+    @Override
+    public void warmUp() {
+        if (refreshExecutor.isShutdown()) {
+            // A rejected task would run the fetch on the calling thread; warm-up must not block.
+            return;
+        }
+        refresh();
     }
 
     @Override
