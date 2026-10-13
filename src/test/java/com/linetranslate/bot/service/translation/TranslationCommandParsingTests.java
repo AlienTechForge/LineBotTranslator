@@ -115,6 +115,8 @@ class TranslationCommandParsingTests {
                         "翻譯成西班牙文早安", "早安", "es"),
                 Arguments.of("prefix form, alias name with glued text",
                         "翻譯成英語我愛你", "我愛你", "en"),
+                Arguments.of("prefix form, prose glued to the name is the source text",
+                        "翻譯成日文可以嗎", "可以嗎", "ja"),
                 Arguments.of("prefix form, glued text followed by a space and more text",
                         "翻譯成日文你好 世界", "你好 世界", "ja"),
                 Arguments.of("prefix form, glued text continues on the next lines",
@@ -127,16 +129,12 @@ class TranslationCommandParsingTests {
                         "翻譯成西班牙文\n你好", "你好", "es"),
                 Arguments.of("suffix form, longer name alone",
                         "我愛你 翻譯成繁體中文", "我愛你", "zh-TW"),
-                Arguments.of("suffix form, text glued to the language name is kept",
-                        "早安 翻譯成英文謝謝", "早安 謝謝", "en"),
-                Arguments.of("suffix form, longer name with glued text",
-                        "good morning 翻譯成簡體中文謝謝", "good morning 謝謝", "zh-CN"),
+                Arguments.of("suffix form, name followed by a space and more text is kept",
+                        "早安 翻譯成英文 謝謝", "早安 謝謝", "en"),
                 Arguments.of("multiline form, longer name alone",
                         "hello\n翻譯成繁體中文", "hello", "zh-TW"),
-                Arguments.of("multiline form, text glued to the language name is kept",
-                        "早安\n翻譯成日文謝謝", "早安 謝謝", "ja"),
-                Arguments.of("multiline form, glued text then more lines",
-                        "早安\n翻譯成日文謝謝\n再見", "早安 謝謝\n再見", "ja"));
+                Arguments.of("multiline form, name followed by a space and more text is kept",
+                        "早安\n翻譯成日文 謝謝", "早安 謝謝", "ja"));
     }
 
     private static Stream<Arguments> plainTextRequests() {
@@ -154,6 +152,16 @@ class TranslationCommandParsingTests {
                 Arguments.of("unknown language name after text",
                         "我愛你 翻譯成火星文謝謝"),
                 Arguments.of("unknown language name on the command line of a multiline message",
-                        "我愛你\n翻譯成火星文謝謝"));
+                        "我愛你\n翻譯成火星文謝謝"),
+                Arguments.of("suffix form, prose glued to the language name is not split",
+                        "請幫我 翻譯成日文可以嗎"),
+                Arguments.of("suffix form, text glued to the language name is not split",
+                        "早安 翻譯成英文謝謝"),
+                Arguments.of("suffix form, longer name with glued text is not split",
+                        "good morning 翻譯成簡體中文謝謝"),
+                Arguments.of("multiline form, text glued to the language name is not split",
+                        "早安\n翻譯成日文謝謝"),
+                Arguments.of("multiline form, glued text then more lines is not split",
+                        "早安\n翻譯成日文謝謝\n再見"));
     }
 }

@@ -123,6 +123,8 @@ class TranslationCommandTargetLanguageTests {
                 Arguments.of("翻譯成火星文你好"),
                 Arguments.of("翻譯成我愛你英文"),
                 Arguments.of("你好 翻譯成火星文"),
-                Arguments.of("你好\n翻譯成火星文你好"));
+                Arguments.of("你好\n翻譯成火星文你好"),
+                Arguments.of("請幫我 翻譯成日文可以嗎"),
+                Arguments.of("你好\n翻譯成日文可以嗎"));
     }
 }

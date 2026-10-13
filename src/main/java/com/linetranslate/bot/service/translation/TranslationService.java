@@ -34,9 +34,11 @@ public class TranslationService {
     // 所有指令模式都以 DOTALL 編譯，讓擷取的原文可跨越換行，多行輸入不會只剩指令所在的那一行。
     // 文本在前的模式另以 ^ 錨定，指令前的全部文字（而非僅最後一行）都是原文。
 
-    // 中文語言名稱的模式只擷取「翻譯成」後連續的中文字。語言名稱與原文之間可以沒有空白
-    // （翻譯成英文我愛你），所以這段中文由 chineseTarget 依已知語言名稱切成語言與原文，
+    // 以「翻譯成」開頭的指令，語言名稱與原文之間可以沒有空白（翻譯成英文我愛你），
+    // 所以該模式只擷取連續的中文字，由 chineseTarget 依已知語言名稱切成語言與原文，
     // 中文字之後的內容則由呼叫端自該 group 的結尾取回。
+    // 文本在前的格式（文本 翻譯成日文、文本換行翻譯成日文）不切分：連續的中文字必須整段
+    // 都是已知語言名稱，否則視為一般文字，避免「請幫我 翻譯成日文可以嗎」這類句子被當成指令。
 
     // 翻譯指令的正則表達式模式（中文語言名稱）
     private static final Pattern TRANSLATION_COMMAND_PATTERN_CN = Pattern.compile("翻譯成([\\u4e00-\\u9fa5]+)", Pattern.DOTALL);
@@ -45,13 +47,13 @@ public class TranslationService {
     private static final Pattern TRANSLATION_COMMAND_PATTERN_CODE = Pattern.compile("翻譯成([a-zA-Z\\-]+)\\s*(.*)", Pattern.DOTALL);
     
     // 處理「文本 翻譯成XX文」格式的模式（中文語言名稱）
-    private static final Pattern TEXT_THEN_TRANSLATION_PATTERN_CN = Pattern.compile("^(.+?)\\s+翻譯成([\\u4e00-\\u9fa5]+)", Pattern.DOTALL);
+    private static final Pattern TEXT_THEN_TRANSLATION_PATTERN_CN = Pattern.compile("^(.+?)\\s+翻譯成([\\u4e00-\\u9fa5]+)\\s*(.*)", Pattern.DOTALL);
     
     // 處理「文本 翻譯成XX」格式的模式（語言代碼）
     private static final Pattern TEXT_THEN_TRANSLATION_PATTERN_CODE = Pattern.compile("^(.+?)\\s+翻譯成([a-zA-Z\\-]+)\\s*(.*)", Pattern.DOTALL);
 
     // 多行翻譯指令的正則表達式模式（處理 "xxx\n翻譯成yyy" 的情況）
-    private static final Pattern MULTILINE_TRANSLATION_PATTERN_CN = Pattern.compile("^(.*?)\\n翻譯成([\\u4e00-\\u9fa5]+)", Pattern.DOTALL);
+    private static final Pattern MULTILINE_TRANSLATION_PATTERN_CN = Pattern.compile("^(.*?)\\n翻譯成([\\u4e00-\\u9fa5]+)\\s*(.*)", Pattern.DOTALL);
     private static final Pattern MULTILINE_TRANSLATION_PATTERN_CODE = Pattern.compile("^(.*?)\\n翻譯成([a-zA-Z\\-]+)\\s*(.*)", Pattern.DOTALL);
 
     @Autowired
@@ -91,14 +93,12 @@ public class TranslationService {
         // 處理多行翻譯格式
         if (multilineMatcherCN.find()) {
             sourceText = multilineMatcherCN.group(1).trim();
-            ChineseTarget target = chineseTarget(multilineMatcherCN.group(2));
-            if (target == null) {
+            String languageName = multilineMatcherCN.group(2);
+            targetLanguage = supportedTargetLanguage(languageName);
+            if (targetLanguage == null) {
                 return handleDefaultTranslation(userId, text, userProfile, start);
             }
-            String languageName = target.languageName();
-            targetLanguage = target.languageCode();
-            String additionalText =
-                    (target.trailingText() + text.substring(multilineMatcherCN.end(2))).trim();
+            String additionalText = multilineMatcherCN.group(3).trim();
 
             // 如果有額外文本，添加到源文本
             if (!additionalText.isEmpty()) {
@@ -141,14 +141,12 @@ public class TranslationService {
             if (textThenTranslationMatcherCN.find()) {
                 // 使用用戶指定的中文語言名稱
                 sourceText = textThenTranslationMatcherCN.group(1).trim();
-                ChineseTarget target = chineseTarget(textThenTranslationMatcherCN.group(2));
-                if (target == null) {
+                String languageName = textThenTranslationMatcherCN.group(2);
+                targetLanguage = supportedTargetLanguage(languageName);
+                if (targetLanguage == null) {
                     return handleDefaultTranslation(userId, text, userProfile, start);
                 }
-                String languageName = target.languageName();
-                targetLanguage = target.languageCode();
-                String additionalText =
-                        (target.trailingText() + text.substring(textThenTranslationMatcherCN.end(2))).trim();
+                String additionalText = textThenTranslationMatcherCN.group(3).trim();
                 
                 // 如果有額外文本，添加到源文本
                 if (!additionalText.isEmpty()) {
@@ -255,8 +253,8 @@ public class TranslationService {
     }
 
     /**
-     * 把「翻譯成」後連續的中文字切成語言名稱與原文，讓「翻譯成英文我愛你」的語言是「英文」、
-     * 原文是「我愛你」，而不是把整段中文當成語言名稱。以最長的已知語言名稱開頭；
+     * 把以「翻譯成」開頭的訊息中連續的中文字切成語言名稱與原文，讓「翻譯成英文我愛你」的語言是
+     * 「英文」、原文是「我愛你」，而不是把整段中文當成語言名稱。以最長的已知語言名稱開頭；
      * 開頭不是已知語言（或不是支援的目標語言）時回傳 null，整段訊息視為一般文字翻譯。
      */
     private static ChineseTarget chineseTarget(String chineseRun) {
