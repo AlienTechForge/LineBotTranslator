@@ -22,4 +22,14 @@ public record ImageProxyAsset(byte[] original, byte[] preview) {
     public byte[] preview() {
         return Arrays.copyOf(preview, preview.length);
     }
+
+    /** Original length without the defensive copy, for cache weighing. */
+    int originalLength() {
+        return original.length;
+    }
+
+    /** Preview length without the defensive copy, for cache weighing. */
+    int previewLength() {
+        return preview.length;
+    }
 }

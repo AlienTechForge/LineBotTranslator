@@ -202,7 +202,7 @@ jobs:
           IMAGE_PROXY_MAX_ENTRIES: ${{ vars.IMAGE_PROXY_MAX_ENTRIES || '10000' }}
           IMAGE_PROXY_PREVIEW_MAX_BYTES: ${{ vars.IMAGE_PROXY_PREVIEW_MAX_BYTES || '1048576' }}
           IMAGE_PROXY_CONTENT_CACHE_TTL: ${{ vars.IMAGE_PROXY_CONTENT_CACHE_TTL || 'PT5M' }}
-          IMAGE_PROXY_CONTENT_CACHE_ENTRIES: ${{ vars.IMAGE_PROXY_CONTENT_CACHE_ENTRIES || '256' }}
+          IMAGE_PROXY_CONTENT_CACHE_MAX_BYTES: ${{ vars.IMAGE_PROXY_CONTENT_CACHE_MAX_BYTES || '67108864' }}
           SHORT_URL_ENABLED: ${{ vars.SHORT_URL_ENABLED || 'false' }}
           DWZ_API_BASE_URL: ${{ vars.DWZ_API_BASE_URL || '' }}
           DWZ_API_TOKEN: ${{ secrets.DWZ_API_TOKEN }}
@@ -212,6 +212,7 @@ jobs:
           LANGUAGE_DETECTION_USE_AI: ${{ secrets.LANGUAGE_DETECTION_USE_AI }}
           LANGUAGE_DETECTION_DEFAULT_CHINESE: ${{ secrets.LANGUAGE_DETECTION_DEFAULT_CHINESE }}
           APP_BROADCAST_TEST_MODE: ${{ secrets.APP_BROADCAST_TEST_MODE }}
+          JAVA_TOOL_OPTIONS: ${{ vars.JAVA_TOOL_OPTIONS || '-XX:MaxRAMPercentage=75.0 -XX:+ExitOnOutOfMemoryError' }}
         run: |
           chmod +x scripts/deploy.sh
           scripts/deploy.sh
