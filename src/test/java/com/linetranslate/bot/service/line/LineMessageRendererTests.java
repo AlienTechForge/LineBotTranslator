@@ -438,7 +438,7 @@ class LineMessageRendererTests {
         String recognized = "字".repeat(50_000);
         ImageTranslationContext context = new ImageTranslationContext(
                 new DownloadedImage(new byte[] {1}, "image/png"),
-                ImageStorageResult.notStored(), recognized, null);
+                ImageStorageResult.notStored(), recognized);
         TranslationWorkflowResult translation = new TranslationWorkflowResult(
                 recognized, "ja", "zh-TW", new AiExecutionResult("短譯文", "openrouter", "model"),
                 20, TranslationRequestKind.IMAGE_OCR, "507f1f77bcf86cd799439011");
