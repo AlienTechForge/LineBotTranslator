@@ -29,6 +29,7 @@ import com.linetranslate.bot.service.settings.RuntimeSettings;
 import com.linetranslate.bot.service.settings.RuntimeSettingsSource;
 import com.linetranslate.bot.service.translation.TranslationResponse;
 import com.linetranslate.bot.service.translation.TranslationStylePreset;
+import com.linetranslate.bot.util.LineTextLimit;
 
 /** Central LINE message renderer for user-facing interaction results. */
 @Component
@@ -230,7 +231,12 @@ public class LineMessageRenderer {
     }
 
     private static Message text(String value) {
-        return new TextMessage(value == null ? "" : value);
+        return new TextMessage(lineText(value));
+    }
+
+    /** LINE rejects an oversized text message outright, so every text sent here is fitted. */
+    private static String lineText(String value) {
+        return value == null ? "" : LineTextLimit.fit(value);
     }
 
     private Message interactiveTranslation(TranslationResponse response) {
@@ -266,7 +272,7 @@ public class LineMessageRenderer {
             }
         }
 
-        return new TextMessage.Builder(response.displayText())
+        return new TextMessage.Builder(lineText(response.displayText()))
                 .quickReply(new QuickReply(items))
                 .build();
     }
