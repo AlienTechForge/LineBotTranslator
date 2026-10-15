@@ -1,0 +1,21 @@
+# local environment and secrets: never commit
+.env
+.venv/
+vision*.json
+linebot*.json
+*credentials*.json
+service-account*.json
+
+# uploads and generated outputs
+data/
+
+# test images you drop in for experiments
+*.jpg
+*.jpeg
+*.png
+*.webp
+
+# python
+__pycache__/
+*.pyc
+.pytest_cache/

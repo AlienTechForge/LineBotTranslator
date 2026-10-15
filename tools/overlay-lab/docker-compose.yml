@@ -1,0 +1,53 @@
+# overlay-lab: standalone prototype, separate from the production bot.
+#
+#   cd tools/overlay-lab
+#   cp .env.example .env        # fill in the keys
+#   docker compose up --build -d
+#
+# Vision credentials, two ways (see README.md):
+#   1. DEFAULT: the production deploy already keeps the service-account JSON in the external
+#      Docker volume `linebot-translator-secrets` (file /run/secrets/linebot.json, uid 10001,
+#      mode 0400). It is mounted read-only below, so the secret is never copied to disk.
+#      The container runs as root, which can read that 0400 file.
+#   2. Host file: comment out the volume line and the top-level `volumes:` block marked
+#      (1), then uncomment the block marked (2) and set in .env
+#        VISION_CREDENTIALS_FILE=/path/on/host/vision.json
+#        GOOGLE_APPLICATION_CREDENTIALS=/secrets/vision.json
+#
+# The lab only needs outbound internet. It does not have to join the bot's Docker network.
+
+name: overlay-lab
+
+services:
+  lab:
+    build: .
+    image: overlay-lab:local
+    container_name: overlay-lab
+    restart: unless-stopped
+    ports:
+      - "${LAB_PORT:-4041}:${LAB_PORT:-4041}"
+    environment:
+      LAB_PORT: "${LAB_PORT:-4041}"
+      LAB_TOKEN: "${LAB_TOKEN:-}"
+      LAB_MOCK: "${LAB_MOCK:-0}"
+      LAB_DATA_DIR: /app/data
+      LAB_INK_FRACTION: "${LAB_INK_FRACTION:-0.40}"
+      GOOGLE_APPLICATION_CREDENTIALS: "${GOOGLE_APPLICATION_CREDENTIALS:-/run/secrets/linebot.json}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      CLAUDE_MODEL: "${CLAUDE_MODEL:-claude-opus-5-5}"
+      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
+      OPEN_ROUTE_API_KEY: "${OPEN_ROUTE_API_KEY:-}"
+      OPENROUTER_IMAGE_MODEL: "${OPENROUTER_IMAGE_MODEL:-google/gemini-2.5-flash-image}"
+      OPENROUTER_IMAGE_API: "${OPENROUTER_IMAGE_API:-auto}"
+    volumes:
+      # (1) default: the production secrets volume, read-only
+      - linebot-translator-secrets:/run/secrets:ro
+      # (2) alternative: a credentials file on the host
+      # - ${VISION_CREDENTIALS_FILE:?set VISION_CREDENTIALS_FILE}:/secrets/vision.json:ro
+      # uploads and generated images (root-owned on the host); delete the folder to clean up
+      - ./data:/app/data
+
+# (1) must exist already (created by scripts/deploy.sh); delete this block for method (2)
+volumes:
+  linebot-translator-secrets:
+    external: true
