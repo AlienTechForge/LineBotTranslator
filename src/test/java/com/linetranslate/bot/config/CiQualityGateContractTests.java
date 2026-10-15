@@ -66,11 +66,13 @@ class CiQualityGateContractTests {
         assertThat(workflow)
                 .contains("IMAGE_TRANSLATION_OVERLAY_ENABLED:")
                 .contains("IMAGE_TRANSLATION_MAX_REGION_AREA_RATIO:")
-                .contains("IMAGE_TRANSLATION_MAX_TOTAL_MASK_RATIO:");
+                .contains("IMAGE_TRANSLATION_MAX_TOTAL_MASK_RATIO:")
+                .contains("IMAGE_TRANSLATION_POSTER_MAX_TOTAL_MASK_RATIO:");
         assertThat(deployScript)
                 .contains("IMAGE_TRANSLATION_OVERLAY_ENABLED")
                 .contains("IMAGE_TRANSLATION_MAX_REGION_AREA_RATIO")
-                .contains("IMAGE_TRANSLATION_MAX_TOTAL_MASK_RATIO");
+                .contains("IMAGE_TRANSLATION_MAX_TOTAL_MASK_RATIO")
+                .contains("IMAGE_TRANSLATION_POSTER_MAX_TOTAL_MASK_RATIO");
     }
 
     @Test

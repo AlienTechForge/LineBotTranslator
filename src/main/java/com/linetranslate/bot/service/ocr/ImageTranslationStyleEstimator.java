@@ -16,6 +16,11 @@ import java.util.Map;
 final class ImageTranslationStyleEstimator {
     private static final int SAMPLE_MARGIN = 4;
     private static final int MINIMUM_COLOUR_DISTANCE_SQUARED = 45 * 45;
+    /**
+     * Squared distance from the background at which a pixel counts as ink, for callers outside the
+     * estimator that must tell background from content by the same rule.
+     */
+    static final int INK_DISTANCE_SQUARED = MINIMUM_COLOUR_DISTANCE_SQUARED;
     private static final int MAXIMUM_COLOUR_DISTANCE = 442;
     private static final int MINIMUM_SIZE_WORDS = 2;
     private static final int MINIMUM_STROKE_RUNS = 16;
@@ -102,6 +107,81 @@ final class ImageTranslationStyleEstimator {
             }
         }
         return pixels;
+    }
+
+    /**
+     * How flat the surface behind a region is: the share of the pixels in the band of
+     * SAMPLE_MARGIN around the region's bounds (the ring {@link #estimate} takes the background
+     * colour from, less the corners inside the bounds that the region's outline leaves out) that lie
+     * within {@code distanceSquared} of that band's dominant colour. Printed layouts (fills, cards,
+     * banners) read near 1 and a photograph's texture reads low. -1 when the region leaves no band
+     * to sample (it fills the image).
+     *
+     * <p>Only the band is read, never the area inside it, so the cost follows the perimeter of the
+     * region: this is taken for every region of a layout before anything is drawn, where the full
+     * ring scan of {@code estimate} (every pixel of the bounds, tested against the outline) took a
+     * second on a 3000x2000 poster.
+     */
+    static double surroundFlatness(BufferedImage image, OcrRegion region, int distanceSquared) {
+        Rectangle bounds = OverlaySafetyPolicy.mask(region).getBounds();
+        int left = Math.max(0, bounds.x - SAMPLE_MARGIN);
+        int top = Math.max(0, bounds.y - SAMPLE_MARGIN);
+        int right = Math.min(image.getWidth() - 1, bounds.x + bounds.width - 1 + SAMPLE_MARGIN);
+        int bottom = Math.min(image.getHeight() - 1, bounds.y + bounds.height - 1 + SAMPLE_MARGIN);
+        if (left > right || top > bottom) return -1;
+        int innerLeft = Math.max(left, bounds.x);
+        int innerRight = Math.min(right, bounds.x + bounds.width - 1);
+        int[] band = new int[(right - left + 1) * 2 * SAMPLE_MARGIN + (bottom - top + 1) * 2 * SAMPLE_MARGIN];
+        int count = 0;
+        for (int y = top; y <= bottom; y++) {
+            boolean insideRows = y >= bounds.y && y < bounds.y + bounds.height;
+            for (int x = left; x <= right; x++) {
+                if (insideRows && x >= innerLeft && x <= innerRight) {
+                    x = innerRight;
+                    continue;
+                }
+                band[count++] = image.getRGB(x, y);
+            }
+        }
+        if (count == 0) return -1;
+        int surface = dominantRgb(band, count);
+        long flat = 0;
+        for (int index = 0; index < count; index++) {
+            if (rgbDistanceSquared(band[index], surface) <= distanceSquared) flat++;
+        }
+        return (double) flat / count;
+    }
+
+    /** Average colour of the most common 4-bit-per-channel bucket, as {@link #dominant} picks it. */
+    private static int dominantRgb(int[] pixels, int count) {
+        int[] buckets = new int[1 << 12];
+        for (int index = 0; index < count; index++) buckets[bucketOf(pixels[index])]++;
+        int best = 0;
+        for (int key = 1; key < buckets.length; key++) {
+            if (buckets[key] >= buckets[best]) best = key;
+        }
+        long red = 0;
+        long green = 0;
+        long blue = 0;
+        for (int index = 0; index < count; index++) {
+            if (bucketOf(pixels[index]) != best) continue;
+            red += (pixels[index] >> 16) & 0xff;
+            green += (pixels[index] >> 8) & 0xff;
+            blue += pixels[index] & 0xff;
+        }
+        int members = buckets[best];
+        return ((int) (red / members) << 16) | ((int) (green / members) << 8) | (int) (blue / members);
+    }
+
+    private static int bucketOf(int rgb) {
+        return ((rgb >> 20) & 0xf) << 8 | ((rgb >> 12) & 0xf) << 4 | ((rgb >> 4) & 0xf);
+    }
+
+    private static int rgbDistanceSquared(int left, int right) {
+        int red = ((left >> 16) & 0xff) - ((right >> 16) & 0xff);
+        int green = ((left >> 8) & 0xff) - ((right >> 8) & 0xff);
+        int blue = (left & 0xff) - (right & 0xff);
+        return red * red + green * green + blue * blue;
     }
 
     private static PixelSample foregroundPixels(
