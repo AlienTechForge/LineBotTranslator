@@ -48,16 +48,14 @@ Self-hosted runner 必須：
 - `MONGODB_URI`
 - `MONGODB_DATABASE`
 - `OPEN_ROUTE_API_KEY`
-- `GOOGLE_CREDENTIALS_JSON`，當 `OCR_ENABLED=true` 時必要
+- `GOOGLE_CREDENTIALS_JSON`，當 `OCR_ENABLED` 為 `true`（預設值，見 Actions Variables）時必要
 
 依功能設定：
 
-- `OCR_ENABLED`
 - `ADMIN_USERS`：管理員清單的 bootstrap seed。管理員以 `/admin add`、`/admin remove` 變更後，清單保存於 MongoDB `runtime_settings`；清單一旦保存，修改此環境變數不會覆蓋它
 - `ADMIN_WEB_TOKEN`，啟用 `/admin/images` 圖片管理頁時才需要
 - `MINIO_ENDPOINT`、`MINIO_ACCESS_KEY`、`MINIO_SECRET_KEY`、`MINIO_BUCKET_NAME`
 - `DWZ_API_TOKEN`，當管理員啟用木雷短網址時必要
-- `APP_BROADCAST_TEST_MODE`
 
 Secrets 只作為容器環境變數傳入，不會寫入 image、Repository 或 Actions artifact。Google service account JSON 會以權限 `0400` 儲存在 Docker volume，掛載至 `/run/secrets/linebot.json`。
 
@@ -101,6 +99,7 @@ Secrets 只作為容器環境變數傳入，不會寫入 image、Repository 或 
 | `OPEN_ROUTE_CATALOG_WARMUP` | `true` | 啟動完成後是否在背景預先載入 OpenRouter 模型 catalog；設為 `false` 則維持首次查詢時才載入。GitHub 變數留空會回到預設值。 |
 | `LANGUAGE_DETECTION_USE_AI` | `true` | 是否優先使用 AI 偵測來源語言；設為 `false` 則只用本地規則偵測。GitHub 變數留空會回到預設值。 |
 | `LANGUAGE_DETECTION_DEFAULT_CHINESE` | `zh-tw` | 偵測到中文時回報的來源語言代碼；GitHub 變數留空會回到預設值。 |
+| `APP_BROADCAST_TEST_MODE` | `false` | 設為 `true` 時管理員廣播只模擬、不實際推送訊息；GitHub 變數留空會回到預設值。 |
 | `TRANSLATION_ACTION_CLAIM_LEASE` | `PT5M` | 翻譯 action claim 處理中的租約；逾期仍未完成時由下一次點擊原子接手重試，需長於一次翻譯的最長耗時 |
 | `MONGODB_CONNECT_TIMEOUT_MS` | `3000` | Mongo socket 連線 timeout |
 | `MONGODB_READ_TIMEOUT_MS` | `5000` | Mongo socket 讀取 timeout |
@@ -117,6 +116,7 @@ Secrets 只作為容器環境變數傳入，不會寫入 image、Repository 或 
 | `MINIO_READ_TIMEOUT_MS` | `5000` | MinIO API 讀取 timeout |
 | `LINE_PUSH_FALLBACK_ENABLED` | `true` | reply token 過期時是否改用 push 傳送答案；push 消耗官方帳號每月訊息額度，reply 不消耗 |
 | `LINE_PUSH_FALLBACK_DAILY_LIMIT` | `100` | 每日（UTC+8）最多備援 push 次數，重啟後歸零；可用 `/admin quota` 查看額度與今日用量 |
+| `OCR_ENABLED` | `true` | 是否啟用 Google Vision OCR 的部署預設值；設為 `false` 則圖片改用 AI 辨識，部署也不再需要 `GOOGLE_CREDENTIALS_JSON`。管理員可用 `/admin config ocr [on\|off]` 動態切換。GitHub 變數留空會回到預設值。 |
 | `GOOGLE_VISION_TIMEOUT_MS` | `60000` | 單次 Google Vision OCR 呼叫（含重試）的總時間上限 |
 
 ### MongoDB 資料保留

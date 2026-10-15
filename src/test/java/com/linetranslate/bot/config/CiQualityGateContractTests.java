@@ -172,6 +172,21 @@ class CiQualityGateContractTests {
     }
 
     @Test
+    void ocrAndBroadcastFlagsArePassedAsVariablesWithDefaultsNotAsSecrets() throws IOException {
+        // Non-secret switches: an unset secret reaches the container as an empty string, while an unset
+        // variable falls back to the default here, so the container never sees a blank value.
+        for (String workflowFile : List.of("ci-cd.yml", "rotate-mongodb-credential.yml")) {
+            assertThat(deployStepEnvironment(workflowFile))
+                    .as(workflowFile)
+                    .containsEntry("OCR_ENABLED", "${{ vars.OCR_ENABLED || 'true' }}")
+                    .containsEntry("APP_BROADCAST_TEST_MODE", "${{ vars.APP_BROADCAST_TEST_MODE || 'false' }}");
+            assertThat(Files.readString(Path.of(".github", "workflows", workflowFile)))
+                    .as(workflowFile)
+                    .doesNotContain("secrets.OCR_ENABLED", "secrets.APP_BROADCAST_TEST_MODE");
+        }
+    }
+
+    @Test
     void deployScriptCopiesExactlyTheSettingsTheMasterDeployPasses() throws IOException {
         Set<String> workflowSettings = new TreeSet<>(deployStepEnvironment("ci-cd.yml").keySet());
         workflowSettings.removeAll(DEPLOY_CONTROL_INPUTS);

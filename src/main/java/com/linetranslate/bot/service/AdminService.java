@@ -59,7 +59,6 @@ public class AdminService {
     private List<String> adminUsers;
     
     // 測試模式，避免訊息真的發送給客戶
-    @Value("${APP_BROADCAST_TEST_MODE:false}")
     private boolean broadcastTestMode;
 
     private final TranslationRecordRepository translationRecordRepository;
@@ -112,6 +111,13 @@ public class AdminService {
         this(translationRecordRepository, userProfileRepository, messagingApiClient,
                 openRouterConfig, modelCatalog, lineUserProfileService,
                 userPreferencesModule, null, null, null);
+    }
+
+    // Injected as String so a blank APP_BROADCAST_TEST_MODE falls back to the default (off)
+    // instead of failing startup on an empty primitive boolean.
+    @Value("${app.broadcast.test-mode:${APP_BROADCAST_TEST_MODE:false}}")
+    void setBroadcastTestMode(String configured) {
+        this.broadcastTestMode = BroadcastSettings.testMode(configured);
     }
 
     /**
