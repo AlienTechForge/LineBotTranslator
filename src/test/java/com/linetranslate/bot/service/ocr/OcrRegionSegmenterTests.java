@@ -128,7 +128,6 @@ class OcrRegionSegmenterTests {
         assertThat(result).allSatisfy(region -> {
             assertThat(region.id()).startsWith("rotated-menu.l");
             assertThat(region.groupId()).isEqualTo("rotated-menu");
-            assertThat(region.orientation()).isEqualTo(OcrOrientation.VERTICAL);
             assertThat(region.writingMode()).isEqualTo(WritingMode.ROTATED_90);
             assertThat(region.compactLabel()).isTrue();
         });
@@ -436,7 +435,6 @@ class OcrRegionSegmenterTests {
         OcrRegion orphan = new OcrRegion("orphan", "る。", polygon,
                 List.of(new OcrWord("る。", polygon, .95f, true)), .95f, true, OcrBlockType.TEXT,
                 List.of(), 1);
-        assertThat(orphan.orientation()).isEqualTo(OcrOrientation.VERTICAL);
         assertThat(orphan.writingMode()).isEqualTo(WritingMode.ROTATED_90);
 
         List<OcrRegion> result = new OcrRegionSegmenter().segment(List.of(third, orphan));
@@ -805,7 +803,6 @@ class OcrRegionSegmenterTests {
         OcrRegion upright = paragraph("p3", 780, 6, 0);
         OcrRegion turned = tilted(upright, 90, 600, 780);
         java.awt.Rectangle box = OverlaySafetyPolicy.polygon(turned.polygon()).getBounds();
-        assertThat(turned.orientation()).isEqualTo(OcrOrientation.VERTICAL);
         assertThat(turned.writingMode()).isEqualTo(WritingMode.ROTATED_90);
         OcrRegion orphan = tail("orphan", "る。", box.y + box.height + 24, 1);
         orphan = shifted(orphan, box.x - LEFT, 0);
@@ -1003,6 +1000,296 @@ class OcrRegionSegmenterTests {
 
         assertThat(result).allSatisfy(region ->
                 assertThat(region.id()).doesNotContain(".v"));
+    }
+
+    // --- vertical writing: modes, flows of columns and the item gap ---------------------------------
+
+    private static final String COLUMN_A = "一二三四五六七八九十甲乙";
+    private static final String COLUMN_B = "丙丁戊己庚辛壬癸子丑寅卯";
+    private static final String COLUMN_C = "辰巳午未申酉戌亥天地玄黃";
+    private static final String COLUMN_D = "宇宙洪荒日月盈昃辰宿列張";
+
+    @Test
+    void childrenOfAnUprightColumnSplitAreVerticalWritingAndKeepTheirColumnOrder() {
+        OcrRegion card = verticalCard("card", "zh", "香酥飯", "經典飯");
+
+        List<OcrRegion> result = new OcrRegionSegmenter().segment(List.of(card));
+
+        assertThat(result).extracting(OcrRegion::writingMode)
+                .containsExactly(WritingMode.VERTICAL_RL, WritingMode.VERTICAL_RL);
+        assertThat(result).allSatisfy(region -> {
+            assertThat(region.flowCells()).isEmpty();
+            assertThat(region.compactLabel()).isFalse();
+            assertThat(region.rotationDegrees()).isZero();
+        });
+    }
+
+    @Test
+    void stackedLatinLettersAreVerticalWritingThatReadsLeftToRightAndJoinsIntoWords() {
+        OcrRegion card = verticalCard("latin", "en", "TEA", "BAR");
+
+        List<OcrRegion> result = new OcrRegionSegmenter().segment(List.of(card));
+
+        assertThat(result).extracting(OcrRegion::text).containsExactly("TEA", "BAR");
+        assertThat(result).extracting(OcrRegion::writingMode)
+                .containsExactly(WritingMode.VERTICAL_LR, WritingMode.VERTICAL_LR);
+    }
+
+    @Test
+    void aColumnKeptWholeIsClassifiedAndTextThatIsNotAColumnIsReturnedAsItWas() {
+        OcrRegion single = new OcrRegion("single", "糖醋排骨飯", rectangle(10, 10, 30, 160),
+                List.of(word("糖", 10, 10, 30, 30), word("醋", 10, 42, 30, 30), word("排", 10, 74, 30, 30),
+                        word("骨", 10, 106, 30, 30), word("飯", 10, 138, 30, 30)),
+                .98f, true, OcrBlockType.TEXT, List.of(new OcrDetectedLanguage("zh", .98f)), 0);
+        OcrRegion sentence = new OcrRegion("sentence", "Sleep Score", rectangle(10, 200, 150, 30),
+                List.of(new OcrWord("Sleep", rectangle(10, 200, 60, 30), .99f, true),
+                        new OcrWord("Score", rectangle(80, 200, 70, 30), .99f, true)),
+                .99f, true, OcrBlockType.TEXT, List.of(new OcrDetectedLanguage("en", .99f)), 1);
+
+        List<OcrRegion> result = new OcrRegionSegmenter().segment(List.of(single, sentence));
+
+        assertThat(result.get(0).writingMode()).isEqualTo(WritingMode.VERTICAL_RL);
+        assertThat(result.get(0).text()).isEqualTo("糖醋排骨飯");
+        assertThat(result.get(1)).isEqualTo(sentence);
+        assertThat(result.get(1).writingMode()).isEqualTo(WritingMode.HORIZONTAL);
+    }
+
+    @Test
+    void aColumnSplitInATurnedFrameDoesNotMakeItsChildrenVerticalWriting() {
+        // The same card read in a frame that is turned a quarter: its columns are rows of a turned
+        // page, so its children are laid out in that frame, as they were before the mode existed.
+        List<OcrWord> words = new java.util.ArrayList<>();
+        String[] columns = {"香酥飯", "經典飯"};
+        for (int column = 0; column < columns.length; column++) {
+            int row = 0;
+            for (int codePoint : columns[column].codePoints().toArray()) {
+                words.add(rotatedWord(new String(Character.toChars(codePoint)), 300, 10,
+                        10 + column * 50, 10 + row++ * 24, 22, 22));
+            }
+        }
+        OcrRegion card = new OcrRegion("turned-card", "香酥飯 經典飯", rotatedRectangle(300, 10, 105, 100),
+                words, .98f, true, OcrBlockType.TEXT, List.of(new OcrDetectedLanguage("zh", .98f)), 0);
+        assertThat(card.writingMode()).isEqualTo(WritingMode.ROTATED_90);
+
+        List<OcrRegion> result = new OcrRegionSegmenter().segment(List.of(card));
+
+        assertThat(result).hasSize(2);
+        assertThat(result).allSatisfy(region -> {
+            assertThat(region.writingMode()).isEqualTo(WritingMode.ROTATED_90);
+            assertThat(region.flowCells()).isEmpty();
+        });
+    }
+
+    @Test
+    void aVerticalParagraphFromTheProviderFrameIsSplitIntoItsColumnsInTheUprightFrame() {
+        // Vision lists a vertical column as a line whose top is its right side: vertex 0 at the
+        // column's top right, the first edge pointing down. Three columns, one word each, that are
+        // runs of several glyphs rather than single glyphs.
+        OcrRegion paragraph = verticalParagraph("b1", WritingMode.VERTICAL_RL, true, 10, null,
+                "香酥雞腿飯", "經典排骨飯", "澎湃海鮮飯");
+        assertThat(paragraph.rotationDegrees()).isCloseTo(90, within(.01));
+
+        List<OcrRegion> result = new OcrRegionSegmenter().segment(List.of(paragraph));
+
+        assertThat(result).extracting(OcrRegion::text).containsExactly("香酥雞腿飯", "經典排骨飯", "澎湃海鮮飯");
+        assertThat(result).extracting(OcrRegion::id).containsExactly("b1.v1.1", "b1.v2.1", "b1.v3.1");
+        assertThat(result).allSatisfy(region -> {
+            assertThat(region.writingMode()).isEqualTo(WritingMode.VERTICAL_RL);
+            assertThat(region.rotationDegrees()).as("the polygon is upright").isZero();
+            assertThat(region.uprightPolygon()).isEqualTo(region.polygon());
+        });
+        assertThat(result.get(0).polygon().get(0).x()).as("right to left")
+                .isGreaterThan(result.get(1).polygon().get(0).x());
+    }
+
+    @Test
+    void fourFullColumnsOfProseAreOneFlowReadRightToLeft() {
+        OcrRegion prose = verticalParagraph("prose", WritingMode.HORIZONTAL, false, 8, null,
+                COLUMN_A, COLUMN_B, COLUMN_C, COLUMN_D);
+
+        List<OcrRegion> result = new OcrRegionSegmenter().segment(List.of(prose));
+
+        assertThat(result).hasSize(1);
+        OcrRegion flow = result.get(0);
+        assertThat(flow.id()).isEqualTo("prose.f1");
+        assertThat(flow.text()).isEqualTo(COLUMN_A + COLUMN_B + COLUMN_C + COLUMN_D);
+        assertThat(flow.writingMode()).isEqualTo(WritingMode.VERTICAL_RL);
+        assertThat(flow.compactLabel()).isFalse();
+        assertThat(flow.words()).extracting(OcrWord::text).startsWith("一", "二").endsWith("列", "張");
+        assertThat(flow.flowCells()).hasSize(4);
+        List<Integer> lefts = flow.flowCells().stream().map(cell -> cell.get(0).x()).toList();
+        assertThat(lefts).as("the cells are in reading order, from the right").isSortedAccordingTo(
+                java.util.Comparator.reverseOrder());
+        assertThat(flow.flowCells()).allSatisfy(cell -> {
+            assertThat(cell.get(0).y()).isEqualTo(flow.polygon().get(0).y());
+            assertThat(cell.get(3).y()).isEqualTo(flow.polygon().get(3).y());
+        });
+        // The region spans all the cells, and nothing else.
+        java.awt.Rectangle union = OverlaySafetyPolicy.polygon(flow.polygon()).getBounds();
+        assertThat(flow.flowCells().stream().map(cell -> OverlaySafetyPolicy.polygon(cell).getBounds())
+                .reduce(java.awt.Rectangle::union).orElseThrow()).isEqualTo(union);
+    }
+
+    @Test
+    void aMenuOfEqualLengthNamesStaysAListOfItems() {
+        OcrRegion menu = verticalParagraph("menu", WritingMode.HORIZONTAL, false, 8, null,
+                "香酥雞飯", "經典排飯", "澎湃海飯", "風味魚飯");
+
+        List<OcrRegion> result = new OcrRegionSegmenter().segment(List.of(menu));
+
+        assertThat(result).extracting(OcrRegion::id)
+                .containsExactly("menu.v1.1", "menu.v2.1", "menu.v3.1", "menu.v4.1");
+        assertThat(result).allSatisfy(region -> {
+            assertThat(region.flowCells()).isEmpty();
+            assertThat(region.writingMode()).isEqualTo(WritingMode.VERTICAL_RL);
+        });
+    }
+
+    @Test
+    void aColumnThatEndsInAPriceMakesTheParagraphAListNotAFlow() {
+        OcrRegion priced = verticalParagraph("priced", WritingMode.HORIZONTAL, false, 8, null,
+                COLUMN_A, COLUMN_B.substring(0, 9) + "280", COLUMN_C, COLUMN_D);
+
+        assertThat(new OcrRegionSegmenter().segment(List.of(priced)))
+                .extracting(OcrRegion::id).doesNotContain("priced.f1")
+                .allSatisfy(id -> assertThat(id).contains(".v"));
+    }
+
+    @Test
+    void columnsThatDoNotSpanTheSameHeightOrKeepAPitchAreNotAFlow() {
+        OcrRegion ragged = verticalParagraph("ragged", WritingMode.HORIZONTAL, false, 8, null,
+                COLUMN_A, COLUMN_B.substring(0, 8), COLUMN_C, COLUMN_D);
+        OcrRegion irregular = verticalParagraph("irregular", WritingMode.HORIZONTAL, false, 8,
+                new int[] {0, 0, 6}, COLUMN_A, COLUMN_B, COLUMN_C, COLUMN_D);
+
+        assertThat(new OcrRegionSegmenter().segment(List.of(ragged)))
+                .allSatisfy(region -> assertThat(region.flowCells()).isEmpty());
+        assertThat(new OcrRegionSegmenter().segment(List.of(irregular)))
+                .allSatisfy(region -> assertThat(region.flowCells()).isEmpty());
+    }
+
+    @Test
+    void aParagraphEndInTheMiddleOfTheBlockGivesTwoFlows() {
+        // The provider ends a paragraph after the second column and starts another in the third.
+        OcrBreak[] ends = {OcrBreak.WRAP, OcrBreak.PARAGRAPH_END, OcrBreak.WRAP, OcrBreak.PARAGRAPH_END};
+        OcrRegion block = verticalParagraph("block", WritingMode.VERTICAL_RL, false, 8, null, ends,
+                COLUMN_A, COLUMN_B, COLUMN_C, COLUMN_D);
+
+        List<OcrRegion> result = new OcrRegionSegmenter().segment(List.of(block));
+
+        assertThat(result).extracting(OcrRegion::id).containsExactly("block.f1", "block.f2");
+        assertThat(result.get(0).text()).isEqualTo(COLUMN_A + COLUMN_B);
+        assertThat(result.get(1).text()).isEqualTo(COLUMN_C + COLUMN_D);
+        assertThat(result).extracting(region -> region.flowCells().size()).containsExactly(2, 2);
+        assertThat(result.get(0).polygon().get(0).x()).isGreaterThan(result.get(1).polygon().get(0).x());
+    }
+
+    @Test
+    void aColumnThatDoesNotEndInAWrapWhereBreaksAreKnownIsNotPartOfAFlow() {
+        OcrBreak[] ends = {OcrBreak.WRAP, OcrBreak.NONE, OcrBreak.WRAP, OcrBreak.PARAGRAPH_END};
+        OcrRegion block = verticalParagraph("loose", WritingMode.VERTICAL_RL, false, 8, null, ends,
+                COLUMN_A, COLUMN_B, COLUMN_C, COLUMN_D);
+
+        assertThat(new OcrRegionSegmenter().segment(List.of(block)))
+                .allSatisfy(region -> assertThat(region.flowCells()).isEmpty());
+    }
+
+    @Test
+    void aLooselyTrackedNameIsOneItemAndTheWideGapBetweenNamesStillSplits() {
+        // Glyphs 22 tall with 20px between each (0.9 of a glyph), and 66px between two names. The
+        // old gap of three quarters of a glyph cut every glyph off; a gap is now also two and a half
+        // times the gaps between the column's own glyphs.
+        List<OcrWord> words = new java.util.ArrayList<>();
+        String[][] names = {{"香酥雞", "經典魚"}, {"澎湃蝦", "風味貝"}};
+        int[] columnX = {10, 70};
+        for (int column = 0; column < 2; column++) {
+            int y = 10;
+            for (String name : names[column]) {
+                for (int codePoint : name.codePoints().toArray()) {
+                    words.add(word(new String(Character.toChars(codePoint)), columnX[column], y, 22, 22));
+                    y += 22 + 20;
+                }
+                y += 66 - 20;
+            }
+        }
+        OcrRegion card = new OcrRegion("loose", "香酥雞 經典魚 澎湃蝦 風味貝", rectangle(5, 5, 90, 290), words,
+                .98f, true, OcrBlockType.TEXT, List.of(new OcrDetectedLanguage("zh", .98f)), 0);
+
+        List<OcrRegion> result = new OcrRegionSegmenter().segment(List.of(card));
+
+        assertThat(result).extracting(OcrRegion::text)
+                .containsExactly("澎湃蝦", "風味貝", "香酥雞", "經典魚");
+        assertThat(result).extracting(OcrRegion::id)
+                .containsExactly("loose.v1.1", "loose.v1.2", "loose.v2.1", "loose.v2.2");
+    }
+
+    @Test
+    void aColumnWithoutEnoughGapsToJudgeKeepsTheOldRule() {
+        // Two names of one glyph, one wide gap: there is no typical gap to measure, so the three
+        // quarters of a glyph decide, as they did.
+        List<OcrWord> words = new java.util.ArrayList<>();
+        for (int column = 0; column < 4; column++) {
+            words.add(word("字", 10 + column * 60, 10, 22, 22));
+            words.add(word("名", 10 + column * 60, 60, 22, 22));
+        }
+        OcrRegion card = new OcrRegion("pairs", "字名 字名 字名 字名", rectangle(5, 5, 250, 90), words,
+                .98f, true, OcrBlockType.TEXT, List.of(new OcrDetectedLanguage("zh", .98f)), 0);
+
+        assertThat(new OcrRegionSegmenter().segment(List.of(card))).hasSize(8);
+    }
+
+    /**
+     * One column per argument in reading order (the first is the rightmost), a glyph to a word, with
+     * Vision's habit of listing the leftmost column first. Glyphs are 22 wide and 22 tall at a pitch
+     * of 24, and columns are {@code gap} apart; a column's x can be moved with {@code nudge} (by
+     * column in reading order). {@code ends} is the break after the last word of each column in
+     * reading order, or null for none. With {@code providerFrame} every polygon is listed from its
+     * top-right corner downwards, as Vision lists the box of a vertical column, and each column is
+     * one word.
+     */
+    private static OcrRegion verticalParagraph(String id, WritingMode mode, boolean providerFrame, int gap,
+            int[] nudge, String... columnsInReadingOrder) {
+        return verticalParagraph(id, mode, providerFrame, gap, nudge, null, columnsInReadingOrder);
+    }
+
+    private static OcrRegion verticalParagraph(String id, WritingMode mode, boolean providerFrame, int gap,
+            int[] nudge, OcrBreak[] ends, String... columnsInReadingOrder) {
+        int count = columnsInReadingOrder.length;
+        int longest = java.util.Arrays.stream(columnsInReadingOrder)
+                .mapToInt(column -> column.codePointCount(0, column.length())).max().orElse(1);
+        int left = 10;
+        int top = 10;
+        int width = count * 22 + (count - 1) * gap;
+        int height = longest * 24 - 2;
+        List<OcrWord> words = new java.util.ArrayList<>();
+        for (int visual = 0; visual < count; visual++) {
+            int reading = count - 1 - visual;
+            String column = columnsInReadingOrder[reading];
+            int x = left + visual * (22 + gap) + (nudge == null || reading >= nudge.length ? 0 : nudge[reading]);
+            int[] codePoints = column.codePoints().toArray();
+            OcrBreak columnEnd = ends == null ? OcrBreak.NONE : ends[reading];
+            if (providerFrame) {
+                words.add(new OcrWord(column, providerPolygon(x, top, 22, codePoints.length * 24 - 2),
+                        .98f, true, List.of(), columnEnd));
+                continue;
+            }
+            for (int row = 0; row < codePoints.length; row++) {
+                words.add(new OcrWord(new String(Character.toChars(codePoints[row])),
+                        rectangle(x, top + row * 24, 22, 22), .98f, true, List.of(),
+                        row == codePoints.length - 1 ? columnEnd : OcrBreak.NONE));
+            }
+        }
+        String text = String.join("", columnsInReadingOrder);
+        List<OcrPoint> polygon = providerFrame ? providerPolygon(left, top, width, height)
+                : rectangle(left, top, width, height);
+        return new OcrRegion(id, text, polygon, words, .98f, true, OcrBlockType.TEXT,
+                List.of(new OcrDetectedLanguage("zh", .98f)), 0, id, false, mode, List.of());
+    }
+
+    /** A box as Vision lists a vertical column's: from its top-right corner, first edge pointing down. */
+    private static List<OcrPoint> providerPolygon(int x, int y, int width, int height) {
+        return List.of(new OcrPoint(x + width, y), new OcrPoint(x + width, y + height),
+                new OcrPoint(x, y + height), new OcrPoint(x, y));
     }
 
     /**

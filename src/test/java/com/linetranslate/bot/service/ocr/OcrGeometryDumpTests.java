@@ -92,7 +92,6 @@ class OcrGeometryDumpTests {
             value.put("groupId", region.groupId());
             value.put("compactLabel", region.compactLabel());
             value.put("confidence", region.confidence());
-            value.put("orientation", region.orientation().name());
             value.put("writingMode", region.writingMode().name());
             value.put("edgeAngle", region.rotationDegrees());
             value.set("polygon", points(region.polygon()));

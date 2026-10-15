@@ -205,12 +205,19 @@ public class GoogleVisionOcrService implements OcrService {
             if (normalizePage && !regions.isEmpty()) {
                 PageOrientation orientation = PageOrientationDetector.detect(regions);
                 int quarter = turnToApply(orientation, page);
+                int vertical = 0;
                 if (quarter != 0) {
                     regions = QuarterTurns.toUpright(regions, quarter, page.width(), page.height());
+                } else {
+                    // Upright vertical writing has the frame of a turned page. It is not turned, only
+                    // named, so that it is split and laid out as columns.
+                    regions = PageOrientationDetector.markVerticalWriting(regions, orientation,
+                            PageOrientationDetector.SYMBOL_FRAME_FOLLOWS_GLYPH);
+                    vertical = (int) regions.stream().filter(region -> region.writingMode().vertical()).count();
                 }
                 frame = new PageFrame(quarter, page.width(), page.height(), orientation.verdict(),
                         quarter != 0 && orientation.retryAdvised(), orientation.reliableShare());
-                logDecision(orientation, page, quarter);
+                logDecision(orientation, page, quarter, vertical);
             }
             List<OcrRegion> segmented = regionSegmenter.segment(regions);
             log.info("結構化 OCR 完成: providerRegions={}, layoutRegions={}",
@@ -242,21 +249,24 @@ public class GoogleVisionOcrService implements OcrService {
      * no region id reaches it, because those are short hashes of the source and add nothing to an
      * aggregate decision.
      */
-    private static void logDecision(PageOrientation orientation, ProviderPage page, int appliedQuarter) {
+    private static void logDecision(
+            PageOrientation orientation, ProviderPage page, int appliedQuarter, int verticalRegions) {
         String action = appliedQuarter != 0 ? "normalize"
+                : verticalRegions > 0 ? "mark-vertical"
                 : orientation.verdict() != PageOrientation.Verdict.ROTATED ? "none"
                 : page.pageCount() != 1 ? "skip-pages" : "skip-page-size";
         log.info("Page orientation decision: verdict={}, quarterTurns={}, regions={}, reliableRegions={}, "
                         + "dominantShare={}, skewedShare={}, reliableShare={}, cjkShare={}, symbolSamples={}, "
                         + "uprightGlyphShare={}, rotatedGlyphShare={}, punctuationSamples={}, "
-                        + "punctuationOffset={}, action={}, retryAdvised={}, pageWidth={}, pageHeight={}",
+                        + "punctuationOffset={}, action={}, verticalRegions={}, retryAdvised={}, "
+                        + "pageWidth={}, pageHeight={}",
                 orientation.verdict(), orientation.quarterTurns() < 0 ? "n/a" : orientation.quarterTurns(),
                 orientation.regions(), orientation.reliableRegions(),
                 format(orientation.dominantShare()), format(orientation.skewedShare()),
                 format(orientation.reliableShare()), format(orientation.cjkShare()),
                 orientation.symbolSamples(), format(orientation.uprightGlyphShare()),
                 format(orientation.rotatedGlyphShare()), orientation.punctuationSamples(),
-                format(orientation.punctuationOffset()), action,
+                format(orientation.punctuationOffset()), action, verticalRegions,
                 appliedQuarter != 0 && orientation.retryAdvised(), page.width(), page.height());
     }
 
@@ -300,15 +310,19 @@ public class GoogleVisionOcrService implements OcrService {
                     String text = paragraphText(paragraph);
                     List<OcrPoint> polygon = points(paragraph.getBoundingBox());
                     if (!text.isBlank() && polygon.size() >= 4) {
-                        List<OcrWord> words = paragraph.getWordsList().stream().map(word -> {
-                            String wordText = wordText(word);
+                        List<Word> sourceWords = paragraph.getWordsList();
+                        List<OcrWord> words = new ArrayList<>(sourceWords.size());
+                        for (int index = 0; index < sourceWords.size(); index++) {
+                            Word word = sourceWords.get(index);
                             List<OcrSymbol> symbols = word.getSymbolsList().stream()
                                     .map(symbol -> new OcrSymbol(symbol.getText(), points(symbol.getBoundingBox()),
                                             symbol.getConfidence(), symbol.getConfidence() > 0))
                                     .toList();
-                            return new OcrWord(wordText, points(word.getBoundingBox()), word.getConfidence(),
-                                    word.getConfidence() > 0, symbols);
-                        }).toList();
+                            Word following = index + 1 < sourceWords.size() ? sourceWords.get(index + 1) : null;
+                            words.add(new OcrWord(wordText(word), points(word.getBoundingBox()),
+                                    word.getConfidence(), word.getConfidence() > 0, symbols,
+                                    breakAfter(word, following)));
+                        }
                         List<OcrDetectedLanguage> languages = detectedLanguages(paragraph);
                         regions.add(new OcrRegion(
                                 stableId(readingOrder, text, polygon), text, polygon, words,
@@ -375,6 +389,29 @@ public class GoogleVisionOcrService implements OcrService {
             }
         }
         return TextAnnotation.DetectedBreak.BreakType.UNKNOWN;
+    }
+
+    /**
+     * The break the provider recorded after {@code word}: the one that precedes or follows it at the
+     * boundary with {@code following}, or on its own last symbol when it ends the paragraph.
+     */
+    private static OcrBreak breakAfter(Word word, Word following) {
+        TextAnnotation.DetectedBreak.BreakType type;
+        if (following != null) {
+            type = breakBetween(word, following);
+        } else if (word.getSymbolsCount() > 0
+                && word.getSymbols(word.getSymbolsCount() - 1).getProperty().hasDetectedBreak()) {
+            type = word.getSymbols(word.getSymbolsCount() - 1).getProperty().getDetectedBreak().getType();
+        } else {
+            type = TextAnnotation.DetectedBreak.BreakType.UNKNOWN;
+        }
+        return switch (type) {
+            case SPACE, SURE_SPACE -> OcrBreak.SPACE;
+            case EOL_SURE_SPACE -> OcrBreak.WRAP;
+            case LINE_BREAK -> OcrBreak.PARAGRAPH_END;
+            case HYPHEN -> OcrBreak.HYPHEN;
+            default -> OcrBreak.NONE;
+        };
     }
 
     private static String separator(

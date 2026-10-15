@@ -978,6 +978,166 @@ class PolygonOverlayRendererTests {
                 new OverlayRenderDecision("short", OverlayRenderStatus.RENDERED, "rendered"));
     }
 
+    // --- vertical writing: the choice between an upright and a turned layout -------------------------
+
+    private static final String LATIN_NAME = "Sweet and Sour Pork Ribs Rice";
+
+    @Test
+    void aLatinReplacementInAFlowOfFourColumnsIsDrawnUprightAcrossIt() throws Exception {
+        // About 160x170: broad enough for text set across it, which is how a paragraph reads, and
+        // much too broad for one line turned to run down a single column.
+        BufferedImage original = whiteImage(220, 220);
+        List<OcrWord> glyphs = new java.util.ArrayList<>();
+        for (int column = 0; column < 4; column++) {
+            glyphs.addAll(VerticalFixtures.column("字字字字字字字字", 20 + column * 40, 20, 34, 20, 21));
+        }
+        List<List<OcrPoint>> cells = List.of(rectangle(140, 20, 40, 170), rectangle(100, 20, 40, 170),
+                rectangle(60, 20, 40, 170), rectangle(20, 20, 40, 170));
+        OcrRegion flow = new OcrRegion("flow", "字".repeat(32), rectangle(20, 20, 160, 170), glyphs, .99f, true,
+                OcrBlockType.TEXT, List.of(), 0, "flow", false, WritingMode.VERTICAL_RL, cells);
+
+        // Short words: the largest size that fits must not need a word split between its letters,
+        // or the turned layout is kept, which is the point of the rule.
+        BufferedImage output = renderLatin(original, flow, "Tea set");
+
+        int[] ink = inkBounds(output, 18, 18, 166, 174);
+        assertThat(ink[2]).as("upright text is wider than it is tall (%sx%s)", ink[2], ink[3])
+                .isGreaterThan(ink[3]);
+    }
+
+    @Test
+    void aLatinReplacementInASingleVerticalColumnRunsAlongTheColumn() throws Exception {
+        BufferedImage original = whiteImage(140, 220);
+        OcrRegion column = VerticalFixtures.singleColumn("column", "糖醋排骨飯", 40, 25, 30, 163);
+
+        BufferedImage output = renderLatin(original, column, LATIN_NAME);
+
+        int[] ink = inkBounds(output, 38, 23, 36, 170);
+        assertThat(ink[3]).as("ink must run down the column (%sx%s)", ink[2], ink[3])
+                .isGreaterThan(ink[2] * 2);
+        for (int y = 0; y < 220; y++) {
+            for (int x = 0; x < 140; x++) {
+                if (x >= 38 && x <= 72 && y >= 23 && y <= 190) continue;
+                assertThat(new Color(output.getRGB(x, y))).as("pixel outside the column at %s,%s", x, y)
+                        .isEqualTo(Color.WHITE);
+            }
+        }
+    }
+
+    @Test
+    void aShortLatinWordInANarrowTallCellIsTurnedAlongTheCellNotStackedOneLetterToALine() throws Exception {
+        for (String word : List.of("Menu", "OK")) {
+            // 24 wide and 120 tall, a column by its ratio. Upright, the word is wider than the 20px
+            // it has, so it would be broken into one letter a line; turned, it reads along the cell.
+            BufferedImage original = whiteImage(100, 170);
+            OcrRegion narrow = groupedRegion("narrow", "菜單", 40, 20, 24, 120);
+            // The same box as a turned frame: first edge pointing down, so its own frame is the
+            // turned frame, and a translation drawn in it is what the turn draws.
+            List<OcrPoint> down = List.of(new OcrPoint(64, 20), new OcrPoint(64, 140),
+                    new OcrPoint(40, 140), new OcrPoint(40, 20));
+            OcrRegion inItsOwnTurnedFrame = new OcrRegion("down", "菜單", down, List.of(), .99f, true,
+                    OcrBlockType.TEXT, List.of(), 0);
+            assertThat(inItsOwnTurnedFrame.writingMode()).isEqualTo(WritingMode.ROTATED_90);
+
+            BufferedImage turned = renderLatin(original, narrow, word);
+            BufferedImage reference = renderLatin(original, inItsOwnTurnedFrame, word);
+
+            int[] ink = inkBounds(turned, 38, 18, 28, 124);
+            assertThat(ink[3]).as("%s runs along the cell (%sx%s)", word, ink[2], ink[3]).isGreaterThan(ink[2]);
+            assertThat(VerticalFixtures.differing(turned, reference))
+                    .as("%s is drawn exactly as the turned frame draws it", word).isZero();
+        }
+    }
+
+    @Test
+    void aShortLatinWordInASingleVerticalColumnIsTurnedAlongTheColumnToo() throws Exception {
+        for (String word : List.of("Menu", "OK")) {
+            BufferedImage original = whiteImage(100, 170);
+            OcrRegion column = VerticalFixtures.singleColumn("column", "菜單", 40, 20, 24, 120);
+            List<OcrPoint> down = List.of(new OcrPoint(64, 20), new OcrPoint(64, 140),
+                    new OcrPoint(40, 140), new OcrPoint(40, 20));
+            OcrRegion inItsOwnTurnedFrame = new OcrRegion("down", "菜單", down, List.of(), .99f, true,
+                    OcrBlockType.TEXT, List.of(), 0);
+
+            BufferedImage turned = renderLatin(original, column, word);
+            BufferedImage reference = renderLatin(original, inItsOwnTurnedFrame, word);
+
+            int[] ink = inkBounds(turned, 38, 18, 28, 124);
+            assertThat(ink[3]).as("%s runs along the column (%sx%s)", word, ink[2], ink[3]).isGreaterThan(ink[2]);
+            assertThat(VerticalFixtures.differing(turned, reference))
+                    .as("%s is drawn exactly as the turned frame draws it", word).isZero();
+        }
+    }
+
+    @Test
+    void aTallHorizontalCellIsNoLongerTurnedWhenTheTextFitsUprightAboutAsWell() throws Exception {
+        // 100x190 reads as a column by its ratio, but "Hot tea" in two lines across it is larger
+        // than the same text in one line down it, so it stays upright. It used to be turned.
+        BufferedImage original = whiteImage(160, 230);
+        OcrRegion cell = groupedRegion("tall", "熱茶", 30, 20, 100, 190);
+
+        BufferedImage output = renderLatin(original, cell, "Hot tea");
+
+        int[] ink = inkBounds(output, 28, 18, 104, 194);
+        assertThat(ink[3]).as("two upright lines, not one turned (%sx%s)", ink[2], ink[3])
+                .isLessThan(ink[2] * 2);
+    }
+
+    @Test
+    void aTurnedFrameKeepsItsUnconditionalTurnAndNeverLaysCjkOutAsColumns() throws Exception {
+        // A paragraph read in a frame that points down the image and was never shown to be vertical
+        // writing (the page could be turned instead). A Chinese replacement is drawn along the frame
+        // as before: its glyphs lie on their sides, so a row of "one" strokes comes out as one long
+        // vertical line, not as a stack of short horizontal bars.
+        BufferedImage original = whiteImage(140, 220);
+        List<OcrPoint> turned = List.of(new OcrPoint(70, 25), new OcrPoint(70, 188),
+                new OcrPoint(40, 188), new OcrPoint(40, 25));
+        OcrRegion region = new OcrRegion("turned", "糖醋排骨飯", turned, List.of(), .99f, true,
+                OcrBlockType.TEXT, List.of(), 0);
+        assertThat(region.writingMode()).isEqualTo(WritingMode.ROTATED_90);
+
+        VerticalFixtures.Rendered rendered = VerticalFixtures.render(original, VerticalFixtures.cjkFonts(),
+                new ImageRegionOverlay(region, "一一一一"));
+
+        assertThat(rendered.result().decisions()).extracting(OverlayRenderDecision::reason)
+                .containsExactly("rendered");
+        int[] ink = inkBounds(rendered.output(), 38, 23, 36, 170);
+        assertThat(ink[3]).as("a long line down the column (%sx%s)", ink[2], ink[3]).isGreaterThan(ink[2] * 4);
+    }
+
+    @Test
+    void aLatinReplacementInATurnedFrameStillTurnsWhenTheCellIsTall() throws Exception {
+        BufferedImage original = whiteImage(140, 220);
+        // Not vertical writing and not horizontal: a skewed cell that is taller than it is wide keeps
+        // the quarter turn it always had.
+        List<OcrPoint> skewed = List.of(new OcrPoint(40, 25), new OcrPoint(76, 31),
+                new OcrPoint(70, 190), new OcrPoint(34, 184));
+        OcrRegion region = new OcrRegion("skewed", "糖醋排骨飯", skewed, List.of(), .99f, true,
+                OcrBlockType.TEXT, List.of(), 0);
+        assertThat(region.writingMode()).isEqualTo(WritingMode.SKEWED);
+
+        BufferedImage output = renderLatin(original, region, LATIN_NAME);
+
+        int[] ink = inkBounds(output, 30, 20, 50, 175);
+        assertThat(ink[3]).as("turned, so it runs down the cell (%sx%s)", ink[2], ink[3]).isGreaterThan(ink[2] * 2);
+    }
+
+    private static BufferedImage renderLatin(BufferedImage original, OcrRegion region, String replacement)
+            throws Exception {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        ImageIO.write(original, "png", bytes);
+        ValidatedImage source = new ImageInputValidator(ImageTranslationProperties.defaults())
+                .validate(bytes.toByteArray(), "image/png");
+        OverlaySafetyPlan plan = new OverlaySafetyPolicy().evaluate(
+                List.of(new ImageRegionOverlay(region, replacement)),
+                original.getWidth(), original.getHeight(),
+                new ImageTranslationProperties(1000, 400, 100000, .6f, true, .8, .9));
+        RenderedImage rendered = new ImageTranslationOverlayRenderer(
+                new ImageTranslationFontProvider(Set.of("dejavu sans"))).render(source, plan);
+        assertThat(rendered.decisions()).extracting(OverlayRenderDecision::reason).containsExactly("rendered");
+        return ImageIO.read(new ByteArrayInputStream(rendered.pngBytes()));
+    }
+
     private static List<OcrPoint> rectangle(int x, int y, int width, int height) {
         return List.of(new OcrPoint(x, y), new OcrPoint(x + width, y),
                 new OcrPoint(x + width, y + height), new OcrPoint(x, y + height));

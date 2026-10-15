@@ -225,6 +225,35 @@ class OverlayWordWrapTests {
         assertThat(wrap("", widestWord)).containsExactly("");
     }
 
+    @Test
+    void saysWhetherAWordHadToBeBrokenBetweenItsCharacters() {
+        int menu = metrics.stringWidth("Menu");
+        boolean[] whole = new boolean[1];
+        boolean[] broken = new boolean[1];
+
+        List<String> unbroken = ImageTranslationOverlayRenderer.wrap("Open Menu", metrics, menu, whole);
+        List<String> split = ImageTranslationOverlayRenderer.wrap("Open Menu", metrics, menu / 2, broken);
+
+        assertThat(unbroken).containsExactly("Open", "Menu");
+        assertThat(whole[0]).as("a word that fits a line of its own is never broken").isFalse();
+        assertThat(split.size()).isGreaterThan(2);
+        assertThat(broken[0]).as("a word wider than the line is broken between its letters").isTrue();
+    }
+
+    @Test
+    void aGlyphWiderThanTheLineAndHanAndKanaBreaksAreNotBrokenWords() {
+        boolean[] flag = new boolean[1];
+
+        ImageTranslationOverlayRenderer.wrap("糖醋排骨飯", metrics, metrics.stringWidth("糖醋"), flag);
+        assertThat(flag[0]).as("Han glyphs are breakable anywhere, each one its own token").isFalse();
+
+        ImageTranslationOverlayRenderer.wrap("W", metrics, 1, flag);
+        assertThat(flag[0]).as("one glyph cannot be broken").isFalse();
+
+        ImageTranslationOverlayRenderer.wrap("Menu", metrics, 1, flag);
+        assertThat(flag[0]).isTrue();
+    }
+
     private List<String> wrap(String text, int width) {
         return ImageTranslationOverlayRenderer.wrap(text, metrics, width);
     }

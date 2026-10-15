@@ -26,6 +26,10 @@ public class OcrRegionSegmenter {
     private static final int MIN_VERTICAL_LAYOUT_WORDS = 6;
     private static final int MAX_COMPACT_CODEPOINTS = 3;
     private static final int MAX_DENSE_CHILDREN = 100;
+    /** An item gap in a column is also at least this many times the typical gap between its glyphs. */
+    static final double TRACKING_GAP_FACTOR = 2.5;
+    /** The typical glyph gap of a column is only taken from at least this many gaps. */
+    private static final int MIN_GAPS_FOR_TRACKING = 2;
     private static final Pattern PRICE_TOKEN = Pattern.compile(
             "^[\\p{Sc}\\s]*\\d[\\d,.'’]*(?:元|円|圓|원)?$");
     private static final Pattern SIZE_TOKEN = Pattern.compile("(?i)^(?:S|M|L|XL|XXL)$");
@@ -60,7 +64,7 @@ public class OcrRegionSegmenter {
             } else if (isDiscreteLabelRow(region)) {
                 result.addAll(splitDiscreteLabels(region));
             } else {
-                result.add(region);
+                result.add(withColumnMode(region));
             }
         }
         List<OcrRegion> ordered = new ArrayList<>(result.size());
@@ -70,21 +74,41 @@ public class OcrRegionSegmenter {
         return List.copyOf(ordered);
     }
 
+    /**
+     * A region kept whole is checked once for being a single column of upright vertical writing.
+     * Only a region that is one keeps anything from this: any other comes back as it was.
+     */
+    private static OcrRegion withColumnMode(OcrRegion region) {
+        WritingMode mode = WritingModeClassifier.columnMode(region);
+        return mode == region.writingMode()
+                ? region : region.withGeometry(region.polygon(), region.words(), mode);
+    }
+
     private static List<OcrRegion> splitDenseParagraph(OcrRegion region) {
         LocalFrame frame = LocalFrame.from(region);
-        if (frame == null || region.words().size() < 3
+        // Vertical writing arrives from the page verdict with words that are runs of glyphs, and a
+        // paragraph of two columns has two of them, so two words are enough to look for columns.
+        boolean vertical = region.writingMode().vertical();
+        if (frame == null || region.words().size() < (vertical ? 2 : 3)
                 || region.words().stream().anyMatch(word -> word.text().isBlank()
                         || word.polygon().size() < 4)) {
             return List.of();
         }
         List<WordBox> readingOrder = region.words().stream()
                 .map(word -> new WordBox(word, frame.bounds(word.polygon()))).toList();
-        if (isVerticalColumnLayout(readingOrder)) {
+        // Words of vertical writing may be runs of several glyphs, which the single-glyph test of
+        // the column layout would refuse, and its lines are never rows: it only splits into columns.
+        if (vertical || isVerticalColumnLayout(readingOrder)) {
             List<OcrRegion> columnChildren = splitVerticalColumns(region, frame, readingOrder);
             if (!columnChildren.isEmpty()) {
+                boolean flow = columnChildren.stream().anyMatch(child -> !child.flowCells().isEmpty());
                 reportDecision(region, columnChildren.size(), 0, 0, false, columnChildren.size(),
-                        "split-vertical-columns");
+                        flow ? "split-vertical-flow" : "split-vertical-columns");
                 return columnChildren;
+            }
+            if (vertical) {
+                reportDecision(region, 0, 0, 0, false, 0, "kept-vertical-single-column");
+                return List.of();
             }
         }
         List<VisualLine> lines = visualLines(region.words(), frame);
@@ -306,46 +330,230 @@ public class OcrRegionSegmenter {
     }
 
     /**
-     * Splits a top-to-bottom paragraph into one region per item. Columns come first, then each
-     * column is cut at its vertical gaps so a run of characters forming one label stays together.
+     * Splits a top-to-bottom paragraph into one region per item, or into one region per flow of
+     * columns when the paragraph is vertical prose. Columns come first, then each column is cut at
+     * its vertical gaps so a run of characters forming one label stays together.
      *
      * <p>Children are emitted in reading order, and that order is what the translation request and
      * the plain-text reply follow. Vertical CJK is read from the rightmost column to the leftmost,
      * while Latin stacked in a column keeps the left-to-right order of the page. The suffix counts
      * columns in the emitted order, so ids stay unique and follow the order they were emitted in.
+     *
+     * <p>Children of a paragraph that stands upright in the image are vertical writing, right to
+     * left for CJK and left to right otherwise. A paragraph that was analysed in a turned frame is
+     * not: its children keep the mode their own frame gives them.
      */
     private static List<OcrRegion> splitVerticalColumns(
             OcrRegion region, LocalFrame frame, List<WordBox> readingOrder) {
         List<VisualColumn> columns = visualColumns(readingOrder);
         if (columns.size() < 2) return List.of();
         boolean rightToLeft = isMostlyCjk(readingOrder);
+        WritingMode mode = columnChildMode(region, rightToLeft);
         Rectangle paragraph = frame.bounds();
-        List<OcrRegion> children = new ArrayList<>();
-        for (int position = 0; position < columns.size(); position++) {
-            // columnIndex is the visual position, which is what the cell bounds depend on.
-            int columnIndex = rightToLeft ? columns.size() - 1 - position : position;
-            VisualColumn column = columns.get(columnIndex);
-            int left = columnIndex == 0
+        int[] lefts = new int[columns.size()];
+        int[] rights = new int[columns.size()];
+        List<List<WordSegment>> items = new ArrayList<>(columns.size());
+        for (int index = 0; index < columns.size(); index++) {
+            VisualColumn column = columns.get(index);
+            lefts[index] = index == 0
                     ? paragraph.x
-                    : midpoint(columns.get(columnIndex - 1).right(), column.left());
-            int right = columnIndex == columns.size() - 1
+                    : midpoint(columns.get(index - 1).right(), column.left());
+            rights[index] = index == columns.size() - 1
                     ? paragraph.x + paragraph.width
-                    : midpoint(column.right(), columns.get(columnIndex + 1).left());
-            List<WordSegment> items = verticalSegments(column);
-            for (int itemIndex = 0; itemIndex < items.size(); itemIndex++) {
-                WordSegment item = items.get(itemIndex);
+                    : midpoint(column.right(), columns.get(index + 1).left());
+            items.add(verticalSegments(column));
+        }
+        // Visual column indices in reading order.
+        List<Integer> order = new ArrayList<>(columns.size());
+        for (int position = 0; position < columns.size(); position++) {
+            order.add(rightToLeft ? columns.size() - 1 - position : position);
+        }
+        if (mode == WritingMode.VERTICAL_RL) {
+            List<List<Integer>> runs = flowRuns(region, paragraph, columns, items, order);
+            if (runs != null) {
+                return flowChildren(region, frame, items, lefts, rights, runs);
+            }
+        }
+        List<OcrRegion> children = new ArrayList<>();
+        for (int position = 0; position < order.size(); position++) {
+            // columnIndex is the visual position, which is what the cell bounds depend on.
+            int columnIndex = order.get(position);
+            List<WordSegment> column = items.get(columnIndex);
+            for (int itemIndex = 0; itemIndex < column.size(); itemIndex++) {
+                WordSegment item = column.get(itemIndex);
                 int top = itemIndex == 0
                         ? paragraph.y
-                        : midpoint(items.get(itemIndex - 1).bottom(), item.top());
-                int bottom = itemIndex == items.size() - 1
+                        : midpoint(column.get(itemIndex - 1).bottom(), item.top());
+                int bottom = itemIndex == column.size() - 1
                         ? paragraph.y + paragraph.height
-                        : midpoint(item.bottom(), items.get(itemIndex + 1).top());
+                        : midpoint(item.bottom(), column.get(itemIndex + 1).top());
                 children.add(child(region, frame, ".v" + (position + 1) + "." + (itemIndex + 1),
-                        item.words(), left, top, right, bottom, false));
+                        item.words(), lefts[columnIndex], top, rights[columnIndex], bottom, false,
+                        mode, List.of()));
             }
         }
         return children.size() < 2 || children.size() > MAX_DENSE_CHILDREN
                 ? List.of() : List.copyOf(children);
+    }
+
+    /**
+     * The mode of the children of a column split: vertical writing when the paragraph stands
+     * upright in the image (an axis-aligned paragraph, or one already known to be vertical), and
+     * none, so that the frame decides, for a paragraph that was analysed in a turned frame.
+     */
+    private static WritingMode columnChildMode(OcrRegion region, boolean rightToLeft) {
+        WritingMode source = region.writingMode();
+        if (source != WritingMode.HORIZONTAL && !source.vertical()) return null;
+        return rightToLeft ? WritingMode.VERTICAL_RL : WritingMode.VERTICAL_LR;
+    }
+
+    // --- flows of columns --------------------------------------------------------------------
+
+    /** Columns and total glyphs a flow needs at the least. */
+    static final int FLOW_MIN_COLUMNS = 2;
+    static final int FLOW_MIN_GLYPHS = 8;
+    /** A flow's typical column is at least this long; a menu of equal-length names is not one. */
+    static final int FLOW_MIN_MEDIAN_COLUMN_GLYPHS = 10;
+    /** Largest gap between columns, in median glyph widths. */
+    static final double FLOW_MAX_GAP_GLYPHS = 1.0;
+    /** How far a gap may stray from the median gap, relative to it. */
+    static final double FLOW_GAP_TOLERANCE = .50;
+    /** A price at the foot of a column makes it a list item, not a line of prose. */
+    private static final Pattern TRAILING_PRICE = Pattern.compile(
+            "\\p{Sc}*\\d[\\d,.'’]*(?:元|円|圓|원)?$");
+
+    /**
+     * The runs of columns, each a list of visual column indices in reading order, that form flows
+     * of vertical prose, or null when the paragraph is not one. A run is a flow only if all of
+     * these hold, and every run of the paragraph has to be one:
+     * <ol>
+     *   <li>at least two columns and eight glyphs;</li>
+     *   <li>each column is one item, with no item gap inside it;</li>
+     *   <li>every column but the run's last spans the paragraph's height, top and bottom within one
+     *       median glyph height of it; the last needs only to be top-aligned;</li>
+     *   <li>the pitch is regular: each gap between columns is at most one median glyph width and
+     *       within 50% of the median gap;</li>
+     *   <li>the median column holds at least ten glyphs;</li>
+     *   <li>when the provider recorded breaks (known only for vertical writing it read as such),
+     *       each column but the run's last ends in a wrap, and a paragraph end closes the run;</li>
+     *   <li>no column ends in a price.</li>
+     * </ol>
+     */
+    private static List<List<Integer>> flowRuns(OcrRegion region, Rectangle paragraph,
+            List<VisualColumn> columns, List<List<WordSegment>> items, List<Integer> order) {
+        for (List<WordSegment> column : items) {
+            if (column.size() != 1) return null;
+        }
+        boolean breaks = region.writingMode().vertical() && recordsBreaks(region);
+        List<List<Integer>> runs = new ArrayList<>();
+        List<Integer> current = new ArrayList<>();
+        for (int position = 0; position < order.size(); position++) {
+            int index = order.get(position);
+            current.add(index);
+            if (!breaks) continue;
+            OcrBreak after = lastBreak(columns.get(index));
+            if (after == OcrBreak.PARAGRAPH_END) {
+                runs.add(current);
+                current = new ArrayList<>();
+            } else if (position < order.size() - 1 && after != OcrBreak.WRAP) {
+                return null;
+            }
+        }
+        if (!current.isEmpty()) runs.add(current);
+        for (List<Integer> run : runs) {
+            if (!isFlow(run, paragraph, columns)) return null;
+        }
+        return runs;
+    }
+
+    private static boolean recordsBreaks(OcrRegion region) {
+        return region.words().stream().anyMatch(
+                word -> word.breakAfter() == OcrBreak.WRAP || word.breakAfter() == OcrBreak.PARAGRAPH_END);
+    }
+
+    /** The break recorded after the lowest word of a column. */
+    private static OcrBreak lastBreak(VisualColumn column) {
+        return column.words().stream().max(Comparator.comparingInt(WordBox::bottom))
+                .map(box -> box.word().breakAfter()).orElse(OcrBreak.NONE);
+    }
+
+    private static boolean isFlow(List<Integer> run, Rectangle paragraph, List<VisualColumn> columns) {
+        if (run.size() < FLOW_MIN_COLUMNS) return false;
+        List<VisualColumn> members = run.stream().map(columns::get).toList();
+        List<WordBox> words = members.stream().flatMap(column -> column.words().stream()).toList();
+        List<Integer> glyphCounts = members.stream().map(column -> glyphs(column.words())).toList();
+        if (glyphCounts.stream().mapToInt(Integer::intValue).sum() < FLOW_MIN_GLYPHS) return false;
+        if (lowerMedian(glyphCounts) < FLOW_MIN_MEDIAN_COLUMN_GLYPHS) return false;
+
+        int glyphHeight = median(words.stream()
+                .map(box -> box.height() / Math.max(1, box.word().text().codePointCount(
+                        0, box.word().text().length()))).toList());
+        int glyphWidth = median(words.stream().map(box -> box.bounds().width).toList());
+        for (int position = 0; position < members.size(); position++) {
+            Rectangle bounds = members.get(position).bounds();
+            boolean last = position == members.size() - 1;
+            if (Math.abs(bounds.y - paragraph.y) > glyphHeight) return false;
+            if (!last && Math.abs(bounds.y + bounds.height - (paragraph.y + paragraph.height)) > glyphHeight) {
+                return false;
+            }
+        }
+        // The columns of a run read right to left, so each one's left edge faces the next one.
+        List<Integer> gaps = new ArrayList<>();
+        for (int position = 0; position + 1 < members.size(); position++) {
+            gaps.add(members.get(position).left() - members.get(position + 1).right());
+        }
+        int medianGap = lowerMedian(gaps);
+        for (int gap : gaps) {
+            if (gap > glyphWidth * FLOW_MAX_GAP_GLYPHS) return false;
+            // One pixel of slack: the bounds are whole pixels, and a median of zero would otherwise
+            // refuse every gap that is not exactly zero.
+            if (Math.abs(gap - medianGap) > Math.max(1, Math.abs(medianGap) * FLOW_GAP_TOLERANCE)) return false;
+        }
+        for (VisualColumn column : members) {
+            String joined = joinWords(column.words().stream().sorted(Comparator.comparingInt(WordBox::top))
+                    .map(WordBox::word).toList(), null).replaceAll("\\s+", "");
+            if (TRAILING_PRICE.matcher(joined).find()) return false;
+        }
+        return true;
+    }
+
+    private static int glyphs(List<WordBox> words) {
+        return words.stream().mapToInt(box -> (int) box.word().text().codePoints()
+                .filter(codePoint -> !Character.isWhitespace(codePoint)).count()).sum();
+    }
+
+    /** The lower of the two middle values: the smaller one, when only two are known. */
+    private static int lowerMedian(List<Integer> values) {
+        List<Integer> sorted = values.stream().sorted().toList();
+        return sorted.isEmpty() ? 0 : sorted.get((sorted.size() - 1) / 2);
+    }
+
+    /**
+     * One region per run. The text reads the columns right to left, each from the top, and the
+     * cells are the columns' own cells in the same order, reaching the paragraph's top and bottom.
+     */
+    private static List<OcrRegion> flowChildren(OcrRegion region, LocalFrame frame,
+            List<List<WordSegment>> items, int[] lefts, int[] rights, List<List<Integer>> runs) {
+        Rectangle paragraph = frame.bounds();
+        List<OcrRegion> children = new ArrayList<>(runs.size());
+        for (int number = 0; number < runs.size(); number++) {
+            List<Integer> run = runs.get(number);
+            List<WordBox> words = new ArrayList<>();
+            List<List<OcrPoint>> cells = new ArrayList<>(run.size());
+            int left = Integer.MAX_VALUE;
+            int right = Integer.MIN_VALUE;
+            for (int index : run) {
+                words.addAll(items.get(index).get(0).words());
+                cells.add(frame.polygon(lefts[index], paragraph.y, Math.max(lefts[index] + 1, rights[index]),
+                        paragraph.y + paragraph.height));
+                left = Math.min(left, lefts[index]);
+                right = Math.max(right, rights[index]);
+            }
+            children.add(child(region, frame, ".f" + (number + 1), words, left, paragraph.y,
+                    Math.max(left + 1, right), paragraph.y + paragraph.height, false,
+                    WritingMode.VERTICAL_RL, cells));
+        }
+        return List.copyOf(children);
     }
 
     /**
@@ -355,30 +563,29 @@ public class OcrRegionSegmenter {
      * is not mostly CJK and keeps the page's left-to-right order.
      */
     private static boolean isMostlyCjk(List<WordBox> boxes) {
-        long cjk = 0;
-        long letters = 0;
-        for (WordBox box : boxes) {
-            for (int codePoint : box.word().text().codePoints().toArray()) {
-                if (!Character.isLetter(codePoint)) continue;
-                Character.UnicodeScript script = Character.UnicodeScript.of(codePoint);
-                if (script == Character.UnicodeScript.COMMON
-                        || script == Character.UnicodeScript.INHERITED) continue;
-                letters++;
-                if (script == Character.UnicodeScript.HAN
-                        || script == Character.UnicodeScript.HIRAGANA
-                        || script == Character.UnicodeScript.KATAKANA
-                        || script == Character.UnicodeScript.HANGUL
-                        || script == Character.UnicodeScript.BOPOMOFO) cjk++;
-            }
-        }
-        return letters > 0 && cjk * 2 > letters;
+        return WritingModeClassifier.isMostlyCjk(boxes.stream().map(box -> box.word().text()).toList());
     }
 
+    /**
+     * Cuts a column into items at its vertical gaps. A gap is an item boundary when it is at least
+     * three quarters of the median glyph height (and six pixels), and also at least two and a half
+     * times the typical gap between neighbouring glyphs of the same column: a name tracked loosely,
+     * with a wide gap between each of its glyphs, is one item, and the gap between two names has to
+     * be wider than that. The typical gap is the lower median of the column's own gaps, and is only
+     * taken when the column has at least two gaps to take it from.
+     */
     private static List<WordSegment> verticalSegments(VisualColumn column) {
         List<WordBox> words = column.words().stream()
                 .sorted(Comparator.comparingInt(WordBox::top)).toList();
         int medianHeight = median(words.stream().map(WordBox::height).toList());
         int splitGap = Math.max(6, (int) Math.ceil(medianHeight * .75));
+        List<Integer> glyphGaps = new ArrayList<>();
+        for (int index = 1; index < words.size(); index++) {
+            glyphGaps.add(Math.max(0, words.get(index).top() - words.get(index - 1).bottom()));
+        }
+        if (glyphGaps.size() >= MIN_GAPS_FOR_TRACKING) {
+            splitGap = Math.max(splitGap, (int) Math.ceil(TRACKING_GAP_FACTOR * lowerMedian(glyphGaps)));
+        }
         List<WordSegment> segments = new ArrayList<>();
         List<WordBox> current = new ArrayList<>();
         for (WordBox word : words) {
@@ -553,6 +760,12 @@ public class OcrRegionSegmenter {
 
     private static OcrRegion child(OcrRegion source, LocalFrame frame, String suffix, List<WordBox> boxes,
             int left, int top, int right, int bottom, boolean compact) {
+        return child(source, frame, suffix, boxes, left, top, right, bottom, compact, null, List.of());
+    }
+
+    private static OcrRegion child(OcrRegion source, LocalFrame frame, String suffix, List<WordBox> boxes,
+            int left, int top, int right, int bottom, boolean compact, WritingMode mode,
+            List<List<OcrPoint>> flowCells) {
         List<OcrWord> words = boxes.stream().map(WordBox::word).toList();
         boolean allWordConfidenceKnown = words.stream().allMatch(OcrWord::confidenceKnown);
         boolean confidenceKnown = allWordConfidenceKnown || source.confidenceKnown();
@@ -561,7 +774,7 @@ public class OcrRegionSegmenter {
                 : source.confidence();
         return new OcrRegion(
                 source.id() + suffix,
-                joinWords(words),
+                joinWords(words, mode),
                 frame.polygon(left, top, Math.max(left + 1, right), Math.max(top + 1, bottom)),
                 words,
                 confidence,
@@ -570,16 +783,32 @@ public class OcrRegionSegmenter {
                 source.languages(),
                 0,
                 source.groupId(),
-                compact);
+                compact,
+                mode,
+                flowCells);
     }
 
-    private static String joinWords(List<OcrWord> words) {
+    /**
+     * The words in order, with the script rule between them. Letters stacked one to a word in a
+     * column of left-to-right vertical writing are one word, so "T", "E", "A" read "TEA".
+     */
+    private static String joinWords(List<OcrWord> words, WritingMode mode) {
         StringBuilder result = new StringBuilder();
+        OcrWord previous = null;
         for (OcrWord word : words) {
-            result.append(OcrWordJoiner.scriptSeparator(result, word.text()));
+            boolean stackedLetters = mode == WritingMode.VERTICAL_LR && previous != null
+                    && isSingleLatinLetter(previous.text()) && isSingleLatinLetter(word.text());
+            if (!stackedLetters) result.append(OcrWordJoiner.scriptSeparator(result, word.text()));
             result.append(word.text());
+            previous = word;
         }
         return result.toString();
+    }
+
+    private static boolean isSingleLatinLetter(String value) {
+        return value.codePointCount(0, value.length()) == 1
+                && Character.isLetter(value.codePointAt(0))
+                && Character.UnicodeScript.of(value.codePointAt(0)) == Character.UnicodeScript.LATIN;
     }
 
     private static boolean isDiscreteLabelRow(OcrRegion region) {
@@ -637,9 +866,13 @@ public class OcrRegionSegmenter {
             double determinant, int width, int height) {
         static LocalFrame from(OcrRegion region) {
             if (region == null || region.polygon().size() < 4) return null;
-            OcrPoint origin = region.polygon().get(0);
-            OcrPoint right = region.polygon().get(1);
-            OcrPoint bottom = region.polygon().get(region.polygon().size() - 1);
+            // Upright vertical writing is analysed in the frame of the image, whatever corner the
+            // provider started its polygon at, so its columns are columns and not lines.
+            List<OcrPoint> polygon = region.writingMode().vertical()
+                    ? region.uprightPolygon() : region.polygon();
+            OcrPoint origin = polygon.get(0);
+            OcrPoint right = polygon.get(1);
+            OcrPoint bottom = polygon.get(polygon.size() - 1);
             double xLength = Math.hypot(right.x() - origin.x(), right.y() - origin.y());
             double yLength = Math.hypot(bottom.x() - origin.x(), bottom.y() - origin.y());
             if (xLength <= 1 || yLength <= 1) return null;

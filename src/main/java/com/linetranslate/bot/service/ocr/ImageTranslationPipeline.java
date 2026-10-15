@@ -769,6 +769,7 @@ public class ImageTranslationPipeline {
     }
 
     static ImageRegionLayout layout(OcrRegion region) {
+        if (region.writingMode().vertical()) return verticalLayout(region);
         java.awt.Rectangle bounds = OverlaySafetyPolicy.polygon(region.polygon()).getBounds();
         OcrPoint origin = region.polygon().get(0);
         OcrPoint edge = region.polygon().get(1);
@@ -796,6 +797,41 @@ public class ImageTranslationPipeline {
                 : Math.max(geometricCapacity, sourceCharacters * 2);
         return new ImageRegionLayout(region.groupId(), bounds.x, bounds.y,
                 localWidth, localHeight, maxLines, maxCharacters, region.compactLabel());
+    }
+
+    /**
+     * The budget of a region of upright vertical writing, measured along its columns: a line is a
+     * column, so its length is the height of the region and the lines stack across its width. A glyph
+     * is as wide as a column is thick, and a column leaves a fifth of a glyph between itself and the
+     * next. Measured across the horizontal axes, a 30x163 column would read as four lines of two
+     * characters, which is not what it can hold.
+     */
+    private static ImageRegionLayout verticalLayout(OcrRegion region) {
+        java.awt.Rectangle bounds = OverlaySafetyPolicy.polygon(region.polygon()).getBounds();
+        List<OcrPoint> upright = region.uprightPolygon();
+        OcrPoint origin = upright.get(0);
+        OcrPoint edge = upright.get(1);
+        OcrPoint side = upright.get(upright.size() - 1);
+        int width = Math.max(1, (int) Math.round(Math.hypot(
+                edge.x() - origin.x(), edge.y() - origin.y())));
+        int height = Math.max(1, (int) Math.round(Math.hypot(
+                side.x() - origin.x(), side.y() - origin.y())));
+        List<Integer> glyphs = region.words().stream()
+                .map(OcrWord::polygon).filter(points -> points.size() >= 4)
+                .map(points -> (int) Math.round(OcrRegion.uprightWidth(points)))
+                .filter(value -> value > 1).sorted().toList();
+        int glyph = glyphs.isEmpty() ? Math.min(width, 24) : glyphs.get(glyphs.size() / 2);
+        int maxLines = region.compactLabel() ? 1
+                : Math.max(1, (int) Math.floor(width / Math.max(10d, glyph * 1.2)));
+        int charactersPerLine = Math.max(2, (int) Math.floor(height / Math.max(4d, glyph)));
+        int geometricCapacity = Math.max(2, charactersPerLine * maxLines);
+        int sourceCharacters = region.text().codePointCount(0, region.text().length());
+        int maxCharacters = region.compactLabel()
+                ? geometricCapacity
+                : Math.max(geometricCapacity, sourceCharacters * 2);
+        // As for any region, width is the length of a line and height the room the lines stack in.
+        return new ImageRegionLayout(region.groupId(), bounds.x, bounds.y,
+                height, width, maxLines, maxCharacters, region.compactLabel());
     }
 
     /**

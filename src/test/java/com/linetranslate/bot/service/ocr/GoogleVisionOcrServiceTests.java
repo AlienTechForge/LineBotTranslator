@@ -568,6 +568,111 @@ class GoogleVisionOcrServiceTests {
         assertSingleDocumentRequest(reading.client());
     }
 
+    // --- vertical writing ---------------------------------------------------------------------------
+
+    @Test
+    void recordsTheBreakVisionDetectedAfterEachWord() {
+        Paragraph paragraph = Paragraph.newBuilder()
+                .setBoundingBox(box(10, 10, 400, 60))
+                .setConfidence(.95f)
+                .addWords(word("南")).addWords(word("洋", BreakType.EOL_SURE_SPACE))
+                .addWords(word("Green", BreakType.SPACE)).addWords(word("curry", BreakType.SURE_SPACE))
+                .addWords(word("chick", BreakType.HYPHEN)).addWords(word("en", BreakType.UNKNOWN))
+                .addWords(word("rice", BreakType.LINE_BREAK))
+                .build();
+
+        List<OcrRegion> regions = recognize(paragraph);
+
+        assertThat(regions).singleElement().satisfies(region ->
+                assertThat(region.words()).extracting(OcrWord::breakAfter).containsExactly(
+                        OcrBreak.NONE, OcrBreak.WRAP, OcrBreak.SPACE, OcrBreak.SPACE, OcrBreak.HYPHEN,
+                        OcrBreak.NONE, OcrBreak.PARAGRAPH_END));
+    }
+
+    @Test
+    void aPageOfVerticalWritingIsNamedAsSuchAndNotTurned() {
+        RotatedPageFixtures page = new RotatedPageFixtures(400, 400, 1);
+        List<OcrRegion> provider = new java.util.ArrayList<>();
+        for (int index = 0; index < 3; index++) {
+            provider.add(page.cjk("c" + index, "日本語の文章を読みます、そして書きます。", 10, 10 + index * 40,
+                    RotatedPageFixtures.Marks.HIGH, RotatedPageFixtures.SymbolFrame.FOLLOWS_LINE, index));
+        }
+        Reading reading = reading(page.pageWidth(), page.pageHeight(), provider);
+
+        OcrRecognition recognition = reading.service().recognize(new ByteArrayInputStream(new byte[] {1}));
+
+        PageFrame frame = recognition.frame();
+        assertThat(frame.verdict()).isEqualTo(PageOrientation.Verdict.VERTICAL_WRITING);
+        assertThat(frame.quarterTurns()).as("named, not turned").isZero();
+        assertThat(recognition.regions()).hasSize(3).allSatisfy(region -> {
+            assertThat(region.writingMode()).isEqualTo(WritingMode.VERTICAL_RL);
+            assertThat(region.rotationDegrees()).as("the provider's own vertices").isCloseTo(90,
+                    org.assertj.core.data.Offset.offset(.01));
+        });
+        // The legacy entry point has no frame to report and names nothing.
+        assertThat(reading.service().recognizeRegions(new ByteArrayInputStream(new byte[] {1})))
+                .allSatisfy(region -> assertThat(region.writingMode()).isEqualTo(WritingMode.ROTATED_90));
+        List<String> lines = logs.list.stream().map(ILoggingEvent::getFormattedMessage).toList();
+        assertThat(lines).filteredOn(line -> line.startsWith("Page orientation decision")).first()
+                .satisfies(line -> assertThat(line).contains("verdict=VERTICAL_WRITING", "quarterTurns=1",
+                        "action=mark-vertical", "verticalRegions=3"));
+        assertThat(String.join("\n", lines)).doesNotContain("日本語", "c0", "c1");
+    }
+
+    @Test
+    void aVerticalProseParagraphIsSplitIntoOneFlowUsingTheBreaksTheProviderRecorded() {
+        RotatedPageFixtures page = new RotatedPageFixtures(400, 400, 1);
+        List<OcrRegion> provider = new java.util.ArrayList<>();
+        for (int index = 0; index < 3; index++) {
+            provider.add(page.cjk("c" + index, "日本語の文章を読みます、そして書きます。", 10, 10 + index * 40,
+                    RotatedPageFixtures.Marks.HIGH, RotatedPageFixtures.SymbolFrame.FOLLOWS_LINE, index));
+        }
+        provider.add(verticalProse());
+        Reading reading = reading(page.pageWidth(), page.pageHeight(), provider);
+
+        OcrRecognition recognition = reading.service().recognize(new ByteArrayInputStream(new byte[] {1}));
+
+        assertThat(recognition.frame().verdict()).isEqualTo(PageOrientation.Verdict.VERTICAL_WRITING);
+        OcrRegion flow = recognition.regions().get(recognition.regions().size() - 1);
+        assertThat(flow.id()).endsWith(".f1");
+        assertThat(flow.writingMode()).isEqualTo(WritingMode.VERTICAL_RL);
+        assertThat(flow.flowCells()).hasSize(4);
+        assertThat(flow.text()).isEqualTo("一二三四五六七八九十甲乙" + "丙丁戊己庚辛壬癸子丑寅卯"
+                + "辰巳午未申酉戌亥天地玄黃" + "宇宙洪荒日月盈昃辰宿列張");
+        assertThat(flow.rotationDegrees()).as("the flow is upright").isZero();
+        assertThat(recognition.regions().subList(0, 3)).allSatisfy(region ->
+                assertThat(region.writingMode()).isEqualTo(WritingMode.VERTICAL_RL));
+    }
+
+    /**
+     * Four columns of twelve glyphs as Vision reports a vertical paragraph: one word a column, in
+     * reading order from the right, every box listed from its top-right corner downwards, a wrap
+     * after each column and the end of the paragraph after the last.
+     */
+    private static OcrRegion verticalProse() {
+        String[] columns = {"一二三四五六七八九十甲乙", "丙丁戊己庚辛壬癸子丑寅卯", "辰巳午未申酉戌亥天地玄黃",
+                "宇宙洪荒日月盈昃辰宿列張"};
+        List<OcrWord> words = new java.util.ArrayList<>();
+        for (int column = 0; column < columns.length; column++) {
+            int x = 290 - column * 30;
+            List<OcrSymbol> symbols = new java.util.ArrayList<>();
+            int row = 0;
+            for (int codePoint : columns[column].codePoints().toArray()) {
+                symbols.add(new OcrSymbol(new String(Character.toChars(codePoint)),
+                        downwards(x, 20 + row++ * 24, 22, 22), .97f, true));
+            }
+            words.add(new OcrWord(columns[column], downwards(x, 20, 22, 286), .97f, true, symbols,
+                    column == columns.length - 1 ? OcrBreak.PARAGRAPH_END : OcrBreak.WRAP));
+        }
+        return new OcrRegion("prose", String.join("", columns), downwards(200, 20, 112, 286), words,
+                .97f, true, OcrBlockType.TEXT, List.of(new OcrDetectedLanguage("ja", .97f)), 3);
+    }
+
+    private static List<OcrPoint> downwards(int x, int y, int width, int height) {
+        return List.of(new OcrPoint(x + width, y), new OcrPoint(x + width, y + height),
+                new OcrPoint(x, y + height), new OcrPoint(x, y));
+    }
+
     /** Five paragraphs of a cafe page, one of them a two-row price list, on the upright page. */
     private static List<OcrRegion> cafePage(RotatedPageFixtures page) {
         return List.of(
@@ -626,6 +731,19 @@ class GoogleVisionOcrServiceTests {
             for (OcrSymbol symbol : word.symbols()) {
                 builder.addSymbols(Symbol.newBuilder().setText(symbol.text())
                         .setBoundingBox(polygon(symbol.polygon())).setConfidence(symbol.confidence()));
+            }
+            BreakType recorded = switch (word.breakAfter()) {
+                case WRAP -> BreakType.EOL_SURE_SPACE;
+                case PARAGRAPH_END -> BreakType.LINE_BREAK;
+                case SPACE -> BreakType.SPACE;
+                case HYPHEN -> BreakType.HYPHEN;
+                case NONE -> null;
+            };
+            if (recorded != null && builder.getSymbolsCount() > 0) {
+                int last = builder.getSymbolsCount() - 1;
+                builder.setSymbols(last, builder.getSymbols(last).toBuilder().setProperty(
+                        TextAnnotation.TextProperty.newBuilder().setDetectedBreak(
+                                TextAnnotation.DetectedBreak.newBuilder().setType(recorded))));
             }
             paragraph.addWords(builder);
         }
