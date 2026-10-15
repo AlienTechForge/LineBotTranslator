@@ -83,6 +83,8 @@ Secrets 只作為容器環境變數傳入，不會寫入 image、Repository 或 
 | `DOCKER_NETWORK` | `host` | 與既有 MongoDB/MinIO 相容的 Docker network |
 | `IMAGE_PROXY_PUBLIC_BASE_URL` | 選填 | 需要獨立 preview proxy 時才設；留空時直接使用 MinIO/木雷 URL 傳送 LINE 圖片。 |
 | `IMAGE_PROXY_CONTENT_CACHE_MAX_BYTES` | `67108864` | `/i/{token}` proxy 快取保留的 original + preview 位元組上限（64 MiB）；取代已不再生效的 `IMAGE_PROXY_CONTENT_CACHE_ENTRIES`。 |
+| `IMAGE_TRANSLATION_MAX_TOTAL_MASK_RATIO` | `0.35` | 譯文覆蓋圖可修改的遮罩面積占整張圖的比例上限（照片等一般圖片；文件與海報另有上限）。超過時由遮罩面積最小的區塊開始保留譯文，最大的區塊保留原文，而不是讓閱讀順序最後的區塊整批保留原文。 |
+| `IMAGE_TRANSLATION_POSTER_MAX_TOTAL_MASK_RATIO` | `0.60` | 海報／資訊圖的遮罩面積合計上限。至少 10 個文字區塊、90% 以上高信心、80% 以上水平，且 80% 以上區塊周圍為平塗背景時採用；日誌 `Overlay content mode: verdict=poster` 可確認。不得小於 `IMAGE_TRANSLATION_MAX_TOTAL_MASK_RATIO`（較小時以後者為準）。 |
 | `IMAGE_TRANSLATION_MAX_OUTPUT_BYTES` | `10485760` | 產生圖片的大小上限（LINE 原圖限制 10 MB）；PNG 超過時改輸出 JPEG 或縮小。 |
 | `IMAGE_TEXT_REPLY_ENABLED` | `true` | 翻譯圖片後是否再附上辨識文字、譯文與快速操作的部署預設值；管理員可用 `/admin config image-text [on\|off]` 動態切換。 |
 | `DWZ_API_BASE_URL` | 短網址啟用時必填 | 木雷 API base。host network 可用固定 loopback port；也可用公開 HTTPS domain。 |

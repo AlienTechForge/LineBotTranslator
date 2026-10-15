@@ -46,6 +46,15 @@ public class ImageTranslationOverlayRenderer {
      * at or above this size or keeps its source text.
      */
     private static final int READABLE_LABEL_FLOOR = 12;
+    /**
+     * A cell may take the empty space under it only to get its type up to this share of the source
+     * type size. Below it a layout is a last resort (or none at all, and the source text stays).
+     */
+    private static final double GROWTH_TARGET_SHARE = .55;
+    /** The target above is never lower than this, whatever the source size. */
+    private static final int GROWTH_TARGET_MINIMUM = 9;
+    /** Share of a row under the cell that must still be background for the row to count as free. */
+    private static final double FREE_ROW_BACKGROUND_SHARE = .95;
     /** Height-to-width ratio above which a region is treated as a column rather than a line. */
     private static final double NARROW_COLUMN_RATIO = 1.8;
     /** Relative opposite-edge mismatch above which placement error is worth reporting. */
@@ -113,7 +122,13 @@ public class ImageTranslationOverlayRenderer {
             // Exact clip invariant: antialiasing may blend pixels just outside a polygon edge.
             graphics.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_OFF);
             graphics.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
-            for (ImageRegionOverlay overlay : plan.overlays()) {
+            // A cell that grows must stay clear of every other region the plan will modify.
+            List<java.awt.Rectangle> approvedBounds = plan.overlays().stream()
+                    .map(approved -> OverlaySafetyPolicy.mask(
+                            approved.region(), output.getWidth(), output.getHeight()).getBounds())
+                    .toList();
+            for (int overlayIndex = 0; overlayIndex < plan.overlays().size(); overlayIndex++) {
+                ImageRegionOverlay overlay = plan.overlays().get(overlayIndex);
                 ImageTranslationTextStyle style = ImageTranslationStyleEstimator.estimate(
                         pristine, overlay.region());
                 Font supportedFont = fontProvider.fontFor(
@@ -167,14 +182,39 @@ public class ImageTranslationOverlayRenderer {
                         Math.max(2, localHeightPixels - inset * 2));
                 Layout layout = fitHorizontal(graphics, overlay.replacement(), localBounds,
                         supportedFont, style.maximumFontSize(), overlay.region().compactLabel());
+                int freeRows = 0;
+                if (!layout.fits()) {
+                    List<java.awt.Rectangle> others = new ArrayList<>(approvedBounds);
+                    others.remove(overlayIndex);
+                    freeRows = freeRowsBelow(pristine, style.background(), origin, angle,
+                            localWidthPixels, localHeightPixels,
+                            Math.min(localHeightPixels, style.maximumFontSize()), others);
+                    Grown grown = growDownward(graphics, overlay.replacement(), localBounds,
+                            supportedFont, style.maximumFontSize(), overlay.region().compactLabel(),
+                            freeRows);
+                    if (grown != null) {
+                        Area band = band(origin, angle, localWidthPixels, localHeightPixels,
+                                grown.rows(), output.getWidth(), output.getHeight());
+                        layoutMask = union(layoutMask, band);
+                        modifiedMask = union(modifiedMask, band);
+                        log.info("Overlay cell grown into free space: cellWidth={}, cellHeight={}, "
+                                        + "grownBy={}, fontSize={}, sourceFontSize={}, translatedChars={}",
+                                localBounds.width(), localBounds.height(), grown.rows(),
+                                grown.layout().font().getSize(), style.maximumFontSize(),
+                                overlay.replacement().codePointCount(0, overlay.replacement().length()));
+                        localBounds = localBounds.taller(grown.rows());
+                        layout = grown.layout();
+                    }
+                }
                 if (!layout.fits()) {
                     decisions.add(new OverlayRenderDecision(
                             overlay.region().id(), OverlayRenderStatus.PRESERVED, "text-fit"));
                     log.info("Overlay cell preserved by fit: cellWidth={}, cellHeight={}, "
-                                    + "sourceFontSize={}, translatedChars={}, lines={}, compactLabel={}",
+                                    + "sourceFontSize={}, translatedChars={}, lines={}, compactLabel={}, "
+                                    + "freeRowsBelow={}",
                             localBounds.width(), localBounds.height(), style.maximumFontSize(),
                             overlay.replacement().codePointCount(0, overlay.replacement().length()),
-                            layout.lines().size(), overlay.region().compactLabel());
+                            layout.lines().size(), overlay.region().compactLabel(), freeRows);
                     continue;
                 }
                 logPolygonSkew(overlay.region(), localWidthPixels, localHeightPixels);
@@ -459,6 +499,123 @@ public class ImageTranslationOverlayRenderer {
             }
         }
         return null;
+    }
+
+    /**
+     * Smallest type size a grown cell may end up at: a share of the source size, never under a
+     * floor. Growing is how a cell that would keep its source text gets a layout; a layout that
+     * small is not worth the pixels it takes, and the source text stays.
+     */
+    private static int growthTarget(int sourceFontSize) {
+        return Math.max(GROWTH_TARGET_MINIMUM, (int) Math.ceil(sourceFontSize * GROWTH_TARGET_SHARE));
+    }
+
+    /**
+     * A one-line cell is about as tall as the source glyphs, but a line box (ascent plus descent) is
+     * taller than a glyph, and for a CJK face by about 45% of the size. The smallest permitted type
+     * then needs more height than the cell has, whatever the width, and the label keeps its source
+     * text next to translated neighbours. When the space under the cell is empty the cell may take
+     * it, so this lays the text out in the cell grown by the fewest rows that reach the best size
+     * the free rows allow. Only a cell that does not fit as it is grows: one that fits is left at
+     * its own bounds, however small its type. Null when there is nothing to gain: no free row, or
+     * no layout at the target size.
+     *
+     * @param freeRows rows under the cell that may be taken
+     */
+    private static Grown growDownward(
+            Graphics2D graphics,
+            String text,
+            Bounds bounds,
+            Font baseFont,
+            int sourceFontSize,
+            boolean compactLabel,
+            int freeRows) {
+        if (freeRows <= 0) return null;
+        Layout best = fitHorizontal(graphics, text, bounds.taller(freeRows), baseFont,
+                sourceFontSize, compactLabel);
+        int size = best.font().getSize();
+        if (!best.fits() || size < growthTarget(sourceFontSize)) return null;
+        // More height never lowers the size a layout reaches, so the fewest rows that still reach it
+        // are found by halving; every probe is checked, so the result reaches the size either way.
+        int low = 1;
+        int high = freeRows;
+        Layout result = best;
+        while (low < high) {
+            int middle = (low + high) / 2;
+            Layout candidate = fitHorizontal(graphics, text, bounds.taller(middle), baseFont,
+                    sourceFontSize, compactLabel);
+            if (candidate.fits() && candidate.font().getSize() >= size) {
+                high = middle;
+                result = candidate;
+            } else {
+                low = middle + 1;
+            }
+        }
+        return new Grown(high, result);
+    }
+
+    /**
+     * Rows directly under a cell that nothing else lives in, at most {@code limit}. A row is free
+     * when it lies inside the image, touches the mask of no other region the plan modifies, and is
+     * background (the estimated cell background) across at least FREE_ROW_BACKGROUND_SHARE of its
+     * width; the pixels read are the source's, so a region the plan leaves alone (a label kept for
+     * its fit, an icon, a rule) ends the free space just as an approved one does. Rows follow the
+     * cell's own frame, so they sit under it however the cell is turned.
+     */
+    private static int freeRowsBelow(
+            BufferedImage source,
+            Color background,
+            OcrPoint origin,
+            double angle,
+            int frameWidth,
+            int frameHeight,
+            int limit,
+            List<java.awt.Rectangle> others) {
+        AffineTransform frame = AffineTransform.getTranslateInstance(origin.x(), origin.y());
+        frame.rotate(angle);
+        java.awt.Rectangle reach = frame.createTransformedShape(
+                new java.awt.Rectangle(0, frameHeight, frameWidth, Math.max(1, limit))).getBounds();
+        reach.grow(1, 1);
+        List<java.awt.Rectangle> near = others.stream().filter(reach::intersects).toList();
+        int tolerance = ImageTranslationStyleEstimator.INK_DISTANCE_SQUARED;
+        double[] point = new double[2];
+        for (int row = 0; row < limit; row++) {
+            int matching = 0;
+            for (int column = 0; column < frameWidth; column++) {
+                point[0] = column + .5;
+                point[1] = frameHeight + row + .5;
+                frame.transform(point, 0, point, 0, 1);
+                int x = (int) Math.floor(point[0]);
+                int y = (int) Math.floor(point[1]);
+                if (x < 0 || y < 0 || x >= source.getWidth() || y >= source.getHeight()) return row;
+                for (java.awt.Rectangle other : near) {
+                    if (other.contains(x, y)) return row;
+                }
+                if (colourDistanceSquared(new Color(source.getRGB(x, y), true), background) < tolerance) {
+                    matching++;
+                }
+            }
+            if (matching < frameWidth * FREE_ROW_BACKGROUND_SHARE) return row;
+        }
+        return Math.max(0, limit);
+    }
+
+    /** The rows a cell grew into, in image coordinates, with a row of overlap with the cell. */
+    private static Area band(
+            OcrPoint origin, double angle, int frameWidth, int frameHeight, int rows,
+            int imageWidth, int imageHeight) {
+        AffineTransform frame = AffineTransform.getTranslateInstance(origin.x(), origin.y());
+        frame.rotate(angle);
+        Area band = new Area(frame.createTransformedShape(
+                new java.awt.Rectangle(0, frameHeight - 1, frameWidth, rows + 1)));
+        band.intersect(new Area(new java.awt.Rectangle(0, 0, imageWidth, imageHeight)));
+        return band;
+    }
+
+    private static Area union(Area mask, Area addition) {
+        Area result = new Area(mask);
+        result.add(addition);
+        return result;
     }
 
     /** Width of the widest line as it is drawn, which is what has to fit inside the cell. */
@@ -868,6 +1025,10 @@ public class ImageTranslationOverlayRenderer {
     private record Layout(Font font, List<String> lines, boolean fits) {
     }
 
+    /** A cell that took {@code rows} rows of the empty space under it, and the layout that gave. */
+    private record Grown(int rows, Layout layout) {
+    }
+
     /** The rendered raster and the bookkeeping of one draw, before it is encoded. */
     private record Drawn(
             BufferedImage output, int rendered, int skipped, List<OverlayRenderDecision> decisions) {
@@ -889,6 +1050,10 @@ public class ImageTranslationOverlayRenderer {
     }
 
     private record Bounds(int x, int y, int width, int height) {
+        Bounds taller(int rows) {
+            return new Bounds(x, y, width, height + rows);
+        }
+
         static Bounds clamped(OcrService.TextBlock block, int imageWidth, int imageHeight) {
             int x = Math.max(0, Math.min(imageWidth, block.getX()));
             int y = Math.max(0, Math.min(imageHeight, block.getY()));

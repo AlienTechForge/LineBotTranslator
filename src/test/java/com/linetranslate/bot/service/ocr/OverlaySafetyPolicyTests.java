@@ -1,6 +1,7 @@
 package com.linetranslate.bot.service.ocr;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.util.List;
 
@@ -58,10 +59,107 @@ class OverlaySafetyPolicyTests {
                 new ImageRegionOverlay(c1, "one"), new ImageRegionOverlay(c2, "two"),
                 new ImageRegionOverlay(c3, "three")), 100, 100, enabled());
         assertThat(total.safe()).isTrue();
+        // The limit gives up the largest block (c2 is wider than c3, which the image edge trims),
+        // not the last one in reading order; the accepted regions stay in reading order.
         assertThat(total.overlays()).extracting(value -> value.region().id())
-                .containsExactly("c1", "c2");
+                .containsExactly("c1", "c3");
         assertThat(total.decisions()).contains(
-                new OverlayRenderDecision("c3", OverlayRenderStatus.PRESERVED, "total-coverage"));
+                new OverlayRenderDecision("c2", OverlayRenderStatus.PRESERVED, "total-coverage"));
+    }
+
+    @Test
+    void totalLimitPreservesTheLargestBlocksWhereverTheySitInsteadOfTheLastInReadingOrder() {
+        ImageTranslationProperties limits = new ImageTranslationProperties(
+                1000, 100, 10000, .6f, true, .25, .35);
+        OverlaySafetyPlan plan = policy.evaluate(List.of(
+                new ImageRegionOverlay(region("title", 5, 5, 90, 20, .98f, true), "標題"),
+                new ImageRegionOverlay(region("one", 5, 30, 20, 8, .98f, true), "一"),
+                new ImageRegionOverlay(region("two", 30, 30, 20, 8, .98f, true), "二"),
+                new ImageRegionOverlay(region("three", 55, 30, 20, 8, .98f, true), "三"),
+                new ImageRegionOverlay(region("four", 5, 45, 20, 8, .98f, true), "四"),
+                new ImageRegionOverlay(region("five", 30, 45, 20, 8, .98f, true), "五")),
+                100, 100, limits);
+
+        assertThat(plan.overlays()).extracting(value -> value.region().id())
+                .as("every small label survives, in reading order")
+                .containsExactly("one", "two", "three", "four", "five");
+        assertThat(plan.decisions()).containsExactly(
+                new OverlayRenderDecision("title", OverlayRenderStatus.PRESERVED, "total-coverage"));
+        assertThat(plan.skipped()).isEqualTo(1);
+    }
+
+    @Test
+    void decisionsStayInCandidateOrderWhateverOrderTheLimitWasAppliedIn() {
+        ImageTranslationProperties limits = new ImageTranslationProperties(
+                1000, 100, 10000, .6f, true, .25, .35);
+        OverlaySafetyPlan plan = policy.evaluate(List.of(
+                new ImageRegionOverlay(region("big-a", 5, 5, 90, 20, .98f, true), "甲"),
+                new ImageRegionOverlay(region("empty", 5, 30, 20, 8, .98f, true), " "),
+                new ImageRegionOverlay(region("big-b", 5, 40, 90, 20, .98f, true), "乙"),
+                new ImageRegionOverlay(region("small", 5, 70, 20, 8, .98f, true), "丙")),
+                100, 100, limits);
+
+        assertThat(plan.overlays()).extracting(value -> value.region().id())
+                .containsExactly("big-a", "small");
+        assertThat(plan.decisions()).containsExactly(
+                new OverlayRenderDecision("empty", OverlayRenderStatus.PRESERVED, "mapping-empty"),
+                new OverlayRenderDecision("big-b", OverlayRenderStatus.PRESERVED, "total-coverage"));
+    }
+
+    @Test
+    void posterModeAllowsMoreTotalCoverageThanGeneralAndLessThanDocument() {
+        ImageTranslationProperties limits = new ImageTranslationProperties(
+                1000, 100, 10000, .6f, true, .25, .35, .60);
+        List<ImageRegionOverlay> paragraphs = List.of(
+                new ImageRegionOverlay(region("p1", 5, 5, 90, 20, .98f, true), "第一段"),
+                new ImageRegionOverlay(region("p2", 5, 30, 90, 20, .98f, true), "第二段"),
+                new ImageRegionOverlay(region("p3", 5, 55, 90, 20, .98f, true), "第三段"));
+
+        assertThat(policy.evaluate(paragraphs, 100, 100, limits, OverlayContentMode.GENERAL).overlays())
+                .hasSize(1);
+        assertThat(policy.evaluate(paragraphs, 100, 100, limits, OverlayContentMode.POSTER).overlays())
+                .hasSize(2);
+        assertThat(policy.evaluate(paragraphs, 100, 100, limits, OverlayContentMode.DOCUMENT).overlays())
+                .hasSize(3);
+    }
+
+    @Test
+    void posterModeKeepsTheGeneralPerRegionLimit() {
+        ImageTranslationProperties limits = new ImageTranslationProperties(
+                1000, 100, 10000, .6f, true, .12, .35, .60);
+        OverlaySafetyPlan poster = policy.evaluate(List.of(
+                new ImageRegionOverlay(region("block", 5, 5, 90, 20, .98f, true), "區塊")),
+                100, 100, limits, OverlayContentMode.POSTER);
+
+        assertThat(poster.overlays()).isEmpty();
+        assertThat(poster.decisions()).containsExactly(
+                new OverlayRenderDecision("block", OverlayRenderStatus.PRESERVED, "region-coverage"));
+    }
+
+    @Test
+    void posterLimitNeverFallsBelowTheGeneralLimitThatWasConfigured() {
+        ImageTranslationProperties limits = new ImageTranslationProperties(
+                1000, 100, 10000, .6f, true, .25, .70, .50);
+        List<ImageRegionOverlay> lines = List.of(
+                new ImageRegionOverlay(region("l1", 5, 5, 80, 20, .98f, true), "一"),
+                new ImageRegionOverlay(region("l2", 5, 30, 80, 20, .98f, true), "二"),
+                new ImageRegionOverlay(region("l3", 5, 55, 80, 20, .98f, true), "三"));
+
+        assertThat(policy.evaluate(lines, 100, 100, limits, OverlayContentMode.POSTER).overlays())
+                .hasSize(3);
+    }
+
+    @Test
+    void posterLimitIsValidatedAndDefaultsWhenOmitted() {
+        assertThat(new ImageTranslationProperties(1000, 100, 10000, .6f, true, .12, .35)
+                .posterMaxTotalMaskRatio()).isEqualTo(.60);
+        assertThat(ImageTranslationProperties.defaults().posterMaxTotalMaskRatio()).isEqualTo(.60);
+        assertThatThrownBy(() -> new ImageTranslationProperties(
+                1000, 100, 10000, .6f, true, .12, .35, 0))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new ImageTranslationProperties(
+                1000, 100, 10000, .6f, true, .12, .35, 1.01))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test

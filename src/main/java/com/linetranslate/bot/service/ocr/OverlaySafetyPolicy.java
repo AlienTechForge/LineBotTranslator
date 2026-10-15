@@ -37,33 +37,37 @@ public class OverlaySafetyPolicy {
         double maxRegionRatio = mode == OverlayContentMode.DOCUMENT
                 ? Math.max(properties.maxRegionAreaRatio(), .45)
                 : properties.maxRegionAreaRatio();
-        double maxTotalRatio = mode == OverlayContentMode.DOCUMENT
-                ? Math.max(properties.maxTotalMaskRatio(), .90)
-                : properties.maxTotalMaskRatio();
+        double maxTotalRatio = switch (mode) {
+            case DOCUMENT -> Math.max(properties.maxTotalMaskRatio(), .90);
+            case POSTER -> Math.max(properties.maxTotalMaskRatio(), properties.posterMaxTotalMaskRatio());
+            case GENERAL -> properties.maxTotalMaskRatio();
+        };
         double imageArea = (double) imageWidth * imageHeight;
-        List<ImageRegionOverlay> accepted = new ArrayList<>();
+        // Decisions are kept in candidate order whichever order they were reached in.
+        OverlayRenderDecision[] decided = new OverlayRenderDecision[requested.size()];
+        List<Eligible> eligible = new ArrayList<>();
         List<AcceptedMask> masks = new ArrayList<>();
         double total = 0;
         int skipped = 0;
-        List<OverlayRenderDecision> decisions = new ArrayList<>();
-        for (ImageRegionOverlay candidate : requested) {
+        for (int index = 0; index < requested.size(); index++) {
+            ImageRegionOverlay candidate = requested.get(index);
             OcrRegion region = candidate.region();
             if (candidate.replacement().isBlank()) {
                 skipped++;
-                decisions.add(preserved(region.id(), "mapping-empty"));
+                decided[index] = preserved(region.id(), "mapping-empty");
                 logPreserved(region.id(), "mapping-empty", mode, imageWidth, imageHeight, 0, total, maxTotalRatio);
                 continue;
             }
             if (!region.validGeometry()) {
                 skipped++;
-                decisions.add(preserved(region.id(), "invalid-geometry"));
+                decided[index] = preserved(region.id(), "invalid-geometry");
                 logPreserved(region.id(), "invalid-geometry", mode, imageWidth, imageHeight,
                         0, total, maxTotalRatio);
                 continue;
             }
             if (!region.confidenceKnown() || region.confidence() < properties.lowConfidenceThreshold()) {
                 skipped++;
-                decisions.add(preserved(region.id(), "untrusted-confidence"));
+                decided[index] = preserved(region.id(), "untrusted-confidence");
                 logPreserved(region.id(), "untrusted-confidence", mode, imageWidth, imageHeight,
                         0, total, maxTotalRatio);
                 continue;
@@ -72,7 +76,7 @@ public class OverlaySafetyPolicy {
             if (sourceBounds.x < 0 || sourceBounds.y < 0
                     || sourceBounds.getMaxX() > imageWidth || sourceBounds.getMaxY() > imageHeight) {
                 skipped++;
-                decisions.add(preserved(region.id(), "outside-image"));
+                decided[index] = preserved(region.id(), "outside-image");
                 logPreserved(region.id(), "outside-image", mode, imageWidth, imageHeight,
                         0, total, maxTotalRatio);
                 continue;
@@ -83,7 +87,7 @@ public class OverlaySafetyPolicy {
             double modifiedRatio = area(mask) / imageArea;
             if (paragraphRatio <= 0 || paragraphRatio > maxRegionRatio) {
                 skipped++;
-                decisions.add(preserved(region.id(), "region-coverage"));
+                decided[index] = preserved(region.id(), "region-coverage");
                 logPreserved(region.id(), "region-coverage", mode, imageWidth, imageHeight,
                         paragraphRatio, total, maxTotalRatio);
                 continue;
@@ -97,7 +101,7 @@ public class OverlaySafetyPolicy {
                 double intersectionRatio = smallerArea <= 0 ? 0 : intersectionArea / smallerArea;
                 if (intersectionArea > 4 && intersectionRatio > .08) {
                     skipped++;
-                    decisions.add(preserved(region.id(), "overlap"));
+                    decided[index] = preserved(region.id(), "overlap");
                     log.info("Overlay region preserved: region={}, reason=overlap, conflictsWith={}, "
                                     + "intersectionPixels={}, intersectionRatio={}, mode={}, image={}x{}",
                             region.id(), previous.regionId(), Math.round(intersectionArea),
@@ -107,21 +111,71 @@ public class OverlaySafetyPolicy {
                 }
             }
             if (overlaps) continue;
-            if (total + modifiedRatio > maxTotalRatio) {
-                skipped++;
-                decisions.add(preserved(region.id(), "total-coverage"));
-                logPreserved(region.id(), "total-coverage", mode, imageWidth, imageHeight,
-                        modifiedRatio, total, maxTotalRatio);
-                continue;
-            }
+            // Overlaps are settled first-come in reading order among the regions that pass their own
+            // checks; the total limit below then chooses among those, so a region it gives up still
+            // keeps the later region that overlapped it out, which only ever errs towards fewer masks.
             total += modifiedRatio;
             masks.add(new AcceptedMask(region.id(), paragraph));
-            accepted.add(candidate);
+            eligible.add(new Eligible(index, candidate, modifiedRatio));
+        }
+
+        boolean[] kept = new boolean[requested.size()];
+        double keptTotal = total;
+        if (total <= maxTotalRatio) {
+            eligible.forEach(value -> kept[value.index()] = true);
+        } else {
+            keptTotal = keepWithinTotal(eligible, kept, maxTotalRatio, imageArea);
+            long dropped = eligible.stream().filter(value -> !kept[value.index()]).count();
+            log.info("Overlay coverage limit applied: mode={}, rule=smallest-first, eligible={}, kept={}, "
+                            + "dropped={}, eligibleRatio={}, keptRatio={}, limit={}, image={}x{}",
+                    mode, eligible.size(), eligible.size() - dropped, dropped, total, keptTotal,
+                    maxTotalRatio, imageWidth, imageHeight);
+        }
+        List<ImageRegionOverlay> accepted = new ArrayList<>();
+        for (Eligible value : eligible) {
+            if (kept[value.index()]) {
+                accepted.add(value.candidate());
+                continue;
+            }
+            skipped++;
+            String id = value.candidate().region().id();
+            decided[value.index()] = preserved(id, "total-coverage");
+            logPreserved(id, "total-coverage", mode, imageWidth, imageHeight,
+                    value.modifiedRatio(), keptTotal, maxTotalRatio);
+        }
+        List<OverlayRenderDecision> decisions = new ArrayList<>();
+        for (OverlayRenderDecision decision : decided) {
+            if (decision != null) decisions.add(decision);
         }
         log.info("Overlay safety evaluated: mode={}, requested={}, accepted={}, preserved={}, "
                         + "totalMaskRatio={}, limit={}, image={}x{}",
-                mode, requested.size(), accepted.size(), skipped, total, maxTotalRatio, imageWidth, imageHeight);
+                mode, requested.size(), accepted.size(), skipped, keptTotal, maxTotalRatio,
+                imageWidth, imageHeight);
         return new OverlaySafetyPlan(true, "safe", accepted, skipped, decisions);
+    }
+
+    /**
+     * Marks, in {@code kept}, the regions that fit under {@code limit}, and returns their total.
+     * Every region costs the area of its mask against the limit, so taking the cheapest first
+     * translates the most regions the limit allows (a prefix of the regions by area is the largest
+     * set that fits), and the regions given up are the largest blocks, spread wherever they sit,
+     * instead of whatever comes last in reading order, which on a poster is a whole section.
+     * Equal areas keep reading order.
+     */
+    private static double keepWithinTotal(
+            List<Eligible> eligible, boolean[] kept, double limit, double imageArea) {
+        // Whole pixels, so that masks of one size tie however the outline integration rounds them.
+        List<Eligible> cheapestFirst = eligible.stream()
+                .sorted(java.util.Comparator.comparingLong(
+                        value -> Math.round(value.modifiedRatio() * imageArea)))
+                .toList();
+        double total = 0;
+        for (Eligible value : cheapestFirst) {
+            if (total + value.modifiedRatio() > limit) break;
+            total += value.modifiedRatio();
+            kept[value.index()] = true;
+        }
+        return total;
     }
 
     private static void logPreserved(String regionId, String reason, OverlayContentMode mode,
@@ -268,5 +322,9 @@ public class OverlaySafetyPolicy {
     }
 
     private record AcceptedMask(String regionId, Area area) {
+    }
+
+    /** A candidate that passed every check of its own: only the total limit can still refuse it. */
+    private record Eligible(int index, ImageRegionOverlay candidate, double modifiedRatio) {
     }
 }
