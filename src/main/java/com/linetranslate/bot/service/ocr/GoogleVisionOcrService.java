@@ -7,6 +7,7 @@ import com.google.protobuf.ByteString;
 import com.linetranslate.bot.logging.SafeLog;
 
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import lombok.extern.slf4j.Slf4j;
@@ -26,9 +27,16 @@ import java.util.HexFormat;
 public class GoogleVisionOcrService implements OcrService {
 
     private final ImageAnnotatorClient visionClient;
-    private final OcrRegionSegmenter regionSegmenter = new OcrRegionSegmenter();
+    private final OcrRegionSegmenter regionSegmenter;
 
     public GoogleVisionOcrService(ObjectProvider<ImageAnnotatorClient> visionClientProvider) {
+        this(visionClientProvider, new OcrRegionSegmenter());
+    }
+
+    @Autowired
+    public GoogleVisionOcrService(
+            ObjectProvider<ImageAnnotatorClient> visionClientProvider, OcrRegionSegmenter regionSegmenter) {
+        this.regionSegmenter = regionSegmenter;
         this.visionClient = visionClientProvider.getIfAvailable();
         if (visionClient != null) {
             log.info("Google Vision OCR 服務初始化成功");
