@@ -302,17 +302,24 @@ public class OverlaySafetyPolicy {
     }
 
     private static int maskPadding(OcrRegion region) {
+        // Padding follows how tall a glyph is across its line. For upright vertical writing that is the
+        // width of the column, the first edge of the upright box, not the length of the column.
+        boolean vertical = region.writingMode().vertical();
         List<Integer> heights = region.words().stream()
                 .map(OcrWord::polygon)
                 .filter(points -> points.size() >= 4)
-                .map(points -> (int) Math.round(Math.hypot(
-                        points.get(points.size() - 1).x() - points.get(0).x(),
-                        points.get(points.size() - 1).y() - points.get(0).y())))
+                .map(points -> (int) Math.round(vertical
+                        ? OcrRegion.uprightWidth(points)
+                        : Math.hypot(
+                                points.get(points.size() - 1).x() - points.get(0).x(),
+                                points.get(points.size() - 1).y() - points.get(0).y())))
                 .filter(height -> height > 0)
                 .sorted()
                 .toList();
         int height = heights.isEmpty()
-                ? Math.max(1, maskWithoutPadding(region).getBounds().height)
+                ? Math.max(1, vertical
+                        ? maskWithoutPadding(region).getBounds().width
+                        : maskWithoutPadding(region).getBounds().height)
                 : heights.get(heights.size() / 2);
         // Provider polygons often end exactly on the last antialiased source pixel.
         // Area.contains excludes the outer boundary, so retain one explicit pixel of slack.

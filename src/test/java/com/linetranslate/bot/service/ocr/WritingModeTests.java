@@ -6,7 +6,6 @@ import java.util.List;
 
 import org.junit.jupiter.api.Test;
 
-@SuppressWarnings("deprecation")
 class WritingModeTests {
 
     @Test
@@ -27,22 +26,26 @@ class WritingModeTests {
     }
 
     /**
-     * The default is derived with the bands {@link OcrRegion#orientation()} always used, so a
-     * region that was not horizontal before is not horizontal now and no decision taken on an
-     * upright page changes. Swept in half degrees around every boundary.
+     * The default is derived with the bands the three-bucket orientation of a region always used
+     * (horizontal up to 7 degrees off the line, vertical from 83 to 97, anything else rotated), so
+     * a region that was not horizontal before is not horizontal now and no decision taken on an
+     * upright page changes. The bands are written out here as that orientation had them, and swept
+     * in half degrees around every boundary.
      */
     @Test
     void theFrameDefaultAgreesWithTheLegacyOrientationBandsEverywhere() {
         for (double degrees = -180; degrees <= 180; degrees += .5) {
             OcrRegion region = regionAt(degrees);
             WritingMode mode = region.writingMode();
+            // The angle of the edge as the polygon, with whole-pixel vertices, really has it.
+            double normalized = Math.abs(region.rotationDegrees()) % 180;
 
-            switch (region.orientation()) {
-                case HORIZONTAL -> assertThat(mode).as("%s degrees", degrees)
-                        .isIn(WritingMode.HORIZONTAL, WritingMode.ROTATED_180);
-                case VERTICAL -> assertThat(mode).as("%s degrees", degrees)
-                        .isIn(WritingMode.ROTATED_90, WritingMode.ROTATED_270);
-                case ROTATED -> assertThat(mode).as("%s degrees", degrees).isEqualTo(WritingMode.SKEWED);
+            if (normalized <= 7 || normalized >= 173) {
+                assertThat(mode).as("%s degrees", degrees).isIn(WritingMode.HORIZONTAL, WritingMode.ROTATED_180);
+            } else if (normalized >= 83 && normalized <= 97) {
+                assertThat(mode).as("%s degrees", degrees).isIn(WritingMode.ROTATED_90, WritingMode.ROTATED_270);
+            } else {
+                assertThat(mode).as("%s degrees", degrees).isEqualTo(WritingMode.SKEWED);
             }
         }
     }

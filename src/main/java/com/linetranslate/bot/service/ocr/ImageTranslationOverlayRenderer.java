@@ -34,18 +34,18 @@ public class ImageTranslationOverlayRenderer {
     private static final org.slf4j.Logger log =
             org.slf4j.LoggerFactory.getLogger(ImageTranslationOverlayRenderer.class);
     private static final Color LOW_CONFIDENCE = new Color(230, 138, 0);
-    private static final int MIN_FONT_SIZE = 8;
+    static final int MIN_FONT_SIZE = 8;
     /**
      * Glyph width scales; at each size, tried in order before the size is reduced. 0.8 is the
      * narrowest that stays comfortably readable.
      */
-    private static final double[] CONDENSE_STEPS = {1d, .9d, .8d};
+    static final double[] CONDENSE_STEPS = {1d, .9d, .8d};
     /**
      * Floor for a compact label that cannot fit above its proportional floor. Prose may go down to
      * MIN_FONT_SIZE, but a table cell rendered that small reads as noise, so a label either lands
      * at or above this size or keeps its source text.
      */
-    private static final int READABLE_LABEL_FLOOR = 12;
+    static final int READABLE_LABEL_FLOOR = 12;
     /**
      * A cell may take the empty space under it only to get its type up to this share of the source
      * type size. Below it a layout is a last resort (or none at all, and the source text stays).
@@ -57,6 +57,12 @@ public class ImageTranslationOverlayRenderer {
     private static final double FREE_ROW_BACKGROUND_SHARE = .95;
     /** Height-to-width ratio above which a region is treated as a column rather than a line. */
     private static final double NARROW_COLUMN_RATIO = 1.8;
+    /**
+     * A Latin translation in a column is set upright, across the column, unless that is smaller than
+     * this share of the size it reaches when turned to run along the column: the turned layout wins
+     * only when it is clearly larger, so an upright one is never given up for a marginal gain.
+     */
+    private static final double UPRIGHT_PREFERENCE = .8;
     /** Relative opposite-edge mismatch above which placement error is worth reporting. */
     private static final double SKEW_REPORT_THRESHOLD = .02;
     /** Share of a cleanup area still holding source ink above which the erase is worth reporting. */
@@ -198,76 +204,95 @@ public class ImageTranslationOverlayRenderer {
             List<java.awt.Rectangle> grantedBands = new ArrayList<>();
             for (int overlayIndex = 0; overlayIndex < plan.overlays().size(); overlayIndex++) {
                 ImageRegionOverlay overlay = plan.overlays().get(overlayIndex);
-                ImageTranslationTextStyle style = ImageTranslationStyleEstimator.estimate(
-                        pristine, overlay.region());
+                OcrRegion region = overlay.region();
+                ImageTranslationTextStyle style = ImageTranslationStyleEstimator.estimate(pristine, region);
+                // A Chinese or Japanese translation of vertical writing is set in columns, and the
+                // font has to cover the glyphs drawn there: the vertical presentation forms, not the
+                // punctuation they stand in for.
+                boolean columnar = region.writingMode().vertical() && isMostlyCjk(overlay.replacement());
                 Font supportedFont = fontProvider.fontFor(
-                        overlay.replacement(), 12, style.fontStyle()).orElse(null);
+                        columnar ? VerticalTextLayout.mapped(overlay.replacement()) : overlay.replacement(),
+                        12, style.fontStyle()).orElse(null);
                 if (supportedFont == null) {
                     fontSkipped++;
                     decisions.add(new OverlayRenderDecision(
-                            overlay.region().id(), OverlayRenderStatus.PRESERVED, "font-coverage"));
+                            region.id(), OverlayRenderStatus.PRESERVED, "font-coverage"));
                     continue;
                 }
                 Area layoutMask = OverlaySafetyPolicy.layoutMask(
-                        overlay.region(), output.getWidth(), output.getHeight());
+                        region, output.getWidth(), output.getHeight());
                 Area cleanupMask = OverlaySafetyPolicy.sourceCleanupMask(
-                        overlay.region(), output.getWidth(), output.getHeight());
+                        region, output.getWidth(), output.getHeight());
                 java.awt.Rectangle bounds = layoutMask.getBounds();
                 if (layoutMask.isEmpty() || cleanupMask.isEmpty()
                         || bounds.width <= 1 || bounds.height <= 1) {
                     decisions.add(new OverlayRenderDecision(
-                            overlay.region().id(), OverlayRenderStatus.PRESERVED, "empty-mask"));
+                            region.id(), OverlayRenderStatus.PRESERVED, "empty-mask"));
                     continue;
                 }
                 Area modifiedMask = OverlaySafetyPolicy.mask(
-                        overlay.region(), output.getWidth(), output.getHeight());
-                List<OcrPoint> polygon = overlay.region().polygon();
-                OcrPoint origin = polygon.get(0);
-                OcrPoint edge = polygon.get(1);
-                double angle = Math.atan2(edge.y() - origin.y(), edge.x() - origin.x());
-                double localWidth = Math.hypot(edge.x() - origin.x(), edge.y() - origin.y());
-                OcrPoint side = polygon.get(polygon.size() - 1);
-                double localHeight = Math.hypot(side.x() - origin.x(), side.y() - origin.y());
-                int localWidthPixels = Math.max(2, (int) Math.round(localWidth));
-                int localHeightPixels = Math.max(2, (int) Math.round(localHeight));
-                // A vertical CJK column is far taller than it is wide, and Latin text laid out
-                // across that width breaks down to one or two characters per line. Turning the
-                // drawing frame a quarter turn swaps the axes, so the translation runs along the
-                // column instead of across it. Start from the top-right corner: after the extra
-                // quarter turn the local x axis points down the column and y points back across it.
-                boolean turned = false;
-                if (localHeightPixels > localWidthPixels * NARROW_COLUMN_RATIO
-                        && isMostlyLatin(overlay.replacement())) {
-                    turned = true;
-                    origin = polygon.get(1);
-                    angle += Math.PI / 2;
-                    int rotated = localWidthPixels;
-                    localWidthPixels = localHeightPixels;
-                    localHeightPixels = rotated;
+                        region, output.getWidth(), output.getHeight());
+                Frame frame = Frame.of(region);
+                if (columnar) {
+                    List<VerticalTextLayout.Cell> cells = columnCells(region, frame);
+                    VerticalTextLayout.Layout columns = VerticalTextLayout.fit(graphics,
+                            overlay.replacement(), cells, supportedFont, style.maximumFontSize(),
+                            region.compactLabel());
+                    Bounds frameBounds = frame.bounds();
+                    if (!columns.fits()) {
+                        decisions.add(new OverlayRenderDecision(
+                                region.id(), OverlayRenderStatus.PRESERVED, "text-fit"));
+                        logPreservedByFit(overlay, style, frameBounds, columns.columns().size(), 0, 0, 0,
+                                "vertical");
+                        continue;
+                    }
+                    logPolygonSkew(region, frame.width(), frame.height());
+                    prepared.add(PreparedOverlay.columns(overlay, style, layoutMask, modifiedMask,
+                            OverlaySafetyPolicy.sourceCleanupAreas(
+                                    region, output.getWidth(), output.getHeight()),
+                            frame.origin(), frame.angle(), frameBounds, cells, columns));
+                    continue;
                 }
-                int inset = Math.min(2, Math.max(0,
-                        (Math.min(localWidthPixels, localHeightPixels) - 2) / 2));
-                Bounds localBounds = new Bounds(
-                        inset, inset,
-                        Math.max(2, localWidthPixels - inset * 2),
-                        Math.max(2, localHeightPixels - inset * 2));
-                Layout layout = fitHorizontal(graphics, overlay.replacement(), localBounds,
-                        supportedFont, style.maximumFontSize(), overlay.region().compactLabel());
+                // A tall cell of Latin text, and every cell of vertical writing, is laid out both ways:
+                // upright across the cell, and turned a quarter so that the text runs along it. A
+                // column of a vertical menu is too narrow for the first and a flow of columns is too
+                // broad for the second, so neither is right for all of them. A cell whose frame is
+                // itself turned or skewed keeps the turn it always had.
+                WritingMode mode = region.writingMode();
+                boolean tall = frame.height() > frame.width() * NARROW_COLUMN_RATIO
+                        && isMostlyLatin(overlay.replacement());
+                Candidate chosen;
+                if (mode.vertical() || (mode == WritingMode.HORIZONTAL && tall)) {
+                    chosen = prefer(
+                            candidate(graphics, overlay.replacement(), frame, supportedFont, style, region),
+                            candidate(graphics, overlay.replacement(), frame.turn(), supportedFont, style, region));
+                } else {
+                    chosen = candidate(graphics, overlay.replacement(), tall ? frame.turn() : frame,
+                            supportedFont, style, region);
+                }
+                boolean turned = chosen.frame().turned();
+                OcrPoint origin = chosen.frame().origin();
+                double angle = chosen.frame().angle();
+                int localWidthPixels = chosen.frame().width();
+                int localHeightPixels = chosen.frame().height();
+                Bounds localBounds = chosen.bounds();
+                Layout layout = chosen.layout();
                 int freeRows = 0;
                 int affordableRows = 0;
                 Growth growth = null;
-                if (!layout.fits() && remainingRatio > 0 && plan.maxRegionRatio() > 0) {
+                // Growing downward is a rule of horizontal cells; a cell of vertical writing keeps its bounds.
+                if (!layout.fits() && !mode.vertical() && remainingRatio > 0 && plan.maxRegionRatio() > 0) {
                     List<java.awt.Rectangle> others = new ArrayList<>(approvedBounds);
                     others.remove(overlayIndex);
                     others.addAll(grantedBands);
                     freeRows = freeRowsBelow(pristine, style.background(), origin, angle,
                             localWidthPixels, localHeightPixels,
                             Math.min(localHeightPixels, style.maximumFontSize()), others);
-                    affordableRows = affordableRows(overlay.region(), layoutMask, modifiedMask,
+                    affordableRows = affordableRows(region, layoutMask, modifiedMask,
                             origin, angle, localWidthPixels, localHeightPixels, freeRows,
                             output.getWidth(), output.getHeight(), plan.maxRegionRatio(), remainingRatio);
                     Grown grown = growDownward(graphics, overlay.replacement(), localBounds,
-                            supportedFont, style.maximumFontSize(), overlay.region().compactLabel(),
+                            supportedFont, style.maximumFontSize(), region.compactLabel(),
                             affordableRows);
                     if (grown != null) {
                         Area band = band(origin, angle, localWidthPixels, localHeightPixels,
@@ -293,22 +318,15 @@ public class ImageTranslationOverlayRenderer {
                 }
                 if (!layout.fits()) {
                     decisions.add(new OverlayRenderDecision(
-                            overlay.region().id(), OverlayRenderStatus.PRESERVED, "text-fit"));
-                    log.info("Overlay cell preserved by fit: cellWidth={}, cellHeight={}, "
-                                    + "sourceFontSize={}, translatedChars={}, lines={}, compactLabel={}, "
-                                    + "freeRowsBelow={}, affordableRows={}, remainingRatio={}, "
-                                    + "writingMode={}, layout={}",
-                            localBounds.width(), localBounds.height(), style.maximumFontSize(),
-                            overlay.replacement().codePointCount(0, overlay.replacement().length()),
-                            layout.lines().size(), overlay.region().compactLabel(), freeRows,
-                            affordableRows, ratio(remainingRatio), overlay.region().writingMode(),
-                            turned ? "turned" : "horizontal");
+                            region.id(), OverlayRenderStatus.PRESERVED, "text-fit"));
+                    logPreservedByFit(overlay, style, localBounds, layout.lines().size(), freeRows,
+                            affordableRows, remainingRatio, turned ? "turned" : "horizontal");
                     continue;
                 }
-                logPolygonSkew(overlay.region(), localWidthPixels, localHeightPixels);
-                prepared.add(new PreparedOverlay(overlay, style, layoutMask, modifiedMask,
+                logPolygonSkew(region, localWidthPixels, localHeightPixels);
+                prepared.add(PreparedOverlay.lines(overlay, style, layoutMask, modifiedMask,
                         OverlaySafetyPolicy.sourceCleanupAreas(
-                                overlay.region(), output.getWidth(), output.getHeight()),
+                                region, output.getWidth(), output.getHeight()),
                         origin, angle, localBounds, layout, growth));
             }
 
@@ -333,7 +351,11 @@ public class ImageTranslationOverlayRenderer {
                     graphics.setColor(item.style().foreground());
                     graphics.translate(item.origin().x(), item.origin().y());
                     graphics.rotate(item.angle());
-                    drawHorizontal(graphics, item.localBounds(), item.layout());
+                    if (item.kind() == LayoutKind.COLUMNS) {
+                        VerticalTextLayout.draw(graphics, item.columns(), item.cells());
+                    } else {
+                        drawHorizontal(graphics, item.localBounds(), item.layout());
+                    }
                 } finally {
                     graphics.setTransform(oldTransform);
                     graphics.setClip(oldClip);
@@ -348,6 +370,125 @@ public class ImageTranslationOverlayRenderer {
         return new Drawn(output, rendered, plan.skipped() + fontSkipped, decisions);
     }
 
+    /** The frame a region is drawn in: its origin, its line direction and its size along and across it. */
+    private record Frame(
+            OcrPoint origin, OcrPoint turnOrigin, double angle, int width, int height, boolean turned) {
+
+        /**
+         * The region's reading frame. Upright vertical writing is read in the frame of the image,
+         * whatever corner the provider started at, so its width is the width across the column.
+         */
+        static Frame of(OcrRegion region) {
+            List<OcrPoint> polygon = region.writingMode().vertical() ? region.uprightPolygon() : region.polygon();
+            OcrPoint origin = polygon.get(0);
+            OcrPoint edge = polygon.get(1);
+            OcrPoint side = polygon.get(polygon.size() - 1);
+            double angle = Math.atan2(edge.y() - origin.y(), edge.x() - origin.x());
+            double width = Math.hypot(edge.x() - origin.x(), edge.y() - origin.y());
+            double height = Math.hypot(side.x() - origin.x(), side.y() - origin.y());
+            return new Frame(origin, edge, angle, Math.max(2, (int) Math.round(width)),
+                    Math.max(2, (int) Math.round(height)), false);
+        }
+
+        /**
+         * The frame turned a quarter turn about the top-right corner, so that its x axis runs down
+         * the cell and its y axis back across it, and the axes swap. Text laid out in it runs along
+         * a column, and its lines stack towards the left of the image.
+         */
+        Frame turn() {
+            return new Frame(turnOrigin, turnOrigin, angle + Math.PI / 2, height, width, true);
+        }
+
+        /** The margin the horizontal engine leaves round a cell: two pixels where the cell has them to spare. */
+        int margin() {
+            return Math.min(2, Math.max(0, (Math.min(width, height) - 2) / 2));
+        }
+
+        /** The area text may use, inside the margin. */
+        Bounds bounds() {
+            int inset = margin();
+            return new Bounds(inset, inset, Math.max(2, width - inset * 2), Math.max(2, height - inset * 2));
+        }
+    }
+
+    /** A layout of the horizontal engine in one frame of the cell. */
+    private record Candidate(Frame frame, Bounds bounds, Layout layout) {
+        int size() {
+            return layout.font().getSize();
+        }
+    }
+
+    private static Candidate candidate(Graphics2D graphics, String replacement, Frame frame, Font font,
+            ImageTranslationTextStyle style, OcrRegion region) {
+        Bounds bounds = frame.bounds();
+        return new Candidate(frame, bounds,
+                fitHorizontal(graphics, replacement, bounds, font, style.maximumFontSize(), region.compactLabel()));
+    }
+
+    /**
+     * The upright candidate if it fits and is not clearly smaller than the turned one, the turned
+     * one if it fits, and the turned one when neither does: the frame a tall cell was always drawn
+     * in, so that growing and the log describe what they always did.
+     */
+    private static Candidate prefer(Candidate upright, Candidate turned) {
+        if (upright.layout().fits() && (!turned.layout().fits()
+                || upright.size() >= UPRIGHT_PREFERENCE * turned.size())) {
+            return upright;
+        }
+        return turned;
+    }
+
+    /**
+     * The cells vertical writing is set in, in the drawing frame and inside the inset: the cells of
+     * a flow, or the whole region when it is one cell.
+     */
+    private static List<VerticalTextLayout.Cell> columnCells(OcrRegion region, Frame frame) {
+        Bounds whole = frame.bounds();
+        List<VerticalTextLayout.Cell> single = List.of(
+                new VerticalTextLayout.Cell(whole.x(), whole.y(), whole.width(), whole.height()));
+        if (region.flowCells().isEmpty()) return single;
+        int inset = frame.margin();
+        double cos = Math.cos(frame.angle());
+        double sin = Math.sin(frame.angle());
+        List<VerticalTextLayout.Cell> cells = new ArrayList<>(region.flowCells().size());
+        for (List<OcrPoint> polygon : region.flowCells()) {
+            double left = Double.POSITIVE_INFINITY;
+            double top = Double.POSITIVE_INFINITY;
+            double right = Double.NEGATIVE_INFINITY;
+            double bottom = Double.NEGATIVE_INFINITY;
+            for (OcrPoint point : polygon) {
+                double dx = point.x() - frame.origin().x();
+                double dy = point.y() - frame.origin().y();
+                double x = dx * cos + dy * sin;
+                double y = -dx * sin + dy * cos;
+                left = Math.min(left, x);
+                top = Math.min(top, y);
+                right = Math.max(right, x);
+                bottom = Math.max(bottom, y);
+            }
+            if (!Double.isFinite(left) || !Double.isFinite(top)) continue;
+            int x0 = Math.max(0, (int) Math.floor(left)) + inset;
+            int y0 = Math.max(0, (int) Math.floor(top)) + inset;
+            int x1 = Math.min(frame.width(), (int) Math.ceil(right)) - inset;
+            int y1 = Math.min(frame.height(), (int) Math.ceil(bottom)) - inset;
+            if (x1 - x0 >= 2 && y1 - y0 >= 2) cells.add(new VerticalTextLayout.Cell(x0, y0, x1 - x0, y1 - y0));
+        }
+        return cells.isEmpty() ? single : List.copyOf(cells);
+    }
+
+    private static void logPreservedByFit(ImageRegionOverlay overlay, ImageTranslationTextStyle style,
+            Bounds localBounds, int lines, int freeRows, int affordableRows, double remainingRatio,
+            String layoutName) {
+        log.info("Overlay cell preserved by fit: cellWidth={}, cellHeight={}, "
+                        + "sourceFontSize={}, translatedChars={}, lines={}, compactLabel={}, "
+                        + "freeRowsBelow={}, affordableRows={}, remainingRatio={}, "
+                        + "writingMode={}, layout={}",
+                localBounds.width(), localBounds.height(), style.maximumFontSize(),
+                overlay.replacement().codePointCount(0, overlay.replacement().length()),
+                lines, overlay.region().compactLabel(), freeRows,
+                affordableRows, ratio(remainingRatio), overlay.region().writingMode(), layoutName);
+    }
+
     /**
      * One visual group must read as one table. Each region independently maximises its own font
      * size, so equal-width cells end up with jumping type whenever their translations differ in
@@ -357,14 +498,22 @@ public class ImageTranslationOverlayRenderer {
             Graphics2D graphics, List<PreparedOverlay> prepared, List<OverlayRenderDecision> decisions) {
         java.util.Map<String, Integer> smallest = new java.util.HashMap<>();
         for (PreparedOverlay item : prepared) {
-            smallest.merge(item.overlay().region().groupId(), item.layout().font().getSize(), Math::min);
+            smallest.merge(item.overlay().region().groupId(), item.fontSize(), Math::min);
         }
         List<PreparedOverlay> result = new ArrayList<>(prepared.size());
         for (PreparedOverlay item : prepared) {
-            int target = smallest.getOrDefault(
-                    item.overlay().region().groupId(), item.layout().font().getSize());
-            if (target >= item.layout().font().getSize()) {
+            int target = smallest.getOrDefault(item.overlay().region().groupId(), item.fontSize());
+            if (target >= item.fontSize()) {
                 result.add(item);
+                continue;
+            }
+            if (item.kind() == LayoutKind.COLUMNS) {
+                // Each cell is re-fitted by its own engine at the group size. Cells of vertical
+                // writing never grew, so there is no band to give back.
+                VerticalTextLayout.Layout refitted = VerticalTextLayout.layoutAt(graphics,
+                        item.columns().units(), item.cells(), item.columns().font(), target,
+                        item.columns().condense());
+                result.add(refitted.fits() ? item.withColumns(refitted) : item);
                 continue;
             }
             Font font = item.layout().font().deriveFont((float) target);
@@ -799,6 +948,11 @@ public class ImageTranslationOverlayRenderer {
         return letters > 0 && latin * 2 > letters;
     }
 
+    /** Whether a replacement is Chinese, Japanese or Korean text, which reads upright down a column. */
+    private static boolean isMostlyCjk(String value) {
+        return WritingModeClassifier.isMostlyCjk(List.of(value));
+    }
+
     /** Narrows glyphs without touching their height, which is what a narrow cell actually lacks. */
     private static Font condensed(Font base, int size, double widthScale) {
         Font sized = base.deriveFont((float) size);
@@ -1216,6 +1370,11 @@ public class ImageTranslationOverlayRenderer {
         }
     }
 
+    /** Which engine laid a cell out: horizontal lines, or the columns of vertical writing. */
+    private enum LayoutKind {
+        LINES, COLUMNS
+    }
+
     private record PreparedOverlay(
             ImageRegionOverlay overlay,
             ImageTranslationTextStyle style,
@@ -1226,14 +1385,44 @@ public class ImageTranslationOverlayRenderer {
             double angle,
             Bounds localBounds,
             Layout layout,
-            Growth growth) {
+            Growth growth,
+            LayoutKind kind,
+            List<VerticalTextLayout.Cell> cells,
+            VerticalTextLayout.Layout columns) {
         PreparedOverlay {
             cleanupAreas = List.copyOf(cleanupAreas);
+            cells = List.copyOf(cells);
+        }
+
+        static PreparedOverlay lines(ImageRegionOverlay overlay, ImageTranslationTextStyle style,
+                Area layoutMask, Area modifiedMask, List<Area> cleanupAreas, OcrPoint origin,
+                double angle, Bounds localBounds, Layout layout, Growth growth) {
+            return new PreparedOverlay(overlay, style, layoutMask, modifiedMask, cleanupAreas, origin,
+                    angle, localBounds, layout, growth, LayoutKind.LINES, List.of(), null);
+        }
+
+        /** Vertical writing never grows: the cells are the region's own. */
+        static PreparedOverlay columns(ImageRegionOverlay overlay, ImageTranslationTextStyle style,
+                Area layoutMask, Area modifiedMask, List<Area> cleanupAreas, OcrPoint origin,
+                double angle, Bounds localBounds, List<VerticalTextLayout.Cell> cells,
+                VerticalTextLayout.Layout columns) {
+            return new PreparedOverlay(overlay, style, layoutMask, modifiedMask, cleanupAreas, origin,
+                    angle, localBounds, null, null, LayoutKind.COLUMNS, cells, columns);
+        }
+
+        /** The type size the cell was laid out at, whichever engine laid it out. */
+        int fontSize() {
+            return kind == LayoutKind.COLUMNS ? columns.size() : layout.font().getSize();
         }
 
         PreparedOverlay withLayout(Layout replacement) {
             return new PreparedOverlay(overlay, style, layoutMask, modifiedMask, cleanupAreas,
-                    origin, angle, localBounds, replacement, growth);
+                    origin, angle, localBounds, replacement, growth, kind, cells, columns);
+        }
+
+        PreparedOverlay withColumns(VerticalTextLayout.Layout replacement) {
+            return new PreparedOverlay(overlay, style, layoutMask, modifiedMask, cleanupAreas,
+                    origin, angle, localBounds, layout, growth, kind, cells, replacement);
         }
 
         /**
@@ -1245,7 +1434,7 @@ public class ImageTranslationOverlayRenderer {
             if (rows <= 0) {
                 return new PreparedOverlay(overlay, style, growth.baseLayoutMask(),
                         growth.baseModifiedMask(), cleanupAreas, origin, angle,
-                        growth.baseBounds(), layout, null);
+                        growth.baseBounds(), layout, null, kind, cells, columns);
             }
             Area band = band(origin, angle, growth.frameWidth(), growth.frameHeight(), rows,
                     growth.imageWidth(), growth.imageHeight());
@@ -1254,7 +1443,8 @@ public class ImageTranslationOverlayRenderer {
                     growth.baseBounds().taller(rows), layout,
                     new Growth(rows, growth.baseLayoutMask(), growth.baseModifiedMask(),
                             growth.baseBounds(), growth.frameWidth(), growth.frameHeight(),
-                            growth.imageWidth(), growth.imageHeight()));
+                            growth.imageWidth(), growth.imageHeight()),
+                    kind, cells, columns);
         }
     }
 

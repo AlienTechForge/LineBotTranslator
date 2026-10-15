@@ -78,7 +78,7 @@ final class QuarterTurns {
                                 .map(symbol -> new OcrSymbol(symbol.text(),
                                         points(symbol.polygon(), quarterTurns, width, height, forward),
                                         symbol.confidence(), symbol.confidenceKnown()))
-                                .toList()))
+                                .toList(), word.breakAfter()))
                 .toList();
         OcrRegion moved = region.withGeometry(
                 points(region.polygon(), quarterTurns, width, height, forward), words, null);

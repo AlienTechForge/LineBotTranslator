@@ -57,6 +57,9 @@ final class PageOrientationDetector {
     static final int MIN_SYMBOL_SAMPLES = 8;
     static final double MIN_GLYPH_SHARE = .60;
     static final int MIN_PUNCTUATION_SAMPLES = 3;
+    /** A single paragraph of a mixed page is judged on fewer samples than a whole page. */
+    static final int MIN_PARAGRAPH_SYMBOL_SAMPLES = 5;
+    static final int MIN_PARAGRAPH_PUNCTUATION_SAMPLES = 2;
     /** At or below this the punctuation sits high in its line, at or above the next one low in it. */
     static final double HIGH_PUNCTUATION_OFFSET = .40;
     static final double LOW_PUNCTUATION_OFFSET = .60;
@@ -127,6 +130,45 @@ final class PageOrientationDetector {
             if (evidence.punctuationOffset() <= HIGH_PUNCTUATION_OFFSET) return Verdict.VERTICAL_WRITING;
         }
         return Verdict.AMBIGUOUS;
+    }
+
+    /**
+     * Marks the regions of a page that was found to be upright vertical writing, with no change to
+     * their geometry: a page whose verdict is {@link Verdict#VERTICAL_WRITING} gives every region
+     * whose line edge points down the image ({@code VERTICAL_RL}), and a page whose text has no
+     * dominant quarter ({@link Verdict#MIXED}) gives that mode only to the paragraphs that carry
+     * the evidence themselves, from their own symbols and punctuation and with fewer samples than a
+     * page needs. A region that is mostly not CJK is left alone either way: vertical writing at
+     * this scale is Chinese or Japanese, and any other text running down the image is turned.
+     * Every other verdict, and every other region, comes back as it is.
+     */
+    static List<OcrRegion> markVerticalWriting(
+            List<OcrRegion> regions, PageOrientation orientation, boolean symbolFrameFollowsGlyph) {
+        Verdict verdict = orientation.verdict();
+        if (verdict != Verdict.VERTICAL_WRITING && verdict != Verdict.MIXED) return regions;
+        List<OcrRegion> result = new ArrayList<>(regions.size());
+        for (OcrRegion region : regions) {
+            Vote vote = vote(region);
+            boolean mark = vote.quarter() == 1 && !region.writingMode().vertical()
+                    && runsAsVerticalWriting(vote, verdict, symbolFrameFollowsGlyph);
+            result.add(mark
+                    ? region.withGeometry(region.polygon(), region.words(), WritingMode.VERTICAL_RL)
+                    : region);
+        }
+        return List.copyOf(result);
+    }
+
+    private static boolean runsAsVerticalWriting(Vote vote, Verdict verdict, boolean symbolFrameFollowsGlyph) {
+        Evidence evidence = Evidence.of(List.of(vote), true);
+        if (evidence.cjkShare() <= MAX_ROTATED_CJK_SHARE) return false;
+        if (verdict == Verdict.VERTICAL_WRITING) return true;
+        if (!vote.reliable()) return false;
+        if (symbolFrameFollowsGlyph && evidence.symbolSamples() >= MIN_PARAGRAPH_SYMBOL_SAMPLES
+                && evidence.uprightGlyphShare() >= MIN_GLYPH_SHARE) {
+            return true;
+        }
+        return evidence.punctuationSamples() >= MIN_PARAGRAPH_PUNCTUATION_SAMPLES
+                && evidence.punctuationOffset() <= HIGH_PUNCTUATION_OFFSET;
     }
 
     /**

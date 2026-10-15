@@ -220,18 +220,26 @@ final class ImageTranslationStyleEstimator {
                 .orElse(fallback);
     }
 
+    /**
+     * The type size read off the word boxes: how tall a word is across its line. In upright vertical
+     * writing a word is a run of glyphs down a column, so what lies across the line is the column's
+     * width, the first edge of the upright box, and not the length of the column.
+     */
     private static int sourceFontSize(OcrRegion region, Rectangle regionBounds) {
+        boolean vertical = region.writingMode().vertical();
         List<Integer> wordHeights = region.words().stream()
                 .map(OcrWord::polygon)
                 .filter(points -> points.size() >= 4)
-                .map(points -> (int) Math.round(Math.hypot(
-                        points.get(points.size() - 1).x() - points.get(0).x(),
-                        points.get(points.size() - 1).y() - points.get(0).y())))
+                .map(points -> (int) Math.round(vertical
+                        ? OcrRegion.uprightWidth(points)
+                        : Math.hypot(
+                                points.get(points.size() - 1).x() - points.get(0).x(),
+                                points.get(points.size() - 1).y() - points.get(0).y())))
                 .filter(height -> height > 1)
                 .sorted()
                 .toList();
         int measured = wordHeights.isEmpty()
-                ? regionBounds.height
+                ? (vertical ? regionBounds.width : regionBounds.height)
                 : wordHeights.get(wordHeights.size() / 2);
         return Math.max(8, Math.min(128, (int) Math.round(measured * 1.1)));
     }

@@ -8,9 +8,10 @@ import java.util.List;
  * <p>The mode a region gets by default is derived from its polygon alone (see {@link #ofFrame}),
  * and the frame cannot tell a page that was turned a quarter from upright vertical writing: both
  * leave the line edge pointing down the image. The frame default therefore never says
- * {@code VERTICAL_*}; those two values are reserved for a region that carries evidence of upright
- * vertical writing, and nothing sets them yet. An unclassified region keeps being laid out in its
- * own frame, exactly as before the mode existed.
+ * {@code VERTICAL_*}; those two values are set only on evidence of upright vertical writing: the
+ * page verdict of {@link PageOrientationDetector}, the column split of {@link OcrRegionSegmenter},
+ * and {@link WritingModeClassifier} for a column kept whole. An unclassified region keeps being
+ * laid out in its own frame, exactly as before the mode existed.
  */
 public enum WritingMode {
     /** Line along +x within tolerance, glyphs upright. */
@@ -30,10 +31,11 @@ public enum WritingMode {
 
     /**
      * Largest deviation, in degrees, of the line edge from a quarter turn for the frame default
-     * to still name it. This is the band {@link OcrRegion#orientation()} always used for
-     * "horizontal" (7) and "vertical" (83 to 97), so a region that was not horizontal before is
-     * not horizontal now, and no decision taken on an upright page changes. The page detector
-     * allows a wider deviation for a region to vote on the page's rotation.
+     * to still name it. This is the band the three-bucket orientation of a region (horizontal,
+     * vertical, rotated) always used for "horizontal" (7) and "vertical" (83 to 97), so a region
+     * that was not horizontal before is not horizontal now, and no decision taken on an upright
+     * page changes. The page detector allows a wider deviation for a region to vote on the page's
+     * rotation.
      */
     static final double FRAME_TOLERANCE_DEGREES = 7;
 

@@ -97,17 +97,41 @@ public record OcrRegion(
     }
 
     /**
-     * The line direction in the three buckets this class started with.
-     *
-     * @deprecated use {@link #writingMode()}, which tells the quarter turns apart. Kept, with its
-     *             exact bands, for callers and tests that pin them.
+     * The polygon turned so that vertex 0 is the corner nearest the top-left of the image, which is
+     * the reading frame of upright vertical writing. Vision gives a vertical column the frame of a
+     * page turned a quarter (the line edge points down the image, and the top of the column is its
+     * right side), so the provider order {@code (top-right, bottom-right, bottom-left, top-left)}
+     * becomes {@code (top-left, top-right, bottom-right, bottom-left)}. A polygon already upright
+     * is returned as it is. Meant for {@code VERTICAL_*} regions; a turned page is brought upright
+     * by {@link QuarterTurns} instead.
      */
-    @Deprecated
-    public OcrOrientation orientation() {
-        double normalized = Math.abs(rotationDegrees()) % 180;
-        if (normalized <= 7 || normalized >= 173) return OcrOrientation.HORIZONTAL;
-        if (normalized >= 83 && normalized <= 97) return OcrOrientation.VERTICAL;
-        return OcrOrientation.ROTATED;
+    public List<OcrPoint> uprightPolygon() {
+        return uprightPolygon(polygon);
+    }
+
+    /** {@link #uprightPolygon()} of any polygon, by the quarter its first edge points at. */
+    static List<OcrPoint> uprightPolygon(List<OcrPoint> polygon) {
+        if (polygon.size() < 4) return polygon;
+        OcrPoint first = polygon.get(0);
+        OcrPoint second = polygon.get(1);
+        double degrees = Math.toDegrees(Math.atan2(second.y() - first.y(), second.x() - first.x()));
+        int quarter = (int) Math.floorMod(Math.round(degrees / 90), 4L);
+        if (quarter == 0) return polygon;
+        List<OcrPoint> upright = new ArrayList<>(polygon.size());
+        for (int index = 0; index < polygon.size(); index++) {
+            upright.add(polygon.get(Math.floorMod(index - quarter, polygon.size())));
+        }
+        return List.copyOf(upright);
+    }
+
+    /**
+     * Length of the first edge of the upright polygon: how wide the shape is across a column of
+     * vertical writing, whichever way the provider listed its corners.
+     */
+    static double uprightWidth(List<OcrPoint> polygon) {
+        List<OcrPoint> upright = uprightPolygon(polygon);
+        if (upright.size() < 2) return 0;
+        return Math.hypot(upright.get(1).x() - upright.get(0).x(), upright.get(1).y() - upright.get(0).y());
     }
 
     /** The same region with other geometry; {@code null} derives the mode from the new polygon. */

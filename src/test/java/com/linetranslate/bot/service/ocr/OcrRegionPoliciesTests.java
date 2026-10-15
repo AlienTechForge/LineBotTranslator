@@ -58,7 +58,7 @@ class OcrRegionPoliciesTests {
     }
 
     @Test
-    void derivesHorizontalVerticalAndRotatedOrientationFromProviderVertexOrder() {
+    void derivesTheWritingModeFromProviderVertexOrder() {
         OcrRegion horizontal = region("hello", true, List.of(new OcrDetectedLanguage("en", .9f)));
         OcrRegion vertical = new OcrRegion("vertical", "文字", List.of(
                 new OcrPoint(20, 10), new OcrPoint(20, 80),
@@ -68,13 +68,13 @@ class OcrRegionPoliciesTests {
                 new OcrPoint(10, 10), new OcrPoint(80, 45),
                 new OcrPoint(65, 75), new OcrPoint(-5, 40)), List.of(),
                 .9f, true, OcrBlockType.TEXT, List.of(new OcrDetectedLanguage("en", .9f)), 0);
-        assertThat(horizontal.orientation()).isEqualTo(OcrOrientation.HORIZONTAL);
-        assertThat(vertical.orientation()).isEqualTo(OcrOrientation.VERTICAL);
-        assertThat(rotated.orientation()).isEqualTo(OcrOrientation.ROTATED);
-        // The mode tells the quarter turns apart, which the three buckets above cannot.
+        // The frame names the quarter the line edge points at, and an edge off every quarter is
+        // skewed. It never says vertical writing: that takes evidence the frame cannot give.
         assertThat(horizontal.writingMode()).isEqualTo(WritingMode.HORIZONTAL);
         assertThat(vertical.writingMode()).isEqualTo(WritingMode.ROTATED_90);
         assertThat(rotated.writingMode()).isEqualTo(WritingMode.SKEWED);
+        assertThat(List.of(horizontal, vertical, rotated))
+                .allSatisfy(region -> assertThat(region.writingMode().vertical()).isFalse());
     }
 
     /** The ordered-token check the structured codec applies to a provider answer. */
