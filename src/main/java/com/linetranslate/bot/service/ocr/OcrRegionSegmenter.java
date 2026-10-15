@@ -6,12 +6,15 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.regex.Pattern;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 /**
  * Splits reliable OCR paragraphs along visible row and column boundaries. Before that, a short
  * wrapped tail that Vision reported as a block of its own is folded back into its paragraph by
- * {@link OcrTrailingFragmentMerger}, because qualification would otherwise judge it alone.
+ * {@link OcrTrailingFragmentMerger}, because qualification would otherwise judge it alone. The
+ * merge is only kept when qualification, with the confidence threshold the pipeline applies,
+ * would still translate the merged paragraph.
  */
 @Component
 public class OcrRegionSegmenter {
@@ -27,10 +30,30 @@ public class OcrRegionSegmenter {
             "^[\\p{Sc}\\s]*\\d[\\d,.'’]*(?:元|円|圓|원)?$");
     private static final Pattern SIZE_TOKEN = Pattern.compile("(?i)^(?:S|M|L|XL|XXL)$");
 
+    private final OcrRegionQualificationPolicy qualificationPolicy;
+    private final float confidenceThreshold;
+
+    /** The deployment defaults, for callers that are not wired from {@link ImageTranslationProperties}. */
+    public OcrRegionSegmenter() {
+        this(new OcrRegionQualificationPolicy(), ImageTranslationProperties.defaults().lowConfidenceThreshold());
+    }
+
+    /** Judges a merge by the same policy and threshold the image pipeline qualifies regions with. */
+    @Autowired
+    public OcrRegionSegmenter(
+            OcrRegionQualificationPolicy qualificationPolicy, ImageTranslationProperties properties) {
+        this(qualificationPolicy, properties.lowConfidenceThreshold());
+    }
+
+    OcrRegionSegmenter(OcrRegionQualificationPolicy qualificationPolicy, float confidenceThreshold) {
+        this.qualificationPolicy = qualificationPolicy;
+        this.confidenceThreshold = confidenceThreshold;
+    }
+
     public List<OcrRegion> segment(List<OcrRegion> input) {
         List<OcrRegion> result = new ArrayList<>();
         for (OcrRegion region : OcrTrailingFragmentMerger.merge(
-                input == null ? List.<OcrRegion>of() : input)) {
+                input == null ? List.<OcrRegion>of() : input, qualificationPolicy, confidenceThreshold)) {
             List<OcrRegion> denseChildren = splitDenseParagraph(region);
             if (!denseChildren.isEmpty()) {
                 result.addAll(denseChildren);

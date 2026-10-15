@@ -29,11 +29,17 @@ final class OcrArticleFixtures {
     }
 
     static OcrRegion paragraph(String id, int top, int lines, String language, int order) {
+        return paragraph(id, top, lines, GLYPHS_PER_LINE, language, order);
+    }
+
+    /** A narrower column: every line is {@code glyphsPerLine} glyphs (an even number) wide. */
+    static OcrRegion paragraph(
+            String id, int top, int lines, int glyphsPerLine, String language, int order) {
         List<OcrWord> words = new ArrayList<>();
         StringBuilder text = new StringBuilder();
         for (int line = 0; line < lines; line++) {
-            for (int word = 0; word < GLYPHS_PER_LINE / GLYPHS_PER_WORD; word++) {
-                int glyphs = (line * GLYPHS_PER_LINE) + word * GLYPHS_PER_WORD;
+            for (int word = 0; word < glyphsPerLine / GLYPHS_PER_WORD; word++) {
+                int glyphs = (line * glyphsPerLine) + word * GLYPHS_PER_WORD;
                 String value = glyphs(glyphs, GLYPHS_PER_WORD);
                 words.add(new OcrWord(value,
                         rectangle(LEFT + word * GLYPH * GLYPHS_PER_WORD, top + line * PITCH,
@@ -42,7 +48,8 @@ final class OcrArticleFixtures {
                 text.append(value);
             }
         }
-        return new OcrRegion(id, text.toString(), rectangle(LEFT, top, LINE_WIDTH, height(lines)),
+        return new OcrRegion(id, text.toString(),
+                rectangle(LEFT, top, GLYPH * glyphsPerLine, height(lines)),
                 words, .97f, true, OcrBlockType.TEXT,
                 language == null ? List.of() : List.of(new OcrDetectedLanguage(language, .97f)),
                 order);

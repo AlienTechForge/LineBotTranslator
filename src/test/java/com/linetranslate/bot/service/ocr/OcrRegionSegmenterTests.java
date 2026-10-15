@@ -583,6 +583,73 @@ class OcrRegionSegmenterTests {
         assertThat(verdicts()).containsExactly("kept-symbols-unmatched");
     }
 
+    // A tail that scores low drags the merged paragraph's scores down. Qualification is what
+    // decides, with the threshold the pipeline applies (0.60 by default), so the merge is only
+    // kept when the merged paragraph would still be translated.
+
+    @Test
+    void doesNotMergeALowConfidenceTailThatWouldPullTheParagraphUnderTheThreshold() {
+        OcrRegionQualificationPolicy policy = new OcrRegionQualificationPolicy();
+        // 20 characters at 0.61 and a 4-character tail at 0.01 average 0.51, below 0.60.
+        OcrRegion host = scored(paragraph("p", 100, 2, 10, "ja", 0), .61f, .98f);
+        OcrRegion tail = scored(tail("tail", "ている。", nextLineTop(100, 2), 1), .01f, .01f);
+        assertThat(host.text().codePointCount(0, host.text().length())).isEqualTo(20);
+        assertThat(policy.decide(host, .6f).qualification()).isEqualTo(OcrQualification.TRANSLATE);
+
+        List<OcrRegion> result = new OcrRegionSegmenter().segment(List.of(host, tail));
+
+        assertThat(result).extracting(OcrRegion::id).containsExactly("p", "tail");
+        assertThat(result.get(0).text()).isEqualTo(host.text());
+        assertThat(policy.decide(result.get(0), .6f).qualification()).isEqualTo(OcrQualification.TRANSLATE);
+        assertThat(verdicts()).containsExactly("kept-merged-region-unsafe");
+    }
+
+    @Test
+    void doesNotMergeATailWhoseWordConfidenceAloneWouldFailTheWordCheck() {
+        OcrRegionQualificationPolicy policy = new OcrRegionQualificationPolicy();
+        // The paragraph's score is fine, but its ten words average 0.50 and the tail's one word at
+        // 0.01 takes the average under 0.48 (0.8 x the threshold).
+        OcrRegion host = scored(paragraph("p", 100, 2, 10, "ja", 0), .97f, .50f);
+        OcrRegion tail = scored(tail("tail", "ている。", nextLineTop(100, 2), 1), .97f, .01f);
+        assertThat(policy.decide(host, .6f).qualification()).isEqualTo(OcrQualification.TRANSLATE);
+
+        List<OcrRegion> result = new OcrRegionSegmenter().segment(List.of(host, tail));
+
+        assertThat(result).extracting(OcrRegion::id).containsExactly("p", "tail");
+        assertThat(policy.decide(result.get(0), .6f).qualification()).isEqualTo(OcrQualification.TRANSLATE);
+        assertThat(verdicts()).containsExactly("kept-merged-region-unsafe");
+    }
+
+    @Test
+    void doesNotMergeATailWhoseSymbolConfidenceAloneWouldFailTheSymbolCheck() {
+        OcrRegionQualificationPolicy policy = new OcrRegionQualificationPolicy();
+        // Twenty symbols at 0.50 pass (0.75 x 0.60 = 0.45); four more at 0.01 average 0.42.
+        OcrRegion host = withSymbols(paragraph("p", 100, 2, 10, "ja", 0), .50f, true);
+        OcrRegion tail = withSymbols(tail("tail", "ている。", nextLineTop(100, 2), 1), .01f, true);
+        assertThat(policy.decide(host, .6f).qualification()).isEqualTo(OcrQualification.TRANSLATE);
+
+        List<OcrRegion> result = new OcrRegionSegmenter().segment(List.of(host, tail));
+
+        assertThat(result).extracting(OcrRegion::id).containsExactly("p", "tail");
+        assertThat(policy.decide(result.get(0), .6f).qualification()).isEqualTo(OcrQualification.TRANSLATE);
+        assertThat(verdicts()).containsExactly("kept-merged-region-unsafe");
+    }
+
+    @Test
+    void mergesATailThatTheStricterThresholdOfTheDeploymentStillAccepts() {
+        // The same tail is judged against the configured threshold, not a built-in one.
+        OcrRegionQualificationPolicy policy = new OcrRegionQualificationPolicy();
+        OcrRegion host = scored(paragraph("p", 100, 2, 10, "ja", 0), .90f, .98f);
+        OcrRegion tail = scored(tail("tail", "ている。", nextLineTop(100, 2), 1), .80f, .98f);
+
+        assertThat(new OcrRegionSegmenter(policy, threshold(.85f)).segment(List.of(host, tail)))
+                .extracting(OcrRegion::id).containsExactly("p");
+        logs.list.clear();
+        assertThat(new OcrRegionSegmenter(policy, threshold(.89f)).segment(List.of(host, tail)))
+                .extracting(OcrRegion::id).containsExactly("p", "tail");
+        assertThat(verdicts()).containsExactly("kept-merged-region-unsafe");
+    }
+
     // A block between the paragraph and the fragment is in the way: the fragment is then the line
     // after that block, not the one after the paragraph, however small the gaps are.
 
@@ -963,6 +1030,21 @@ class OcrRegionSegmenterTests {
         return new OcrRegion(region.id(), region.text(), region.polygon(), region.words(),
                 region.confidence(), region.confidenceKnown(), region.blockType(),
                 List.of(new OcrDetectedLanguage(code, .9f)), region.readingOrder(), region.groupId(),
+                region.compactLabel());
+    }
+
+    /** The pipeline's properties with only the OCR confidence threshold changed. */
+    private static ImageTranslationProperties threshold(float lowConfidenceThreshold) {
+        return new ImageTranslationProperties(
+                10_485_760, 4_096, 16_000_000, lowConfidenceThreshold, true, .12, .35);
+    }
+
+    /** The same region with the confidence of the region and of each of its words replaced. */
+    private static OcrRegion scored(OcrRegion region, float regionConfidence, float wordConfidence) {
+        List<OcrWord> words = region.words().stream().map(word -> new OcrWord(word.text(),
+                word.polygon(), wordConfidence, true, word.symbols())).toList();
+        return new OcrRegion(region.id(), region.text(), region.polygon(), words, regionConfidence,
+                true, region.blockType(), region.languages(), region.readingOrder(), region.groupId(),
                 region.compactLabel());
     }
 

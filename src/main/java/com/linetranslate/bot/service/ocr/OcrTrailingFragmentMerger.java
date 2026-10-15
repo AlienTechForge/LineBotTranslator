@@ -35,8 +35,10 @@ import com.linetranslate.bot.service.ocr.OcrRegionSegmenter.WordBox;
  *       host's glyph height.</li>
  *   <li>No other region sits between the host's last line and the fragment in the host's column,
  *       so a heading or caption in between is never skipped over.</li>
- *   <li>Its confidence is known at every level qualification reads, down to the symbols, so
- *       folding it in cannot make the whole paragraph untrusted.</li>
+ *   <li>Its confidence is known at every level qualification reads, down to the symbols, and
+ *       the merged paragraph still qualifies for translation under the same policy and threshold
+ *       the pipeline applies, so folding the tail in can never turn a paragraph that would be
+ *       translated into one that is rejected.</li>
  * </ul>
  * The host is found by geometry among all regions, not by list position, because Vision does not
  * promise to list the tail next to its paragraph.
@@ -70,7 +72,12 @@ final class OcrTrailingFragmentMerger {
     private OcrTrailingFragmentMerger() {
     }
 
-    static List<OcrRegion> merge(List<OcrRegion> input) {
+    /**
+     * Folds every fragment into its paragraph where the geometry says it wrapped and where
+     * {@code policy}, at {@code confidenceThreshold}, would still translate the merged paragraph.
+     */
+    static List<OcrRegion> merge(
+            List<OcrRegion> input, OcrRegionQualificationPolicy policy, float confidenceThreshold) {
         int count = input.size();
         boolean[] absorbed = new boolean[count];
         OcrRegion[] replacement = new OcrRegion[count];
@@ -80,13 +87,13 @@ final class OcrTrailingFragmentMerger {
             Measure best = null;
             for (int other = 0; other < count; other++) {
                 if (other == index || absorbed[other] || replacement[other] != null) continue;
-                Measure candidate = assess(input, other, index);
+                Measure candidate = assess(input, other, index, policy, confidenceThreshold);
                 if (candidate != null && (best == null || candidate.betterThan(best))) best = candidate;
             }
             if (best == null) continue;
             report(fragment, best);
             if (best.merge) {
-                replacement[best.hostIndex] = absorb(input.get(best.hostIndex), fragment);
+                replacement[best.hostIndex] = best.merged;
                 absorbed[index] = true;
             }
         }
@@ -150,7 +157,8 @@ final class OcrTrailingFragmentMerger {
      * all (not above the fragment, or in another column), so unrelated pairs are neither reported
      * nor considered.
      */
-    private static Measure assess(List<OcrRegion> regions, int hostIndex, int fragmentIndex) {
+    private static Measure assess(List<OcrRegion> regions, int hostIndex, int fragmentIndex,
+            OcrRegionQualificationPolicy policy, float confidenceThreshold) {
         OcrRegion host = regions.get(hostIndex);
         OcrRegion fragment = regions.get(fragmentIndex);
         if (host == null || host.polygon().size() < 4) return null;
@@ -241,7 +249,15 @@ final class OcrTrailingFragmentMerger {
                 Math.min(contentLeft, ink.x), Math.max(contentRight, ink.x + ink.width))) {
             return measure.keep("kept-block-between");
         }
-        return measure.accept();
+        // Last, because it is the one that asks qualification itself. A tail that is low on
+        // confidence, or whose words or symbols are, lowers the merged paragraph's scores, and a
+        // paragraph that would be translated on its own must not be rejected for it. The check is
+        // the policy's own, so it cannot drift from what the pipeline applies.
+        OcrRegion merged = absorb(host, fragment);
+        if (policy.decide(merged, confidenceThreshold).qualification() != OcrQualification.TRANSLATE) {
+            return measure.keep("kept-merged-region-unsafe");
+        }
+        return measure.accept(merged);
     }
 
     /**
@@ -404,6 +420,7 @@ final class OcrTrailingFragmentMerger {
         double shortfallRatio = Double.NaN;
         String verdict;
         boolean merge;
+        OcrRegion merged;
 
         Measure(int hostIndex, int distance, OcrRegion host, Rectangle hostBox) {
             this.hostIndex = hostIndex;
@@ -418,9 +435,10 @@ final class OcrTrailingFragmentMerger {
             return this;
         }
 
-        Measure accept() {
+        Measure accept(OcrRegion mergedRegion) {
             verdict = "merged";
             merge = true;
+            merged = mergedRegion;
             return this;
         }
 
