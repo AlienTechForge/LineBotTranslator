@@ -426,13 +426,15 @@ public class ImageTranslationOverlayRenderer {
     }
 
     /**
-     * The upright candidate if it fits and is not clearly smaller than the turned one, the turned
-     * one if it fits, and the turned one when neither does: the frame a tall cell was always drawn
-     * in, so that growing and the log describe what they always did.
+     * The upright candidate if it fits without breaking a word and is not clearly smaller than the
+     * turned one, and the turned one otherwise: the frame a tall cell was always drawn in, so that
+     * growing and the log describe what they always did. An upright layout that only fits because
+     * a word is split between its letters, one letter to a line in a narrow cell, is not a layout
+     * the turn gave up for; the turn reads along the column and keeps the word whole.
      */
     private static Candidate prefer(Candidate upright, Candidate turned) {
-        if (upright.layout().fits() && (!turned.layout().fits()
-                || upright.size() >= UPRIGHT_PREFERENCE * turned.size())) {
+        if (upright.layout().fits() && !upright.layout().splitsWords()
+                && (!turned.layout().fits() || upright.size() >= UPRIGHT_PREFERENCE * turned.size())) {
             return upright;
         }
         return turned;
@@ -520,13 +522,14 @@ public class ImageTranslationOverlayRenderer {
             graphics.setFont(font);
             FontMetrics metrics = graphics.getFontMetrics();
             int lineWidth = Math.max(1, item.localBounds().width() - 2);
-            List<String> lines = wrap(item.overlay().replacement(), metrics, lineWidth);
+            boolean[] split = new boolean[1];
+            List<String> lines = wrap(item.overlay().replacement(), metrics, lineWidth, split);
             if (textHeight(metrics, lines.size()) > item.localBounds().height()
                     || widestLine(metrics, lines) > lineWidth) {
                 result.add(item);
                 continue;
             }
-            Layout layout = new Layout(font, lines, true);
+            Layout layout = new Layout(font, lines, true, split[0]);
             if (item.growth() == null) {
                 result.add(item.withLayout(layout));
                 continue;
@@ -628,8 +631,9 @@ public class ImageTranslationOverlayRenderer {
         // source pixels (text-fit) rather than drawing this layout.
         Font font = condensed(baseFont, MIN_FONT_SIZE, CONDENSE_STEPS[CONDENSE_STEPS.length - 1]);
         graphics.setFont(font);
-        List<String> lines = wrap(text, graphics.getFontMetrics(), Math.max(1, bounds.width() - 2));
-        return new Layout(font, lines, false);
+        boolean[] split = new boolean[1];
+        List<String> lines = wrap(text, graphics.getFontMetrics(), Math.max(1, bounds.width() - 2), split);
+        return new Layout(font, lines, false, split[0]);
     }
 
     /**
@@ -745,10 +749,11 @@ public class ImageTranslationOverlayRenderer {
                 graphics.setFont(font);
                 FontMetrics metrics = graphics.getFontMetrics();
                 int lineWidth = Math.max(1, bounds.width() - 2);
-                List<String> lines = wrap(text, metrics, lineWidth);
+                boolean[] split = new boolean[1];
+                List<String> lines = wrap(text, metrics, lineWidth, split);
                 if (textHeight(metrics, lines.size()) <= bounds.height()
                         && widestLine(metrics, lines) <= lineWidth) {
-                    return new Layout(font, lines, true);
+                    return new Layout(font, lines, true, split[0]);
                 }
             }
         }
@@ -1051,6 +1056,16 @@ public class ImageTranslationOverlayRenderer {
      * it.
      */
     static List<String> wrap(String text, FontMetrics metrics, int width) {
+        return wrap(text, metrics, width, new boolean[1]);
+    }
+
+    /**
+     * {@link #wrap(String, FontMetrics, int)} that also says whether it had to break a word between
+     * its characters: {@code splitWord[0]} is set when a word of more than one character was wider
+     * than a line on its own. A single glyph wider than the line, and the glyph-by-glyph breaks of
+     * Han and kana, which are never a word, do not set it.
+     */
+    static List<String> wrap(String text, FontMetrics metrics, int width, boolean[] splitWord) {
         List<String> lines = new ArrayList<>();
         for (String paragraph : text.replace('\r', '\n').split("\\n+", -1)) {
             StringBuilder line = new StringBuilder();
@@ -1067,6 +1082,7 @@ public class ImageTranslationOverlayRenderer {
                     line.append(token);
                     continue;
                 }
+                if (token.codePointCount(0, token.length()) > 1) splitWord[0] = true;
                 for (int codePoint : token.codePoints().toArray()) {
                     String glyph = new String(Character.toChars(codePoint));
                     if (!line.isEmpty() && metrics.stringWidth(line + glyph) > width) {
@@ -1354,7 +1370,11 @@ public class ImageTranslationOverlayRenderer {
         return result;
     }
 
-    private record Layout(Font font, List<String> lines, boolean fits) {
+    /** @param splitsWords a word had to be broken between its characters to make the lines fit */
+    private record Layout(Font font, List<String> lines, boolean fits, boolean splitsWords) {
+        Layout(Font font, List<String> lines, boolean fits) {
+            this(font, lines, fits, false);
+        }
     }
 
     /** A cell that took {@code rows} rows of the empty space under it, and the layout that gave. */
