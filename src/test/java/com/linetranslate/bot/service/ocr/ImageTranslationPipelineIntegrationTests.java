@@ -594,6 +594,36 @@ class ImageTranslationPipelineIntegrationTests {
     }
 
     @Test
+    void anOrphanLineThatWrappedOutOfAnArticleParagraphReachesTheWorkflowWithItsParagraph() throws Exception {
+        image("message-article", png(1260, 1308), "image/png");
+        when(minioStorageService.uploadImage(any(byte[].class), anyString()))
+                .thenReturn(ImageStorageResult.notStored());
+        // Three paragraphs and a fourth block holding the two characters that wrapped out of the
+        // last one. Alone, those characters were an untrusted glyph, so the request carried three
+        // regions and the orphan stayed on the image in Japanese.
+        OcrRegion third = OcrArticleFixtures.paragraph("p3", 780, 6, 2);
+        when(ocrService.recognizeRegions(any(InputStream.class))).thenReturn(new OcrRegionSegmenter().segment(
+                List.of(OcrArticleFixtures.paragraph("p1", 100, 4, 0),
+                        OcrArticleFixtures.paragraph("p2", 440, 4, 1), third,
+                        OcrArticleFixtures.tail("orphan", "る。", OcrArticleFixtures.nextLineTop(780, 6), 3))));
+        when(workflowModule.execute(any())).thenReturn(success("source", "stub"));
+
+        pipeline.execute(request("message-article"));
+
+        ArgumentCaptor<TranslationWorkflowRequest> workflow =
+                ArgumentCaptor.forClass(TranslationWorkflowRequest.class);
+        verify(workflowModule).execute(workflow.capture());
+        var regions = workflow.getValue().imageRegions();
+        assertThat(regions).extracting(
+                com.linetranslate.bot.service.translation.ImageRegionTranslationInput::regionId)
+                .containsExactly("p1", "p2", "p3");
+        assertThat(regions).allMatch(
+                com.linetranslate.bot.service.translation.ImageRegionTranslationInput::translatable);
+        assertThat(regions.get(2).sourceText()).isEqualTo(third.text() + "る。");
+        assertThat(workflow.getValue().sourceText()).endsWith("る。");
+    }
+
+    @Test
     void longPreservedRegionAndDenseTokenRegionStillReachTheTranslationWorkflow() throws Exception {
         image("message-dense-tokens", png(300, 150), "image/png");
         when(minioStorageService.uploadImage(any(byte[].class), anyString()))

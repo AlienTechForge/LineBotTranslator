@@ -1,12 +1,51 @@
 package com.linetranslate.bot.service.ocr;
 
+import static com.linetranslate.bot.service.ocr.OcrArticleFixtures.GLYPH;
+import static com.linetranslate.bot.service.ocr.OcrArticleFixtures.LEFT;
+import static com.linetranslate.bot.service.ocr.OcrArticleFixtures.LINE_WIDTH;
+import static com.linetranslate.bot.service.ocr.OcrArticleFixtures.PITCH;
+import static com.linetranslate.bot.service.ocr.OcrArticleFixtures.nextLineTop;
+import static com.linetranslate.bot.service.ocr.OcrArticleFixtures.paragraph;
+import static com.linetranslate.bot.service.ocr.OcrArticleFixtures.tail;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.within;
 
 import java.util.List;
+import java.util.function.UnaryOperator;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+
 class OcrRegionSegmenterTests {
+    private static final Pattern VERDICT = Pattern.compile("^Trailing fragment merge decision: verdict=([a-z-]+),");
+
+    private final Logger logger = (Logger) org.slf4j.LoggerFactory.getLogger(OcrRegionSegmenter.class);
+    private final ListAppender<ILoggingEvent> logs = new ListAppender<>();
+
+    @BeforeEach
+    void captureLogs() {
+        logs.start();
+        logger.addAppender(logs);
+    }
+
+    @AfterEach
+    void releaseLogs() {
+        logger.detachAppender(logs);
+        logs.stop();
+    }
+
+    /** The verdict of every fragment merge decision logged so far, in order. */
+    private List<String> verdicts() {
+        return logs.list.stream().map(ILoggingEvent::getFormattedMessage)
+                .map(VERDICT::matcher).filter(Matcher::find).map(match -> match.group(1)).toList();
+    }
 
     @Test
     void splitsWidelySpacedCompactUiLabelsAndKeepsAGroupIdentity() {
@@ -305,6 +344,343 @@ class OcrRegionSegmenterTests {
                 .containsExactly(description.text(), label.text());
     }
 
+    // --- an orphan line that wrapped out of its paragraph --------------------------------------
+    //
+    // Vision returned a Japanese article as three paragraph blocks and a fourth block holding only
+    // the characters that wrapped onto a line of their own. The fourth block was dropped before
+    // translation, so the image showed three Chinese paragraphs and, under them, the orphan still
+    // in Japanese. These tests use the geometry of that page.
+
+    @Test
+    void qualificationAloneDropsTheOrphanLineThatWrappedOutOfAParagraph() {
+        OcrRegionQualificationPolicy policy = new OcrRegionQualificationPolicy();
+        OcrRegion orphan = tail("orphan", "る。", nextLineTop(780, 6), 3);
+
+        // Two characters with no detected language are an untrusted isolated glyph; this is where
+        // the fourth region left the translation request, so the segmenter has to get there first.
+        assertThat(policy.decide(orphan, .6f).qualification()).isEqualTo(OcrQualification.REJECT);
+        assertThat(policy.decide(orphan, .6f).reason()).isEqualTo("untrusted-isolated-glyph");
+    }
+
+    @Test
+    void mergesAnOrphanLineBackIntoItsParagraphSoItIsTranslatedAndErasedWithIt() {
+        OcrRegionQualificationPolicy policy = new OcrRegionQualificationPolicy();
+        OcrRegion first = paragraph("p1", 100, 4, 0);
+        OcrRegion second = paragraph("p2", 440, 4, 1);
+        OcrRegion third = paragraph("p3", 780, 6, 2);
+        OcrRegion orphan = tail("orphan", "る。", nextLineTop(780, 6), 3);
+
+        List<OcrRegion> result = new OcrRegionSegmenter().segment(List.of(first, second, third, orphan));
+
+        assertThat(result).extracting(OcrRegion::id).containsExactly("p1", "p2", "p3");
+        assertThat(result).extracting(OcrRegion::readingOrder).containsExactly(0, 1, 2);
+        assertThat(result.get(0)).isEqualTo(first);
+        assertThat(result.get(1)).isEqualTo(second);
+        // Every region that reaches qualification is now translated, including the last line.
+        assertThat(result).allSatisfy(region ->
+                assertThat(policy.decide(region, .6f).qualification()).isEqualTo(OcrQualification.TRANSLATE));
+
+        OcrRegion merged = result.get(2);
+        assertThat(merged.text()).isEqualTo(third.text() + "る。");
+        assertThat(merged.compactLabel()).isFalse();
+        assertThat(merged.languages()).isEqualTo(third.languages());
+        // Words and visual lines are rebuilt: the orphan is a seventh line of the same paragraph.
+        assertThat(merged.words()).hasSize(third.words().size() + 1);
+        assertThat(merged.words().get(merged.words().size() - 1).text()).isEqualTo("る。");
+        OcrRegionSegmenter.LocalFrame frame = OcrRegionSegmenter.LocalFrame.from(merged);
+        assertThat(OcrRegionSegmenter.visualLines(merged.words(), frame)).hasSize(7);
+        // The polygon spans the paragraph and the orphan, and keeps the paragraph's left and top.
+        java.awt.Rectangle bounds = OverlaySafetyPolicy.polygon(merged.polygon()).getBounds();
+        assertThat(bounds.x).isEqualTo(LEFT);
+        assertThat(bounds.y).isEqualTo(780);
+        assertThat(bounds.width).isEqualTo(LINE_WIDTH);
+        assertThat(bounds.y + bounds.height).isEqualTo(nextLineTop(780, 6) + GLYPH);
+        // The cleanup mask covers the orphan's glyphs, so the translation replaces them.
+        assertThat(OverlaySafetyPolicy.sourceAreas(merged)).anyMatch(area ->
+                area.contains(LEFT + GLYPH, nextLineTop(780, 6) + GLYPH / 2));
+    }
+
+    @Test
+    void mergesTheOrphanWhenVisionListsItBeforeItsParagraph() {
+        OcrRegion first = paragraph("p1", 100, 4, 0);
+        OcrRegion third = paragraph("p3", 780, 6, 1);
+        OcrRegion orphan = tail("orphan", "る。", nextLineTop(780, 6), 2);
+
+        List<OcrRegion> result = new OcrRegionSegmenter().segment(List.of(first, orphan, third));
+
+        assertThat(result).extracting(OcrRegion::id).containsExactly("p1", "p3");
+        assertThat(result.get(1).text()).isEqualTo(third.text() + "る。");
+    }
+
+    @Test
+    void mergesTheOrphanWhenVisionCallsTheKanjiHeavyParagraphChinese() {
+        OcrRegion third = paragraph("p3", 780, 6, "zh", 0);
+        OcrRegion orphan = withLanguage(tail("orphan", "る。", nextLineTop(780, 6), 1), "ja");
+
+        List<OcrRegion> result = new OcrRegionSegmenter().segment(List.of(third, orphan));
+
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).text()).endsWith("る。");
+    }
+
+    @Test
+    void mergesTheOrphanWhoseVerticesStartAtAnotherCorner() {
+        OcrRegion third = paragraph("p3", 780, 6, 0);
+        int top = nextLineTop(780, 6);
+        // The same box, listed from the top-right corner downwards: by its first edge the block
+        // reads as vertical text, but its words are laid out as one horizontal line.
+        List<OcrPoint> polygon = List.of(new OcrPoint(LEFT + 2 * GLYPH, top),
+                new OcrPoint(LEFT + 2 * GLYPH, top + GLYPH), new OcrPoint(LEFT, top + GLYPH),
+                new OcrPoint(LEFT, top));
+        OcrRegion orphan = new OcrRegion("orphan", "る。", polygon,
+                List.of(new OcrWord("る。", polygon, .95f, true)), .95f, true, OcrBlockType.TEXT,
+                List.of(), 1);
+        assertThat(orphan.orientation()).isEqualTo(OcrOrientation.VERTICAL);
+
+        List<OcrRegion> result = new OcrRegionSegmenter().segment(List.of(third, orphan));
+
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).text()).endsWith("る。");
+    }
+
+    @Test
+    void mergesAnOrphanAFullLinePitchBelowTheLastLine() {
+        OcrRegion third = paragraph("p3", 780, 6, 0);
+        // The last line ends at 1212; the orphan starts one pitch (76px) below that.
+        OcrRegion orphan = tail("orphan", "る。", 780 + 5 * PITCH + GLYPH + PITCH, 1);
+
+        List<OcrRegion> result = new OcrRegionSegmenter().segment(List.of(third, orphan));
+
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).text()).endsWith("る。");
+        assertThat(verdicts()).containsExactly("merged");
+    }
+
+    @Test
+    void mergesAnOrphanBelowAParagraphThatIsSlightlyTilted() {
+        OcrRegion third = tilted(paragraph("p3", 780, 6, 0), 3, 600, 780);
+        OcrRegion orphan = tilted(tail("orphan", "る。", nextLineTop(780, 6), 1), 3, 600, 780);
+
+        List<OcrRegion> result = new OcrRegionSegmenter().segment(List.of(third, orphan));
+
+        assertThat(result).hasSize(1);
+        OcrRegion merged = result.get(0);
+        assertThat(merged.text()).isEqualTo(third.text() + "る。");
+        // The merged box keeps the paragraph's own axes instead of becoming an upright rectangle.
+        assertThat(merged.rotationDegrees()).isCloseTo(third.rotationDegrees(), within(.2));
+        assertThat(OverlaySafetyPolicy.sourceAreas(merged)).anyMatch(area ->
+                area.contains(orphan.words().get(0).polygon().get(0).x() + 20,
+                        orphan.words().get(0).polygon().get(0).y() + 20));
+        assertThat(verdicts()).containsExactly("merged");
+    }
+
+    @Test
+    void mergesALoneFullStopThatWrappedOntoALineOfItsOwn() {
+        OcrRegion third = paragraph("p3", 780, 6, 0);
+        int top = nextLineTop(780, 6);
+        // A full stop sits low and to the left of its cell, so its box is small.
+        OcrRegion stop = new OcrRegion("stop", "。", rectangle(LEFT, top + 32, 20, 20),
+                List.of(new OcrWord("。", rectangle(LEFT, top + 32, 20, 20), .95f, true)),
+                .95f, true, OcrBlockType.TEXT, List.of(), 1);
+
+        List<OcrRegion> result = new OcrRegionSegmenter().segment(List.of(third, stop));
+
+        assertThat(result).hasSize(1);
+        // Punctuation closes the text it follows, with no space in front of it.
+        assertThat(result.get(0).text()).isEqualTo(third.text() + "。");
+    }
+
+    @Test
+    void erasesAnOrphanThatCameWithoutWordBoxes() {
+        OcrRegion third = paragraph("p3", 780, 6, 0);
+        int top = nextLineTop(780, 6);
+        OcrRegion orphan = new OcrRegion("orphan", "る。", rectangle(LEFT, top, 2 * GLYPH, GLYPH),
+                List.of(), .95f, true, OcrBlockType.TEXT, List.of(), 1);
+
+        List<OcrRegion> result = new OcrRegionSegmenter().segment(List.of(third, orphan));
+
+        assertThat(result).hasSize(1);
+        // Without a box of its own the orphan would be missing from the cleanup mask.
+        assertThat(OverlaySafetyPolicy.sourceAreas(result.get(0))).anyMatch(area ->
+                area.contains(LEFT + GLYPH, top + GLYPH / 2));
+    }
+
+    @Test
+    void aLowConfidenceTailDoesNotPullALongParagraphUnderTheThreshold() {
+        OcrRegionQualificationPolicy policy = new OcrRegionQualificationPolicy();
+        OcrRegion third = paragraph("p3", 780, 6, 0);
+        int top = nextLineTop(780, 6);
+        OcrRegion orphan = new OcrRegion("orphan", "る。", rectangle(LEFT, top, 2 * GLYPH, GLYPH),
+                List.of(new OcrWord("る。", rectangle(LEFT, top, 2 * GLYPH, GLYPH), .55f, true)),
+                .55f, true, OcrBlockType.TEXT, List.of(), 1);
+
+        List<OcrRegion> result = new OcrRegionSegmenter().segment(List.of(third, orphan));
+
+        assertThat(result).hasSize(1);
+        // Weighted by length: two characters cannot veto 132, and the paragraph stays translatable.
+        assertThat(result.get(0).confidence()).isGreaterThan(.95f);
+        assertThat(policy.decide(result.get(0), .6f).qualification()).isEqualTo(OcrQualification.TRANSLATE);
+    }
+
+    @Test
+    void doesNotMergeATailWhoseConfidenceIsUnknownSoTheParagraphStaysTrusted() {
+        OcrRegionQualificationPolicy policy = new OcrRegionQualificationPolicy();
+        OcrRegion third = paragraph("p3", 780, 6, 0);
+        int top = nextLineTop(780, 6);
+        OcrRegion orphan = new OcrRegion("orphan", "る。", rectangle(LEFT, top, 2 * GLYPH, GLYPH),
+                List.of(new OcrWord("る。", rectangle(LEFT, top, 2 * GLYPH, GLYPH), 0f, false)),
+                0f, false, OcrBlockType.TEXT, List.of(), 1);
+
+        List<OcrRegion> result = new OcrRegionSegmenter().segment(List.of(third, orphan));
+
+        // Merged, the unknown confidence would make the whole paragraph untrusted.
+        assertThat(result).extracting(OcrRegion::id).containsExactly("p3", "orphan");
+        assertThat(policy.decide(result.get(0), .6f).qualification()).isEqualTo(OcrQualification.TRANSLATE);
+        assertThat(verdicts()).containsExactly("kept-confidence-unknown");
+    }
+
+    // The negative cases: a short block next to a paragraph is not always the paragraph's tail.
+
+    @Test
+    void doesNotMergeAHeadingSetInLargerType() {
+        OcrRegion third = paragraph("p3", 780, 6, 0);
+        int top = nextLineTop(780, 6);
+        OcrRegion heading = new OcrRegion("heading", "まとめ！", rectangle(LEFT, top, 4 * 80, 80),
+                List.of(new OcrWord("まとめ！", rectangle(LEFT, top, 4 * 80, 80), .97f, true)),
+                .97f, true, OcrBlockType.TEXT, List.of(), 1);
+
+        assertThat(new OcrRegionSegmenter().segment(List.of(third, heading)))
+                .extracting(OcrRegion::id).containsExactly("p3", "heading");
+        assertThat(verdicts()).containsExactly("kept-glyph-height-differs");
+    }
+
+    @Test
+    void doesNotMergeABulletThatOpensItsOwnItem() {
+        OcrRegion third = paragraph("p3", 780, 6, 0);
+        OcrRegion bullet = tail("bullet", "・以上。", nextLineTop(780, 6), 1);
+
+        assertThat(new OcrRegionSegmenter().segment(List.of(third, bullet)))
+                .extracting(OcrRegion::id).containsExactly("p3", "bullet");
+        assertThat(verdicts()).isEmpty();
+    }
+
+    @Test
+    void doesNotMergeATailSetInSmallerType() {
+        OcrRegion third = paragraph("p3", 780, 6, 0);
+        int top = nextLineTop(780, 6);
+        OcrRegion note = new OcrRegion("note", "注。", rectangle(LEFT, top, 2 * 36, 36),
+                List.of(new OcrWord("注。", rectangle(LEFT, top, 2 * 36, 36), .97f, true)),
+                .97f, true, OcrBlockType.TEXT, List.of(), 1);
+
+        assertThat(new OcrRegionSegmenter().segment(List.of(third, note)))
+                .extracting(OcrRegion::id).containsExactly("p3", "note");
+        assertThat(verdicts()).containsExactly("kept-glyph-height-differs");
+    }
+
+    @Test
+    void doesNotMergeABlockFromAnotherColumn() {
+        OcrRegion third = paragraph("p3", 780, 6, 0);
+        int top = nextLineTop(780, 6);
+        // Under the paragraph but indented far past its left edge.
+        OcrRegion indented = tail("indented", "る。", top, 1);
+        indented = shifted(indented, 600, 0);
+        // Beside the paragraph, wholly outside its column.
+        OcrRegion beside = shifted(tail("beside", "る。", top, 2), LINE_WIDTH + 80, 0);
+
+        assertThat(new OcrRegionSegmenter().segment(List.of(third, indented)))
+                .extracting(OcrRegion::id).containsExactly("p3", "indented");
+        assertThat(verdicts()).containsExactly("kept-left-edge-misaligned");
+        assertThat(new OcrRegionSegmenter().segment(List.of(third, beside)))
+                .extracting(OcrRegion::id).containsExactly("p3", "beside");
+        // The second block was never a candidate, so it added no decision of its own.
+        assertThat(verdicts()).containsExactly("kept-left-edge-misaligned");
+    }
+
+    @Test
+    void doesNotMergeAfterAParagraphThatEndedBeforeTheRightEdge() {
+        // The last line stops two thirds across: the paragraph is finished, not wrapped.
+        OcrRegion full = paragraph("p3", 780, 6, 0);
+        List<OcrWord> words = new java.util.ArrayList<>(full.words());
+        int shortLine = 0;
+        for (int index = words.size() - 1; index >= 0 && shortLine < 4; index--, shortLine++) {
+            words.remove(index);
+        }
+        OcrRegion ended = new OcrRegion("p3", full.text(), full.polygon(), words, full.confidence(),
+                true, OcrBlockType.TEXT, full.languages(), 0);
+        OcrRegion next = tail("next", "はい。", nextLineTop(780, 6), 1);
+
+        assertThat(new OcrRegionSegmenter().segment(List.of(ended, next)))
+                .extracting(OcrRegion::id).containsExactly("p3", "next");
+        assertThat(verdicts()).containsExactly("kept-last-line-short");
+    }
+
+    @Test
+    void doesNotMergeABlockSeveralLinesBelowTheParagraph() {
+        OcrRegion third = paragraph("p3", 780, 6, 0);
+        OcrRegion later = tail("later", "る。", nextLineTop(780, 6) + 2 * PITCH, 1);
+
+        assertThat(new OcrRegionSegmenter().segment(List.of(third, later)))
+                .extracting(OcrRegion::id).containsExactly("p3", "later");
+        assertThat(verdicts()).containsExactly("kept-gap-out-of-range");
+    }
+
+    @Test
+    void doesNotMergeATailInAnotherLanguage() {
+        OcrRegion third = paragraph("p3", 780, 6, 0);
+        OcrRegion korean = withLanguage(tail("korean", "좋다.", nextLineTop(780, 6), 1), "ko");
+
+        assertThat(new OcrRegionSegmenter().segment(List.of(third, korean)))
+                .extracting(OcrRegion::id).containsExactly("p3", "korean");
+        assertThat(verdicts()).containsExactly("kept-language-conflict");
+    }
+
+    @Test
+    void doesNotMergeIntoAParagraphThatIsNotHorizontal() {
+        // The same paragraph turned a quarter turn, with the orphan under its new bounding box.
+        OcrRegion upright = paragraph("p3", 780, 6, 0);
+        OcrRegion turned = tilted(upright, 90, 600, 780);
+        java.awt.Rectangle box = OverlaySafetyPolicy.polygon(turned.polygon()).getBounds();
+        assertThat(turned.orientation()).isEqualTo(OcrOrientation.VERTICAL);
+        OcrRegion orphan = tail("orphan", "る。", box.y + box.height + 24, 1);
+        orphan = shifted(orphan, box.x - LEFT, 0);
+
+        assertThat(new OcrRegionSegmenter().segment(List.of(turned, orphan)))
+                .extracting(OcrRegion::id).containsExactly("p3", "orphan");
+        assertThat(verdicts()).containsExactly("kept-host-not-horizontal");
+    }
+
+    @Test
+    void doesNotMergeAFragmentIntoAShortParagraph() {
+        OcrRegion caption = paragraph("caption", 100, 1, 0);
+        List<OcrWord> half = caption.words().subList(0, 4);
+        OcrRegion shortCaption = new OcrRegion("caption", "自分に対する抗議集", rectangle(LEFT, 100, 4 * 104, GLYPH),
+                half, .97f, true, OcrBlockType.TEXT, caption.languages(), 0);
+        OcrRegion orphan = tail("orphan", "る。", 100 + PITCH, 1);
+
+        assertThat(new OcrRegionSegmenter().segment(List.of(shortCaption, orphan)))
+                .extracting(OcrRegion::id).containsExactly("caption", "orphan");
+        assertThat(verdicts()).containsExactly("kept-host-too-short");
+    }
+
+    @Test
+    void logsTheMergeDecisionWithGeometryOnly() {
+        OcrRegion third = paragraph("p3", 780, 6, 0);
+        OcrRegion orphan = tail("orphan", "る。", nextLineTop(780, 6), 1);
+
+        new OcrRegionSegmenter().segment(List.of(third, orphan));
+
+        List<String> lines = logs.list.stream().map(ILoggingEvent::getFormattedMessage)
+                .filter(message -> message.startsWith("Trailing fragment merge decision")).toList();
+        assertThat(lines).hasSize(1);
+        assertThat(lines.get(0)).startsWith("Trailing fragment merge decision: verdict=merged, "
+                + "hostWords=66, hostLines=6, fragmentWords=1, fragmentChars=2, gapRatio=0.32, "
+                + "leftOffsetRatio=0.00, heightRatio=1.00, shortfallRatio=0.00, lineHeight=76, "
+                + "hostWidth=1144, hostHeight=432");
+        // Counts and ratios only: none of the text the regions carry may reach the log.
+        assertThat(lines.get(0)).doesNotContain("る").doesNotContain("。")
+                .doesNotContain(third.text().substring(0, 4));
+    }
+
     @Test
     void oneDateInsideProseDoesNotTurnTheParagraphIntoATable() {
         OcrRegion prose = new OcrRegion("dated-prose", "Report published 2026 followed by ordinary prose",
@@ -485,6 +861,38 @@ class OcrRegionSegmenterTests {
     /** The region text without the spaces the segmenter puts between non-CJK glyphs. */
     private static String compactText(OcrRegion region) {
         return region.text().replace(" ", "");
+    }
+
+    private static OcrRegion withLanguage(OcrRegion region, String code) {
+        return new OcrRegion(region.id(), region.text(), region.polygon(), region.words(),
+                region.confidence(), region.confidenceKnown(), region.blockType(),
+                List.of(new OcrDetectedLanguage(code, .9f)), region.readingOrder(), region.groupId(),
+                region.compactLabel());
+    }
+
+    private static OcrRegion shifted(OcrRegion region, int dx, int dy) {
+        return mapped(region, point -> new OcrPoint(point.x() + dx, point.y() + dy));
+    }
+
+    /** The region turned clockwise about a pivot, polygon and word boxes alike. */
+    private static OcrRegion tilted(OcrRegion region, double degrees, int pivotX, int pivotY) {
+        double cos = Math.cos(Math.toRadians(degrees));
+        double sin = Math.sin(Math.toRadians(degrees));
+        return mapped(region, point -> {
+            double dx = point.x() - pivotX;
+            double dy = point.y() - pivotY;
+            return new OcrPoint((int) Math.round(pivotX + dx * cos - dy * sin),
+                    (int) Math.round(pivotY + dx * sin + dy * cos));
+        });
+    }
+
+    private static OcrRegion mapped(OcrRegion region, UnaryOperator<OcrPoint> move) {
+        List<OcrWord> words = region.words().stream().map(word -> new OcrWord(word.text(),
+                word.polygon().stream().map(move).toList(), word.confidence(),
+                word.confidenceKnown())).toList();
+        return new OcrRegion(region.id(), region.text(), region.polygon().stream().map(move).toList(),
+                words, region.confidence(), region.confidenceKnown(), region.blockType(),
+                region.languages(), region.readingOrder(), region.groupId(), region.compactLabel());
     }
 
     private static OcrWord word(String text, int x) {

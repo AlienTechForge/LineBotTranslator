@@ -8,7 +8,11 @@ import java.util.regex.Pattern;
 
 import org.springframework.stereotype.Component;
 
-/** Splits reliable OCR paragraphs along visible row and column boundaries. */
+/**
+ * Splits reliable OCR paragraphs along visible row and column boundaries. Before that, a short
+ * wrapped tail that Vision reported as a block of its own is folded back into its paragraph by
+ * {@link OcrTrailingFragmentMerger}, because qualification would otherwise judge it alone.
+ */
 @Component
 public class OcrRegionSegmenter {
     private static final org.slf4j.Logger log =
@@ -25,7 +29,7 @@ public class OcrRegionSegmenter {
 
     public List<OcrRegion> segment(List<OcrRegion> input) {
         List<OcrRegion> result = new ArrayList<>();
-        for (OcrRegion region : mergeTrailingSentenceFragments(
+        for (OcrRegion region : OcrTrailingFragmentMerger.merge(
                 input == null ? List.<OcrRegion>of() : input)) {
             List<OcrRegion> denseChildren = splitDenseParagraph(region);
             if (!denseChildren.isEmpty()) {
@@ -45,81 +49,6 @@ public class OcrRegionSegmenter {
                     index, region.groupId(), region.compactLabel()));
         }
         return List.copyOf(ordered);
-    }
-
-    private static List<OcrRegion> mergeTrailingSentenceFragments(List<OcrRegion> input) {
-        List<OcrRegion> merged = new ArrayList<>();
-        for (OcrRegion current : input) {
-            if (!merged.isEmpty() && isTrailingSentenceFragment(merged.get(merged.size() - 1), current)) {
-                OcrRegion previous = merged.remove(merged.size() - 1);
-                merged.add(merge(previous, current));
-            } else {
-                merged.add(current);
-            }
-        }
-        return List.copyOf(merged);
-    }
-
-    private static boolean isTrailingSentenceFragment(OcrRegion previous, OcrRegion current) {
-        if (previous == null || current == null || previous.compactLabel() || current.compactLabel()
-                || previous.orientation() != OcrOrientation.HORIZONTAL
-                || current.orientation() != OcrOrientation.HORIZONTAL
-                || previous.text().codePointCount(0, previous.text().length()) < 20
-                || current.text().codePointCount(0, current.text().length()) > 4
-                || current.text().codePoints().noneMatch(OcrWordJoiner::isCjk)
-                || !endsSentence(current.text())) {
-            return false;
-        }
-        String previousLanguage = primaryLanguage(previous);
-        String currentLanguage = primaryLanguage(current);
-        if (previousLanguage != null && currentLanguage != null
-                && !previousLanguage.equals(currentLanguage)) return false;
-        Rectangle previousBounds = OverlaySafetyPolicy.polygon(previous.polygon()).getBounds();
-        Rectangle currentBounds = OverlaySafetyPolicy.polygon(current.polygon()).getBounds();
-        int typicalHeight = Math.max(1, median(previous.words().stream()
-                .map(word -> OverlaySafetyPolicy.polygon(word.polygon()).getBounds().height).toList()));
-        int verticalGap = currentBounds.y - (previousBounds.y + previousBounds.height);
-        return verticalGap >= -2 && verticalGap <= Math.max(8, typicalHeight * 2)
-                && Math.abs(currentBounds.x - previousBounds.x) <= Math.max(12, typicalHeight * 2);
-    }
-
-    private static boolean endsSentence(String text) {
-        if (text == null || text.isBlank()) return false;
-        int last = text.codePointBefore(text.length());
-        return last == '。' || last == '！' || last == '？'
-                || last == '.' || last == '!' || last == '?';
-    }
-
-    private static String primaryLanguage(OcrRegion region) {
-        return region.languages().isEmpty() ? null : region.languages().get(0).code();
-    }
-
-    private static OcrRegion merge(OcrRegion previous, OcrRegion current) {
-        Rectangle bounds = OverlaySafetyPolicy.polygon(previous.polygon()).getBounds()
-                .union(OverlaySafetyPolicy.polygon(current.polygon()).getBounds());
-        List<OcrWord> words = new ArrayList<>(previous.words());
-        words.addAll(current.words());
-        boolean confidenceKnown = previous.confidenceKnown() && current.confidenceKnown();
-        return new OcrRegion(previous.id(), joinText(previous.text(), current.text()),
-                List.of(new OcrPoint(bounds.x, bounds.y),
-                        new OcrPoint(bounds.x + bounds.width, bounds.y),
-                        new OcrPoint(bounds.x + bounds.width, bounds.y + bounds.height),
-                        new OcrPoint(bounds.x, bounds.y + bounds.height)),
-                words, Math.min(previous.confidence(), current.confidence()), confidenceKnown,
-                previous.blockType(), previous.languages(), previous.readingOrder(),
-                previous.groupId(), false);
-    }
-
-    private static String joinText(String left, String right) {
-        if (left.isEmpty() || right.isEmpty()) return left + right;
-        int previous = left.codePointBefore(left.length());
-        int next = right.codePointAt(0);
-        // Punctuation closes the CJK text it follows; between two words the joiner decides, so
-        // Hangul keeps its space while Han and Kana join directly.
-        if (OcrWordJoiner.isCjk(previous) && Character.getType(next) == Character.OTHER_PUNCTUATION) {
-            return left + right;
-        }
-        return left + OcrWordJoiner.scriptSeparator(left, right) + right;
     }
 
     private static List<OcrRegion> splitDenseParagraph(OcrRegion region) {
@@ -536,7 +465,7 @@ public class OcrRegionSegmenter {
         return List.copyOf(segments);
     }
 
-    private static List<VisualLine> visualLines(List<OcrWord> words, LocalFrame frame) {
+    static List<VisualLine> visualLines(List<OcrWord> words, LocalFrame frame) {
         List<WordBox> boxes = words.stream().map(word -> new WordBox(word, frame.bounds(word.polygon())))
                 .sorted(Comparator.comparingInt(WordBox::centerY).thenComparingInt(WordBox::left))
                 .toList();
@@ -672,7 +601,7 @@ public class OcrRegionSegmenter {
         return (double) overlap / Math.max(1, Math.min(left.height, right.height));
     }
 
-    private static int median(List<Integer> values) {
+    static int median(List<Integer> values) {
         List<Integer> sorted = values.stream().filter(value -> value > 0).sorted().toList();
         return sorted.isEmpty() ? 1 : sorted.get(sorted.size() / 2);
     }
@@ -682,12 +611,12 @@ public class OcrRegionSegmenter {
     }
 
     /** Maps OCR polygons to the paragraph's own reading axes before row/column analysis. */
-    private record LocalFrame(
+    record LocalFrame(
             double originX, double originY,
             double xAxisX, double xAxisY,
             double yAxisX, double yAxisY,
             double determinant, int width, int height) {
-        private static LocalFrame from(OcrRegion region) {
+        static LocalFrame from(OcrRegion region) {
             if (region == null || region.polygon().size() < 4) return null;
             OcrPoint origin = region.polygon().get(0);
             OcrPoint right = region.polygon().get(1);
@@ -706,11 +635,11 @@ public class OcrRegionSegmenter {
                     Math.max(1, (int) Math.round(yLength)));
         }
 
-        private Rectangle bounds() {
+        Rectangle bounds() {
             return new Rectangle(0, 0, width, height);
         }
 
-        private Rectangle bounds(List<OcrPoint> points) {
+        Rectangle bounds(List<OcrPoint> points) {
             double minX = Double.POSITIVE_INFINITY, minY = Double.POSITIVE_INFINITY;
             double maxX = Double.NEGATIVE_INFINITY, maxY = Double.NEGATIVE_INFINITY;
             for (OcrPoint point : points) {
@@ -731,7 +660,7 @@ public class OcrRegionSegmenter {
             return new Rectangle(left, top, Math.max(1, right - left), Math.max(1, bottom - top));
         }
 
-        private List<OcrPoint> polygon(int left, int top, int right, int bottom) {
+        List<OcrPoint> polygon(int left, int top, int right, int bottom) {
             return List.of(point(left, top), point(right, top), point(right, bottom), point(left, bottom));
         }
 
@@ -742,7 +671,7 @@ public class OcrRegionSegmenter {
         }
     }
 
-    private record WordBox(OcrWord word, Rectangle bounds) {
+    record WordBox(OcrWord word, Rectangle bounds) {
         int left() { return bounds.x; }
         int right() { return bounds.x + bounds.width; }
         int top() { return bounds.y; }
@@ -752,7 +681,7 @@ public class OcrRegionSegmenter {
         int centerX() { return bounds.x + bounds.width / 2; }
     }
 
-    private record VisualLine(List<WordBox> words, Rectangle bounds) {
+    record VisualLine(List<WordBox> words, Rectangle bounds) {
         int top() { return bounds.y; }
         int bottom() { return bounds.y + bounds.height; }
     }

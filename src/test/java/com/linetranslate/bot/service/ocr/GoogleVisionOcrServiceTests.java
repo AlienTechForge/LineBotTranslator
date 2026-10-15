@@ -176,6 +176,39 @@ class GoogleVisionOcrServiceTests {
 
     @Test
     @SuppressWarnings("unchecked")
+    void foldsTheOrphanLineOfAnArticleBackIntoItsParagraphBeforeQualification() {
+        ImageAnnotatorClient client = mock(ImageAnnotatorClient.class);
+        ObjectProvider<ImageAnnotatorClient> provider = mock(ObjectProvider.class);
+        when(provider.getIfAvailable()).thenReturn(client);
+        // Vision reported four blocks: three paragraphs and the two characters that wrapped out of
+        // the last one, with no language of their own.
+        List<OcrRegion> blocks = List.of(
+                OcrArticleFixtures.paragraph("p1", 100, 4, 0),
+                OcrArticleFixtures.paragraph("p2", 440, 4, 1),
+                OcrArticleFixtures.paragraph("p3", 780, 6, 2),
+                OcrArticleFixtures.tail("orphan", "る。", OcrArticleFixtures.nextLineTop(780, 6), 3));
+        Page.Builder page = Page.newBuilder();
+        blocks.forEach(block -> page.addBlocks(Block.newBuilder().setBlockType(Block.BlockType.TEXT)
+                .addParagraphs(paragraphOf(block))));
+        when(client.batchAnnotateImages(anyList())).thenReturn(BatchAnnotateImagesResponse.newBuilder()
+                .addResponses(AnnotateImageResponse.newBuilder()
+                        .setFullTextAnnotation(TextAnnotation.newBuilder().addPages(page)))
+                .build());
+
+        List<OcrRegion> regions = new GoogleVisionOcrService(provider)
+                .recognizeRegions(new ByteArrayInputStream(new byte[] {1}));
+
+        assertThat(regions).hasSize(3);
+        assertThat(regions.get(2).text()).isEqualTo(blocks.get(2).text() + "る。");
+        assertThat(logs.list).extracting(ILoggingEvent::getFormattedMessage)
+                .anyMatch(message -> message.contains("providerRegions=4, layoutRegions=3"));
+        OcrRegionQualificationPolicy policy = new OcrRegionQualificationPolicy();
+        assertThat(regions).allSatisfy(region ->
+                assertThat(policy.decide(region, .6f).qualification()).isEqualTo(OcrQualification.TRANSLATE));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
     void imageWithoutTextCostsOneDocumentRequest() {
         ImageAnnotatorClient client = mock(ImageAnnotatorClient.class);
         ObjectProvider<ImageAnnotatorClient> provider = mock(ObjectProvider.class);
@@ -434,6 +467,22 @@ class GoogleVisionOcrServiceTests {
                 .addResponses(AnnotateImageResponse.newBuilder().setFullTextAnnotation(annotation)).build());
         return new GoogleVisionOcrService(provider)
                 .recognizeRegions(new ByteArrayInputStream(new byte[] {1}));
+    }
+
+    /** The Vision paragraph that would have produced this region: its box, languages and words. */
+    private static Paragraph paragraphOf(OcrRegion region) {
+        java.awt.Rectangle bounds = OverlaySafetyPolicy.polygon(region.polygon()).getBounds();
+        Paragraph.Builder paragraph = Paragraph.newBuilder()
+                .setBoundingBox(box(bounds.x, bounds.y, bounds.width, bounds.height))
+                .setConfidence(region.confidence());
+        region.languages().forEach(language -> paragraph.getPropertyBuilder().addDetectedLanguages(
+                TextAnnotation.DetectedLanguage.newBuilder()
+                        .setLanguageCode(language.code()).setConfidence(language.confidence())));
+        for (OcrWord word : region.words()) {
+            java.awt.Rectangle box = OverlaySafetyPolicy.polygon(word.polygon()).getBounds();
+            paragraph.addWords(word(word.text(), box.x, box.y, box.width, box.height, word.confidence()));
+        }
+        return paragraph.build();
     }
 
     /** A word whose last symbol carries the break Vision detected after it. */
