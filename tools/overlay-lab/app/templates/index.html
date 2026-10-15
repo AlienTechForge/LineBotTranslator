@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Overlay Lab</title>
+<style>
+  :root {
+    --bg: #f6f5f1; --panel: #ffffff; --ink: #1d1f23; --muted: #646a73; --line: #dcd9d0;
+    --accent: #1f5fbf; --accent-ink: #ffffff; --ok: #1f7a3f; --warn: #a86400; --err: #b3261e;
+    --err-bg: #fdecea; --code: #f0eee8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a; --panel: #1d2026; --ink: #e8e9ec; --muted: #9aa0aa; --line: #343841;
+      --accent: #6aa3ff; --accent-ink: #0b1220; --ok: #5fcf8a; --warn: #f0b04a; --err: #ff8a80;
+      --err-bg: #3a1c1a; --code: #262a31;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 15px/1.5 system-ui, -apple-system, "Noto Sans CJK TC", "Noto Sans TC", sans-serif; }
+  header, main { max-width: 1480px; margin: 0 auto; padding: 0 16px; }
+  header { padding-top: 20px; }
+  h1 { margin: 0; font-size: 22px; }
+  .sub { margin: 4px 0 16px; color: var(--muted); }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 99px; font-size: 12px;
+           background: var(--warn); color: #fff; margin-left: 8px; vertical-align: middle; }
+  form, .col, details { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+  form { padding: 14px 16px; display: grid; gap: 12px 20px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); align-items: end; }
+  label { display: grid; gap: 4px; font-weight: 600; font-size: 13px; }
+  label.check { display: flex; gap: 8px; align-items: center; font-weight: 500; font-size: 14px; }
+  select, input[type=file] { width: 100%; padding: 6px; border: 1px solid var(--line); border-radius: 6px;
+                              background: var(--bg); color: var(--ink); font: inherit; }
+  button { padding: 9px 18px; border: 0; border-radius: 8px; background: var(--accent); color: var(--accent-ink);
+           font: inherit; font-weight: 600; cursor: pointer; }
+  button:disabled { opacity: .55; cursor: progress; }
+  #status { grid-column: 1 / -1; color: var(--muted); min-height: 1.5em; display: flex; gap: 8px; align-items: center; }
+  .spinner { width: 14px; height: 14px; border: 2px solid var(--line); border-top-color: var(--accent);
+             border-radius: 50%; animation: spin 0.9s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #results { margin-top: 18px; }
+  .grid { display: grid; gap: 14px; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: start; }
+  @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+  .col { padding: 12px; min-width: 0; }
+  .col h2 { margin: 0 0 8px; font-size: 15px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .pill { font-size: 12px; padding: 1px 8px; border-radius: 99px; border: 1px solid var(--line); color: var(--muted); font-weight: 500; }
+  .pill.done { color: var(--ok); border-color: var(--ok); }
+  .pill.running, .pill.pending { color: var(--warn); border-color: var(--warn); }
+  .pill.error { color: var(--err); border-color: var(--err); }
+  .imgbox { position: relative; border: 1px solid var(--line); border-radius: 6px; overflow: hidden;
+            background: repeating-conic-gradient(var(--code) 0 25%, transparent 0 50%) 0 0 / 16px 16px; }
+  .imgbox img { display: block; width: 100%; height: auto; }
+  .imgbox svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 10px 0 0; font-size: 13px; }
+  dt { color: var(--muted); } dd { margin: 0; word-break: break-word; }
+  .links { margin-top: 8px; display: flex; gap: 14px; flex-wrap: wrap; font-size: 13px; }
+  a { color: var(--accent); }
+  .errbox { margin-top: 10px; padding: 8px 10px; border-radius: 6px; background: var(--err-bg); color: var(--err);
+            border: 1px solid var(--err); white-space: pre-wrap; word-break: break-word; font-size: 13px; }
+  .note { margin-top: 8px; font-size: 12.5px; color: var(--warn); }
+  .note ul { margin: 4px 0 0; padding-left: 18px; }
+  details { margin-top: 14px; padding: 10px 14px; }
+  summary { cursor: pointer; font-weight: 600; }
+  pre { margin: 10px 0 0; padding: 10px; background: var(--code); border-radius: 6px; overflow: auto;
+        max-height: 520px; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word; }
+  .toggle { margin-top: 8px; font-size: 13px; }
+  .empty { padding: 28px 8px; text-align: center; color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Overlay Lab{% if mock %}<span class="badge">LAB_MOCK=1</span>{% endif %}</h1>
+  <p class="sub">圖片翻譯 overlay 的離線對照實驗：Mode A（Vision 字框 + Claude 分組 + inpaint + 重繪）對 Mode B（影像模型整張重畫）。不是正式服務。</p>
+</header>
+<main>
+  <form id="form">
+    <label>圖片（jpg / png / webp，最大 {{ max_upload_mb }} MB）
+      <input type="file" id="file" accept="image/jpeg,image/png,image/webp" required>
+    </label>
+    <label>目標語言
+      <select id="lang">
+        {% for code, name in languages.items() %}<option value="{{ code }}"{% if code == 'en' %} selected{% endif %}>{{ code }} — {{ name }}</option>{% endfor %}
+      </select>
+    </label>
+    <div>
+      <label class="check"><input type="checkbox" id="mode-a" checked> Mode A（hybrid，{{ claude_model }}）</label>
+      <label class="check"><input type="checkbox" id="mode-b" checked> Mode B（影像模型）</label>
+    </div>
+    <label>Mode B 影像模型
+      <select id="model"><option value="{{ default_image_model }}">{{ default_image_model }}</option></select>
+    </label>
+    <label class="check"><input type="checkbox" id="verify"> 用 Vision OCR 驗證 Mode B 輸出</label>
+    <button type="submit" id="submit">開始</button>
+    <div id="status" role="status"></div>
+  </form>
+
+  <section id="results" hidden>
+    <div class="grid">
+      <article class="col" id="col-orig"></article>
+      <article class="col" id="col-a"></article>
+      <article class="col" id="col-b"></article>
+    </div>
+    <details id="units-panel" hidden><summary>Mode A units（JSON）</summary><pre id="units-json"></pre></details>
+    <details id="verify-panel" hidden><summary>Mode B 驗證 OCR 文字</summary><pre id="verify-text"></pre></details>
+  </section>
+</main>
+
+<script>
+(() => {
+  const TOKEN = new URLSearchParams(location.search).get('token') || '';
+  const H = TOKEN ? { 'X-Lab-Token': TOKEN } : {};
+  const url = (u) => TOKEN ? u + (u.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(TOKEN) : u;
+  const $ = (id) => document.getElementById(id);
+  const el = (tag, attrs = {}, ...kids) => {
+    const n = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs)) { if (k === 'class') n.className = v; else n.setAttribute(k, v); }
+    for (const k of kids.flat()) if (k != null) n.append(k.nodeType ? k : document.createTextNode(String(k)));
+    return n;
+  };
+  const SVGNS = 'http://www.w3.org/2000/svg';
+  const fmtMs = (ms) => ms == null ? '—' : (ms >= 1000 ? (ms / 1000).toFixed(1) + ' s' : ms + ' ms');
+  const fmtUsd = (v) => v == null ? '—' : '$' + (v < 0.01 ? v.toFixed(5) : v.toFixed(4));
+  let showFrames = false, timer = null, startedAt = 0, lastJob = null;
+
+  async function loadModels() {
+    try {
+      const r = await fetch(url('api/image-models'), { headers: H });
+      const data = await r.json();
+      const sel = $('model');
+      sel.replaceChildren();
+      for (const id of data.models) {
+        const d = (data.details || {})[id];
+        const label = d && d.input_image === false ? id + '（僅文字輸入）' : id;
+        const o = el('option', { value: id }, label);
+        if (id === data.default) o.selected = true;
+        sel.append(o);
+      }
+      if (data.error) $('status').textContent = '模型清單載入失敗，只列出預設模型：' + data.error;
+    } catch (e) { /* the default option from the template stays */ }
+  }
+
+  function row(dl, k, v) { if (v === undefined || v === null || v === '') return; dl.append(el('dt', {}, k), el('dd', {}, v)); }
+  function pill(status) { return el('span', { class: 'pill ' + status }, { pending: '等待', running: '執行中', done: '完成', error: '失敗', skipped: '未執行' }[status] || status); }
+  // appended only when there is a message (DOM append(null) would print the word "null")
+  function addErr(parent, msg) { if (msg) parent.append(el('div', { class: 'errbox' }, msg)); }
+  function dlLink(job, name, label) { return el('a', { href: url('files/' + job.job_id + '/' + name + '?dl=1') }, label); }
+  function imgBox(src) { const img = el('img', { src: url(src), alt: '' }); return el('div', { class: 'imgbox' }, img); }
+
+  function renderOriginal(job) {
+    const c = $('col-orig'); c.replaceChildren();
+    c.append(el('h2', {}, '原圖'));
+    const box = imgBox(job.image.url);
+    c.append(box);
+    const a = job.mode_a;
+    if (a && a.units && a.units.length) {
+      const svg = document.createElementNS(SVGNS, 'svg');
+      const [pw, ph] = a.page || [job.image.width, job.image.height];
+      svg.setAttribute('viewBox', `0 0 ${pw} ${ph}`);
+      svg.setAttribute('preserveAspectRatio', 'none');
+      svg.style.display = showFrames ? '' : 'none';
+      const colors = { translated: '#1f6fe0', kept: '#1f9a50', skipped: '#999' };
+      for (const u of a.units) {
+        const poly = document.createElementNS(SVGNS, 'polygon');
+        poly.setAttribute('points', u.frame.map((p) => p.join(',')).join(' '));
+        poly.setAttribute('fill', 'none');
+        poly.setAttribute('stroke', colors[u.action] || '#999');
+        poly.setAttribute('stroke-width', Math.max(2, pw / 400));
+        svg.append(poly);
+        const t = document.createElementNS(SVGNS, 'text');
+        t.setAttribute('x', u.frame[0][0]); t.setAttribute('y', u.frame[0][1]);
+        t.setAttribute('font-size', Math.max(10, pw / 60)); t.setAttribute('fill', colors[u.action] || '#999');
+        t.textContent = u.id;
+        svg.append(t);
+      }
+      box.append(svg);
+      const cb = el('input', { type: 'checkbox' });
+      cb.checked = showFrames;
+      cb.addEventListener('change', () => { showFrames = cb.checked; svg.style.display = showFrames ? '' : 'none'; });
+      c.append(el('label', { class: 'check toggle' }, cb, '疊上 Mode A 的 unit 框（藍：翻譯／綠：保留／灰：略過）'));
+    }
+    const dl = el('dl'); row(dl, '尺寸', job.image.width + ' × ' + job.image.height + ' px'); row(dl, '目標語言', job.params.target_lang);
+    c.append(dl);
+  }
+
+  function renderA(job) {
+    const c = $('col-a'); c.replaceChildren();
+    const a = job.mode_a;
+    c.append(el('h2', {}, 'Mode A', pill(a.status)));
+    if (a.status === 'skipped') { c.append(el('div', { class: 'empty' }, '未選取')); return; }
+    if (a.output) c.append(imgBox('files/' + job.job_id + '/' + a.output + '?v=' + (a.elapsed_ms || 0)));
+    else if (a.status !== 'error') c.append(el('div', { class: 'empty' }, '處理中…'));
+    if (a.status === 'done') {
+      const dl = el('dl');
+      row(dl, '總耗時', fmtMs(a.elapsed_ms));
+      row(dl, 'Vision', fmtMs(a.vision_ms));
+      row(dl, 'Claude', fmtMs(a.claude_ms));
+      row(dl, 'erase / render', fmtMs(a.erase_ms) + ' / ' + fmtMs(a.render_ms));
+      row(dl, 'tokens (in / out)', a.tokens.input + ' / ' + a.tokens.output);
+      row(dl, '估計費用', a.cost_usd == null ? '（未知模型，只顯示 tokens）' : fmtUsd(a.cost_usd));
+      row(dl, 'units', `${a.translated_count} 翻譯 / ${a.unit_count} 共 / ${a.word_count} 字`);
+      row(dl, '模型', a.served_model && a.served_model !== a.model ? `${a.model}（實際：${a.served_model}）` : a.model);
+      row(dl, 'fallback 形式', a.fallback_form);
+      c.append(dl);
+      const links = el('div', { class: 'links' }, dlLink(job, a.output, '下載 PNG'), dlLink(job, a.erased, '下載僅擦除版'));
+      c.append(links);
+      if (a.warnings && a.warnings.length) c.append(el('div', { class: 'note' }, '提醒', el('ul', {}, a.warnings.map((w) => el('li', {}, w)))));
+      const over = (a.units || []).filter((u) => u.overflowed).length;
+      if (over) c.append(el('div', { class: 'note' }, over + ' 個 unit 超出框（見 JSON 面板的 overflowed）'));
+    }
+    addErr(c, a.error);
+  }
+
+  function renderB(job) {
+    const c = $('col-b'); c.replaceChildren();
+    const b = job.mode_b;
+    c.append(el('h2', {}, 'Mode B', pill(b.status)));
+    if (b.status === 'skipped') { c.append(el('div', { class: 'empty' }, '未選取')); return; }
+    if (b.output) c.append(imgBox('files/' + job.job_id + '/' + b.output + '?v=' + (b.elapsed_ms || 0)));
+    else if (b.status !== 'error') c.append(el('div', { class: 'empty' }, '處理中…'));
+    if (b.output) {
+      const dl = el('dl');
+      row(dl, '耗時', fmtMs(b.elapsed_ms));
+      row(dl, '模型', b.model);
+      row(dl, 'API 路徑', b.api_used);
+      const u = b.usage || {};
+      if (u.prompt_tokens != null || u.completion_tokens != null) row(dl, 'tokens (in / out)', (u.prompt_tokens ?? '—') + ' / ' + (u.completion_tokens ?? '—'));
+      row(dl, '費用', b.cost_usd == null ? '（回應沒有帶 cost）' : fmtUsd(b.cost_usd));
+      row(dl, '輸出尺寸', b.output_size.join(' × ') + ' px（長寬比差 ' + b.aspect_drift_pct + '%）');
+      if (b.verify) row(dl, 'OCR 驗證', b.verify_ms == null ? '進行中…' : fmtMs(b.verify_ms));
+      c.append(dl);
+      c.append(el('div', { class: 'links' }, dlLink(job, b.output, '下載 PNG')));
+      if (b.model_text) c.append(el('div', { class: 'note' }, '模型附帶文字：' + b.model_text));
+      if (b.attempts && b.attempts.length) c.append(el('div', { class: 'note' }, '先前的嘗試', el('ul', {}, b.attempts.map((w) => el('li', {}, w)))));
+    }
+    addErr(c, b.error);
+    addErr(c, b.verify_error ? 'OCR 驗證失敗：' + b.verify_error : null);
+  }
+
+  function renderPanels(job) {
+    const a = job.mode_a, b = job.mode_b;
+    const up = $('units-panel');
+    if (a && a.units) { $('units-json').textContent = JSON.stringify(a.units, null, 2); up.hidden = false; } else up.hidden = true;
+    const vp = $('verify-panel');
+    if (b && b.verify_text != null) { $('verify-text').textContent = b.verify_text || '（沒有辨識到文字）'; vp.hidden = false; } else vp.hidden = true;
+  }
+
+  const seen = {};
+  function changed(key, value) {
+    const s = JSON.stringify(value);
+    if (seen[key] === s) return false;
+    seen[key] = s;
+    return true;
+  }
+
+  function render(job) {
+    lastJob = job;
+    $('results').hidden = false;
+    // re-render a column only when its data changed, so pictures do not flicker while polling
+    if (changed('orig', [job.job_id, job.image, job.mode_a.units, job.mode_a.page])) renderOriginal(job);
+    if (changed('a', [job.job_id, job.mode_a])) renderA(job);
+    if (changed('b', [job.job_id, job.mode_b])) renderB(job);
+    if (changed('panels', [job.job_id, job.mode_a.units, job.mode_b.verify_text])) renderPanels(job);
+  }
+
+  function setBusy(busy, text) {
+    $('submit').disabled = busy;
+    const s = $('status'); s.replaceChildren();
+    if (busy) s.append(el('span', { class: 'spinner' }));
+    if (text) s.append(text);
+  }
+
+  async function poll(jobId) {
+    let failures = 0;
+    clearInterval(timer);
+    const tick = async () => {
+      try {
+        const r = await fetch(url('api/jobs/' + jobId), { headers: H });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const job = await r.json();
+        failures = 0;
+        render(job);
+        const secs = Math.round((Date.now() - startedAt) / 1000);
+        if (job.status === 'done') { clearInterval(timer); setBusy(false, '完成，共 ' + secs + ' 秒'); }
+        else setBusy(true, '處理中… 已 ' + secs + ' 秒');
+      } catch (e) {
+        if (++failures >= 8) { clearInterval(timer); setBusy(false, '與伺服器失聯：' + e.message); }
+      }
+    };
+    timer = setInterval(tick, 1500);
+    tick();
+  }
+
+  $('form').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const file = $('file').files[0];
+    if (!file) return;
+    if (!$('mode-a').checked && !$('mode-b').checked) { setBusy(false, '請至少勾選一個 Mode'); return; }
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('target_lang', $('lang').value);
+    fd.append('mode_a', $('mode-a').checked ? '1' : '0');
+    fd.append('mode_b', $('mode-b').checked ? '1' : '0');
+    fd.append('image_model', $('model').value);
+    fd.append('verify', $('verify').checked ? '1' : '0');
+    setBusy(true, '上傳中…');
+    startedAt = Date.now();
+    try {
+      const r = await fetch(url('api/jobs'), { method: 'POST', body: fd, headers: H });
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(body.detail || 'HTTP ' + r.status);
+      poll(body.job_id);
+    } catch (e) { setBusy(false, '送出失敗：' + e.message); }
+  });
+
+  loadModels();
+})();
+</script>
+</body>
+</html>
