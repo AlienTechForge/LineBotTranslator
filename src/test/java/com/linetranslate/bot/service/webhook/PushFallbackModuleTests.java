@@ -23,6 +23,8 @@ import org.junit.jupiter.api.Test;
 
 import com.linecorp.bot.client.base.Result;
 import com.linecorp.bot.messaging.client.MessagingApiClient;
+import com.linecorp.bot.messaging.client.MessagingApiClientException;
+import com.linecorp.bot.messaging.model.ImageMessage;
 import com.linecorp.bot.messaging.model.MessageQuotaResponse;
 import com.linecorp.bot.messaging.model.PushMessageResponse;
 import com.linecorp.bot.messaging.model.QuotaConsumptionResponse;
@@ -34,6 +36,9 @@ import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import okhttp3.Protocol;
+import okhttp3.Request;
+import okhttp3.Response;
 
 class PushFallbackModuleTests {
 
@@ -174,6 +179,54 @@ class PushFallbackModuleTests {
     }
 
     @Test
+    void deliveredPushNamesTheMessageKinds() {
+        assertThat(module.pushInstead(imageReply())).isTrue();
+
+        assertThat(infoLines()).singleElement().asString().isEqualTo(
+                "Reply token expired, delivered the answer by push: messages=2, "
+                        + "kinds=ImageMessage,TextMessage, pushedToday=1/" + properties.getDailyLimit());
+    }
+
+    @Test
+    void failedPushLogsKindsAndLineStatusAndSaysItIsNotRetried() {
+        when(messagingApiClient.pushMessage(any(), any())).thenReturn(CompletableFuture.failedFuture(lineError(500)));
+
+        assertThat(module.pushInstead(imageReply())).isTrue();
+
+        assertThat(logs.list).filteredOn(event -> event.getLevel() == Level.WARN).singleElement()
+                .satisfies(event -> assertThat(event.getFormattedMessage()).isEqualTo(
+                        "Fallback push failed, not retried: messages=2, kinds=ImageMessage,TextMessage, "
+                                + "status=500, failure=CompletionException<-MessagingApiClientException"));
+    }
+
+    @Test
+    void failedPushWithoutALineAnswerReportsNoStatus() {
+        when(messagingApiClient.pushMessage(any(), any()))
+                .thenReturn(CompletableFuture.failedFuture(new IOException("timeout")));
+
+        module.pushInstead(reply);
+
+        assertThat(logs.list).filteredOn(event -> event.getLevel() == Level.WARN).singleElement()
+                .satisfies(event -> assertThat(event.getFormattedMessage())
+                        .contains("status=none", "kinds=TextMessage"));
+    }
+
+    @Test
+    void skippedPushesSayWhy() {
+        module.pushInstead(new WebhookReply("reply-token", List.of(new TextMessage("private answer"))));
+        properties.setDailyLimit(0);
+        module.pushInstead(imageReply());
+        properties.setDailyLimit(10);
+        properties.setEnabled(false);
+        module.pushInstead(imageReply());
+
+        assertThat(infoLines()).containsExactly(
+                "Fallback push skipped: reason=no_push_target, messages=1, kinds=TextMessage",
+                "Fallback push skipped: reason=daily_limit, messages=2, kinds=ImageMessage,TextMessage",
+                "Fallback push skipped: reason=disabled, messages=2, kinds=ImageMessage,TextMessage");
+    }
+
+    @Test
     void logsCarryMetadataOnly() {
         stubQuota(QuotaType.LIMITED, 1000L, 900L);
         module.pushInstead(reply);
@@ -225,6 +278,31 @@ class PushFallbackModuleTests {
 
     private double count(String result) {
         return meterRegistry.get("line.push.fallback").tag("result", result).counter().count();
+    }
+
+    private List<String> infoLines() {
+        return logs.list.stream()
+                .filter(event -> event.getLevel() == Level.INFO)
+                .map(ILoggingEvent::getFormattedMessage)
+                .toList();
+    }
+
+    private static WebhookReply imageReply() {
+        return new WebhookReply("reply-token", List.of(
+                new ImageMessage(
+                        java.net.URI.create("https://s3.azndev.com/a.png?X-Amz-Signature=abc"),
+                        java.net.URI.create("https://s3.azndev.com/a-preview.jpg?X-Amz-Signature=def")),
+                new TextMessage("private answer")), "U-private-target");
+    }
+
+    private static MessagingApiClientException lineError(int status) {
+        Response response = new Response.Builder()
+                .request(new Request.Builder().url("https://api.line.me/v2/bot/message/push").build())
+                .protocol(Protocol.HTTP_1_1)
+                .code(status)
+                .message("Error")
+                .build();
+        return new MessagingApiClientException(response, "error-body", List.of(), List.of());
     }
 
     private List<ILoggingEvent> limitWarnings() {

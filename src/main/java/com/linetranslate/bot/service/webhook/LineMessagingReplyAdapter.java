@@ -10,8 +10,14 @@ import com.linecorp.bot.messaging.client.MessagingApiClient;
 import com.linecorp.bot.messaging.client.MessagingApiClientException;
 import com.linecorp.bot.messaging.model.ReplyMessageRequest;
 
-/** Outbound LINE messaging Adapter. */
+import lombok.extern.slf4j.Slf4j;
+
+/**
+ * Outbound LINE messaging Adapter. A reply that LINE accepts is logged by the ingestion Module,
+ * which knows the attempt number; this class logs only the hand-over to the push fallback.
+ */
 @Component
+@Slf4j
 public class LineMessagingReplyAdapter implements WebhookReplySender {
 
     private final MessagingApiClient messagingApiClient;
@@ -30,8 +36,12 @@ public class LineMessagingReplyAdapter implements WebhookReplySender {
         } catch (CompletionException failure) {
             if (failure.getCause() instanceof AbstractLineClientException clientFailure
                     && isRejected(clientFailure.getCode())) {
-                if (isExpiredReplyToken(clientFailure) && pushFallback.pushInstead(reply)) {
-                    return;
+                if (isExpiredReplyToken(clientFailure)) {
+                    log.info("LINE reply token expired, trying the push fallback: messages={}, kinds={}",
+                            reply.messages().size(), reply.messageKinds());
+                    if (pushFallback.pushInstead(reply)) {
+                        return;
+                    }
                 }
                 throw new WebhookReplyRejectedException(clientFailure.getCode(), clientFailure);
             }

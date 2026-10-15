@@ -84,6 +84,7 @@ Secrets 只作為容器環境變數傳入，不會寫入 image、Repository 或 
 | `IMAGE_PROXY_PUBLIC_BASE_URL` | 選填 | 需要獨立 preview proxy 時才設；留空時直接使用 MinIO/木雷 URL 傳送 LINE 圖片。 |
 | `IMAGE_PROXY_CONTENT_CACHE_MAX_BYTES` | `67108864` | `/i/{token}` proxy 快取保留的 original + preview 位元組上限（64 MiB）；取代已不再生效的 `IMAGE_PROXY_CONTENT_CACHE_ENTRIES`。 |
 | `IMAGE_TRANSLATION_MAX_OUTPUT_BYTES` | `10485760` | 產生圖片的大小上限（LINE 原圖限制 10 MB）；PNG 超過時改輸出 JPEG 或縮小。 |
+| `IMAGE_TRANSLATION_DELIVERY_TARGET_BYTES` | `2097152` | 產生圖片的交付大小目標（2 MiB）。LINE 要在自己的逾時內從部署主機（MinIO 或 proxy）取回原圖，大張 PNG 可能取不到；不透明圖片的 PNG 超過此值時，改輸出 JPEG（品質 0.92，再 0.85），取第一個不超過目標者，都不符合則維持 PNG（仍受上限約束）。透明圖片一律維持 PNG。設為不小於 `IMAGE_TRANSLATION_MAX_OUTPUT_BYTES` 的值即停用。 |
 | `IMAGE_TEXT_REPLY_ENABLED` | `true` | 翻譯圖片後是否再附上辨識文字、譯文與快速操作的部署預設值；管理員可用 `/admin config image-text [on\|off]` 動態切換。 |
 | `DWZ_API_BASE_URL` | 短網址啟用時必填 | 木雷 API base。host network 可用固定 loopback port；也可用公開 HTTPS domain。 |
 | `DWZ_SHORT_DOMAIN` | 選填 | 指定木雷短域名；留空使用木雷預設 domain。 |

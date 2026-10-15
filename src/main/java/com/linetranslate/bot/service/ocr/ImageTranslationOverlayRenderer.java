@@ -56,6 +56,15 @@ public class ImageTranslationOverlayRenderer {
     private static final long DEFAULT_MAX_OUTPUT_BYTES = 10_485_760L;
     private static final String PNG_CONTENT_TYPE = "image/png";
     private static final String JPEG_CONTENT_TYPE = "image/jpeg";
+    /**
+     * Size an original should stay under to be fetched reliably: LINE downloads it itself, within
+     * its own time limit, from this deployment's host (which may sit behind a modest uplink). A
+     * lossless PNG of a photo is several megabytes, so opaque output above this is delivered as
+     * JPEG when that fits.
+     */
+    private static final long DEFAULT_DELIVERY_TARGET_BYTES = 2_097_152L;
+    /** JPEG qualities tried in order to bring opaque output under the delivery target. */
+    private static final float[] DELIVERY_JPEG_QUALITIES = {.92f, .85f};
     /** JPEG qualities tried in order once lossless PNG exceeds the cap; opaque output only. */
     private static final float[] JPEG_QUALITIES = {.92f, .85f, .75f};
     /** Linear scale applied per step when re-encoding alone cannot meet the cap. */
@@ -63,16 +72,31 @@ public class ImageTranslationOverlayRenderer {
     private static final int MAX_DOWNSCALE_STEPS = 6;
     private final ImageTranslationFontProvider fontProvider;
     private final long maxOutputBytes;
+    private final long deliveryTargetBytes;
 
+    /**
+     * @param maxOutputBytes hard cap on the delivered image (LINE refuses an original above 10 MB)
+     * @param deliveryTargetBytes size an opaque image is brought under by JPEG when its PNG is
+     *        larger; a value at or above {@code maxOutputBytes} switches that step off
+     */
     @org.springframework.beans.factory.annotation.Autowired
     public ImageTranslationOverlayRenderer(
             ImageTranslationFontProvider fontProvider,
-            @Value("${app.image-translation.max-output-bytes:10485760}") long maxOutputBytes) {
+            @Value("${app.image-translation.max-output-bytes:10485760}") long maxOutputBytes,
+            @Value("${app.image-translation.delivery-target-bytes:2097152}") long deliveryTargetBytes) {
         if (maxOutputBytes <= 0) {
             throw new IllegalArgumentException("Rendered image size cap must be positive");
         }
+        if (deliveryTargetBytes <= 0) {
+            throw new IllegalArgumentException("Rendered image delivery target must be positive");
+        }
         this.fontProvider = fontProvider;
         this.maxOutputBytes = maxOutputBytes;
+        this.deliveryTargetBytes = Math.min(deliveryTargetBytes, maxOutputBytes);
+    }
+
+    public ImageTranslationOverlayRenderer(ImageTranslationFontProvider fontProvider, long maxOutputBytes) {
+        this(fontProvider, maxOutputBytes, DEFAULT_DELIVERY_TARGET_BYTES);
     }
 
     public ImageTranslationOverlayRenderer(ImageTranslationFontProvider fontProvider) {
@@ -762,11 +786,14 @@ public class ImageTranslationOverlayRenderer {
     }
 
     /**
-     * Lossless PNG while it fits the output cap. A photo re-encoded as PNG grows to several times
-     * its JPEG size, and LINE cannot fetch an original above its 10 MB limit, so the user would get
-     * nothing. Oversized opaque output therefore falls back to JPEG, then any output is downscaled
-     * in bounded steps. Output that still does not fit is refused like an unencodable image, which
-     * degrades the reply to text.
+     * Lossless PNG while it stays under the delivery target. LINE fetches the original itself and
+     * a photo re-encoded as PNG is several times its JPEG size, so an opaque image whose PNG is
+     * above the target is delivered as JPEG (the first of {@code DELIVERY_JPEG_QUALITIES} that
+     * fits). When no JPEG fits, or the image is transparent
+     * (JPEG cannot carry alpha), the PNG is kept while it fits the output cap. Beyond the cap LINE
+     * cannot fetch the original at all, so opaque output falls back to JPEG, then any output is
+     * downscaled in bounded steps. Output that still does not fit is refused like an unencodable
+     * image, which degrades the reply to text.
      *
      * <p>The result carries {@code image} itself only when the bytes are its lossless PNG, so that a
      * consumer wanting the pixels need not decode them again. Package-private so a test can observe
@@ -775,11 +802,36 @@ public class ImageTranslationOverlayRenderer {
     RenderedImage.Encoded encode(BufferedImage image) {
         try {
             byte[] png = writePng(image);
-            if (png.length <= maxOutputBytes) {
+            if (png.length <= deliveryTargetBytes) {
                 return new RenderedImage.Encoded(png, PNG_CONTENT_TYPE, image);
             }
             // JPEG cannot carry alpha, so transparent output only ever shrinks as PNG.
             boolean opaque = !image.getColorModel().hasAlpha();
+            // A target at the cap leaves nothing to try: the cap fallback below makes the same attempts.
+            String lowestQualityJpegBytes = "none";
+            if (opaque && deliveryTargetBytes < maxOutputBytes) {
+                for (float quality : DELIVERY_JPEG_QUALITIES) {
+                    byte[] jpeg = writeJpeg(image, quality);
+                    if (jpeg.length <= deliveryTargetBytes) {
+                        log.info("Translated image re-encoded to fit the delivery target: width={}, height={}, "
+                                        + "pngBytes={}, outputBytes={}, format={}, quality={}, "
+                                        + "deliveryTargetBytes={}",
+                                image.getWidth(), image.getHeight(), png.length, jpeg.length,
+                                JPEG_CONTENT_TYPE, String.format(java.util.Locale.ROOT, "%.2f", quality),
+                                deliveryTargetBytes);
+                        return new RenderedImage.Encoded(jpeg, JPEG_CONTENT_TYPE, null);
+                    }
+                    lowestQualityJpegBytes = String.valueOf(jpeg.length);
+                }
+            }
+            if (png.length <= maxOutputBytes) {
+                log.info("Translated image kept as PNG above the delivery target: width={}, height={}, "
+                                + "pngBytes={}, opaque={}, lowestQualityJpegBytes={}, deliveryTargetBytes={}, "
+                                + "maxOutputBytes={}",
+                        image.getWidth(), image.getHeight(), png.length, opaque, lowestQualityJpegBytes,
+                        deliveryTargetBytes, maxOutputBytes);
+                return new RenderedImage.Encoded(png, PNG_CONTENT_TYPE, image);
+            }
             String contentType = opaque ? JPEG_CONTENT_TYPE : PNG_CONTENT_TYPE;
             if (opaque) {
                 for (float quality : JPEG_QUALITIES) {

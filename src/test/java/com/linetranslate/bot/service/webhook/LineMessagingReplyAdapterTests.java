@@ -19,11 +19,14 @@ import java.util.concurrent.CompletionException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.mockito.ArgumentCaptor;
 
 import com.linecorp.bot.client.base.Result;
 import com.linecorp.bot.messaging.client.MessagingApiClient;
 import com.linecorp.bot.messaging.client.MessagingApiClientException;
+import com.linecorp.bot.messaging.model.ImageMessage;
 import com.linecorp.bot.messaging.model.MessageQuotaResponse;
 import com.linecorp.bot.messaging.model.PushMessageRequest;
 import com.linecorp.bot.messaging.model.PushMessageResponse;
@@ -31,6 +34,9 @@ import com.linecorp.bot.messaging.model.QuotaConsumptionResponse;
 import com.linecorp.bot.messaging.model.QuotaType;
 import com.linecorp.bot.messaging.model.TextMessage;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import okhttp3.Protocol;
 import okhttp3.Request;
@@ -47,6 +53,48 @@ class LineMessagingReplyAdapterTests {
     private final WebhookReply reply = new WebhookReply("reply-token", List.of(new TextMessage("done")));
     private final WebhookReply pushableReply = new WebhookReply(
             "reply-token", List.of(new TextMessage("done")), "U-target");
+    private final Logger adapterLogger = (Logger) org.slf4j.LoggerFactory.getLogger(LineMessagingReplyAdapter.class);
+    private final ListAppender<ILoggingEvent> adapterLogs = new ListAppender<>();
+
+    @BeforeEach
+    void captureLogs() {
+        adapterLogs.start();
+        adapterLogger.addAppender(adapterLogs);
+    }
+
+    @AfterEach
+    void releaseLogs() {
+        adapterLogger.detachAppender(adapterLogs);
+    }
+
+    @Test
+    void handOverToThePushFallbackIsLoggedWithTheMessageKinds() {
+        WebhookReply imageReply = new WebhookReply("reply-token", List.of(
+                new ImageMessage(
+                        java.net.URI.create("https://s3.azndev.com/a.png?X-Amz-Signature=abc"),
+                        java.net.URI.create("https://s3.azndev.com/a-preview.jpg?X-Amz-Signature=def")),
+                new TextMessage("done")), "U-target");
+        expireReplyToken("Invalid reply token");
+        when(messagingApiClient.pushMessage(any(), any())).thenReturn(pushed());
+        stubQuota(QuotaType.NONE, null, 0L);
+
+        adapter.send(imageReply);
+
+        assertThat(adapterLogs.list).singleElement().satisfies(event -> assertThat(event.getFormattedMessage())
+                .isEqualTo("LINE reply token expired, trying the push fallback: "
+                        + "messages=2, kinds=ImageMessage,TextMessage"));
+    }
+
+    @Test
+    void ordinaryRejectionsAndRetryableFailuresAreNotLoggedHere() {
+        when(messagingApiClient.replyMessage(any())).thenReturn(CompletableFuture.failedFuture(
+                lineError(400, "The request body has 1 error(s)")));
+        assertThatThrownBy(() -> adapter.send(pushableReply)).isInstanceOf(WebhookReplyRejectedException.class);
+        when(messagingApiClient.replyMessage(any())).thenReturn(CompletableFuture.failedFuture(lineError(503)));
+        assertThatThrownBy(() -> adapter.send(pushableReply)).isInstanceOf(CompletionException.class);
+
+        assertThat(adapterLogs.list).isEmpty();
+    }
 
     @ParameterizedTest
     @ValueSource(ints = {400, 401, 403, 404})

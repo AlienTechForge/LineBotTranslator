@@ -104,21 +104,37 @@ public class WebhookIngestionModule {
         }
     }
 
+    /**
+     * Sends the reply, retrying transient failures. Every attempt is logged with the count and
+     * kinds of its messages. LINE fetches an image message's URL itself, outside this call, so an
+     * accepted reply that carried an {@code ImageMessage} is the last outcome this service can
+     * observe for the image.
+     */
     private int sendWithRetry(WebhookReply reply) {
         RuntimeException lastFailure = null;
-        for (int attempt = 1; attempt <= properties.getReplyMaxAttempts(); attempt++) {
+        int maxAttempts = properties.getReplyMaxAttempts();
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
                 replySender.send(reply);
                 replySucceeded.increment();
+                log.info("Webhook reply sent: attempt={}/{}, messages={}, kinds={}",
+                        attempt, maxAttempts, reply.messages().size(), reply.messageKinds());
                 return attempt;
             } catch (WebhookReplyRejectedException rejected) {
                 replyRejected.increment();
-                log.warn("LINE rejected webhook reply, not retrying: status={}, attempt={}",
-                        SafeLog.httpStatus(rejected.status()), attempt);
+                log.warn("LINE rejected webhook reply, not retrying: status={}, attempt={}/{}, "
+                                + "messages={}, kinds={}",
+                        SafeLog.httpStatus(rejected.status()), attempt, maxAttempts,
+                        reply.messages().size(), reply.messageKinds());
                 throw new ReplyAttemptException(attempt, rejected);
             } catch (RuntimeException failure) {
                 lastFailure = new ReplyAttemptException(attempt, failure);
-                if (attempt < properties.getReplyMaxAttempts()) {
+                boolean retrying = attempt < maxAttempts;
+                log.warn("Webhook reply attempt failed: attempt={}/{}, retrying={}, messages={}, kinds={}, "
+                                + "status={}, failure={}",
+                        attempt, maxAttempts, retrying, reply.messages().size(), reply.messageKinds(),
+                        LineApiStatus.of(failure), SafeLog.failure(failureCause(failure)));
+                if (retrying) {
                     replyRetried.increment();
                     backoff(properties.getReplyRetryBackoff());
                 }
