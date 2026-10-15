@@ -7,6 +7,7 @@ import java.lang.ref.WeakReference;
 import java.util.List;
 import java.util.Random;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.Test;
@@ -49,6 +50,58 @@ class ImageTranslationOverlayRendererReachabilityIntegrationTests {
         ImageTranslationOverlayRenderer renderer = observing(source, sourceCollected);
 
         renderer.render(held.get(), new OverlaySafetyPlan(true, "safe", List.of(), 0));
+
+        // The control for the test above: the check can fail, so passing means something.
+        assertThat(sourceCollected).isFalse();
+        assertThat(held.get()).isNotNull();
+    }
+
+    @Test
+    void onATurnedPageNeitherUprightRasterIsReachableWhenTheEncoderStarts() {
+        AtomicReference<ValidatedImage> handedOver = new AtomicReference<>();
+        WeakReference<BufferedImage> source = hold(handedOver);
+        AtomicReference<WeakReference<BufferedImage>> uprightOutput = new AtomicReference<>();
+        AtomicBoolean sourceCollected = new AtomicBoolean();
+        AtomicBoolean uprightOutputCollected = new AtomicBoolean();
+        AtomicInteger encodedWidth = new AtomicInteger();
+        AtomicInteger encodedHeight = new AtomicInteger();
+        ImageTranslationOverlayRenderer renderer =
+                new ImageTranslationOverlayRenderer(new ImageTranslationFontProvider(), 10_485_760) {
+                    @Override
+                    BufferedImage restore(BufferedImage upright, int quarterTurns) {
+                        uprightOutput.set(new WeakReference<>(upright));
+                        return super.restore(upright, quarterTurns);
+                    }
+
+                    @Override
+                    RenderedImage.Encoded encode(BufferedImage image) {
+                        sourceCollected.set(Reachability.collected(source));
+                        uprightOutputCollected.set(Reachability.collected(uprightOutput.get()));
+                        encodedWidth.set(image.getWidth());
+                        encodedHeight.set(image.getHeight());
+                        return super.encode(image);
+                    }
+                };
+
+        RenderedImage rendered = renderer.render(
+                handedOver.getAndSet(null), new OverlaySafetyPlan(true, "safe", List.of(), 0), 1);
+
+        assertThat(sourceCollected).as("upright source collected before encoding").isTrue();
+        assertThat(uprightOutputCollected).as("upright output collected before encoding").isTrue();
+        // The encoder is given the turned-back raster: the upright page is 200 x 100.
+        assertThat(encodedWidth.get()).isEqualTo(100);
+        assertThat(encodedHeight.get()).isEqualTo(200);
+        assertThat(rendered.raster().getWidth()).isEqualTo(100);
+    }
+
+    @Test
+    void onATurnedPageTheUprightSourceStaysReachableWhileTheCallerStillHoldsIt() {
+        AtomicReference<ValidatedImage> held = new AtomicReference<>();
+        WeakReference<BufferedImage> source = hold(held);
+        AtomicBoolean sourceCollected = new AtomicBoolean(true);
+        ImageTranslationOverlayRenderer renderer = observing(source, sourceCollected);
+
+        renderer.render(held.get(), new OverlaySafetyPlan(true, "safe", List.of(), 0), 1);
 
         // The control for the test above: the check can fail, so passing means something.
         assertThat(sourceCollected).isFalse();

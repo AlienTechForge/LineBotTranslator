@@ -10,6 +10,7 @@ import java.util.Map;
 import java.util.stream.IntStream;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Service;
@@ -53,6 +54,15 @@ public class ImageTranslationPipeline {
      */
     private static final int MAX_OCR_REGIONS = 200;
     private static final int MAX_OCR_TEXT_CHARS = 50_000;
+    /** The OCR bound when none is wired: the default of {@code google.cloud.vision.timeout-ms}. */
+    static final long DEFAULT_OCR_TIMEOUT_MS = 60_000;
+    /**
+     * Reading a rotated page again must earn its extra call: the second reading is kept only when
+     * its reliable text weighs at least this many percent of the first reading's (110, so 10% more).
+     * Whole numbers on purpose: a compare in floating point puts 1.10 x 20 above 22.
+     */
+    private static final int RETRY_MIN_GAIN_PERCENT = 110;
+    private static final float RETRY_JPEG_QUALITY = .92f;
 
     /** Where a defect was caught; the lower-case name is the {@code stage} tag of the counter. */
     private enum UnexpectedStage {
@@ -76,6 +86,7 @@ public class ImageTranslationPipeline {
     private final OcrSourceLanguageResolver sourceLanguageResolver;
     private final OverlaySafetyPolicy overlaySafetyPolicy;
     private final TranslationPromptFactory promptFactory;
+    private final long ocrTimeoutMs;
     private final OverlayContentClassifier contentClassifier = new OverlayContentClassifier();
     private final Map<UnexpectedStage, Counter> unexpectedFailures = new EnumMap<>(UnexpectedStage.class);
 
@@ -94,7 +105,8 @@ public class ImageTranslationPipeline {
             OcrSourceLanguageResolver sourceLanguageResolver,
             OverlaySafetyPolicy overlaySafetyPolicy,
             TranslationPromptFactory promptFactory,
-            MeterRegistry meterRegistry) {
+            MeterRegistry meterRegistry,
+            @Value("${google.cloud.vision.timeout-ms:60000}") long ocrTimeoutMs) {
         this.ocrService = ocrServiceProvider.getIfAvailable();
         this.translationWorkflowModule = translationWorkflowModule;
         this.aiProviderExecutionModule = aiProviderExecutionModule;
@@ -108,12 +120,35 @@ public class ImageTranslationPipeline {
         this.sourceLanguageResolver = sourceLanguageResolver;
         this.overlaySafetyPolicy = overlaySafetyPolicy;
         this.promptFactory = promptFactory;
+        this.ocrTimeoutMs = ocrTimeoutMs > 0 ? ocrTimeoutMs : DEFAULT_OCR_TIMEOUT_MS;
         for (UnexpectedStage stage : UnexpectedStage.values()) {
             unexpectedFailures.put(stage, Counter.builder("image.translation.unexpected")
                     .description("Unexpected exceptions caught inside the image translation pipeline")
                     .tag("stage", stage.tag())
                     .register(meterRegistry));
         }
+    }
+
+    public ImageTranslationPipeline(
+            ObjectProvider<OcrService> ocrServiceProvider,
+            TranslationWorkflowModule translationWorkflowModule,
+            AiProviderExecutionModule aiProviderExecutionModule,
+            UserPreferencesModule userPreferencesModule,
+            MessagingApiBlobClient messagingApiBlobClient,
+            MinioStorageService minioStorageService,
+            ImageInputValidator imageInputValidator,
+            ImageTranslationOverlayRenderer overlayRenderer,
+            ImageTranslationProperties properties,
+            OcrRegionQualificationPolicy qualificationPolicy,
+            OcrSourceLanguageResolver sourceLanguageResolver,
+            OverlaySafetyPolicy overlaySafetyPolicy,
+            TranslationPromptFactory promptFactory,
+            MeterRegistry meterRegistry) {
+        this(ocrServiceProvider, translationWorkflowModule, aiProviderExecutionModule,
+                userPreferencesModule, messagingApiBlobClient, minioStorageService,
+                imageInputValidator, overlayRenderer, properties, qualificationPolicy,
+                sourceLanguageResolver, overlaySafetyPolicy, promptFactory, meterRegistry,
+                DEFAULT_OCR_TIMEOUT_MS);
     }
 
     public ImageTranslationPipeline(
@@ -201,6 +236,8 @@ public class ImageTranslationPipeline {
         stageStarted = System.nanoTime();
         OcrRecognition recognition;
         long recognitionMillis;
+        // OCR calls made for this image: the first, and the second reading of a rotated page.
+        int ocrCalls = ocrService == null ? 0 : 1;
         List<OcrRegionDecision> workflowDecisions;
         List<OcrRegionDecision> translatedDecisions;
         int omittedRegions;
@@ -209,6 +246,23 @@ public class ImageTranslationPipeline {
         // result before the translation request is built.
         try {
             recognition = recognize(request, image);
+            long firstCallMillis = elapsedMillis(stageStarted);
+            if (recognition.frame().rotated()) {
+                // The regions are in the upright frame of a rotated page, so the raster is turned
+                // into it before anything reads either. Assigning drops the original raster, and
+                // the request keeps the upright one; the original bytes stay what is stored.
+                ValidatedImage upright = uprightImage(image, recognition.frame());
+                if (upright == null) {
+                    recognition = inImageFrame(recognition);
+                } else {
+                    image = upright;
+                    if (properties.orientationRetryEnabled() && recognition.frame().retryAdvised()) {
+                        RetryOutcome retry = retryFromUpright(image, recognition, firstCallMillis);
+                        recognition = retry.recognition();
+                        ocrCalls += retry.calls();
+                    }
+                }
+            }
             recognitionMillis = elapsedMillis(stageStarted);
             List<OcrRegionDecision> decisions = recognition.regions().stream()
                     .map(region -> qualificationPolicy.decide(region, properties.lowConfidenceThreshold()))
@@ -323,7 +377,7 @@ public class ImageTranslationPipeline {
         long renderingMillis = elapsedMillis(renderingStarted);
         log.info("Image translation timing: downloadMs={}, storageMs={}, recognitionMs={}, "
                         + "translationMs={}, renderingMs={}, totalMs={}, ocrRegions={}, translatedRegions={}, "
-                        + "omittedRegions={}",
+                        + "omittedRegions={}, orientationQuarterTurns={}, ocrCalls={}",
                 downloadMillis,
                 storageMillis,
                 recognitionMillis,
@@ -332,7 +386,9 @@ public class ImageTranslationPipeline {
                 elapsedMillis(pipelineStarted),
                 recognition.regions().size(),
                 translatedDecisions.size(),
-                omittedRegions);
+                omittedRegions,
+                recognition.frame().quarterTurns(),
+                ocrCalls);
         return new ImageTranslationOutcome.Success(
                 new ImageTranslationPipelineResult(
                         context,
@@ -543,7 +599,12 @@ public class ImageTranslationPipeline {
                         ImageOverlayDisposition.SAFETY_DEGRADED, degradation);
             }
             long rendererStarted = System.nanoTime();
-            RenderedImage rendered = overlayRenderer.render(source.take(), plan);
+            // An upright page is turned back to the original frame by the renderer. A page that was
+            // never turned takes the unchanged call.
+            int restoreQuarterTurns = recognition.frame().quarterTurns();
+            RenderedImage rendered = restoreQuarterTurns == 0
+                    ? overlayRenderer.render(source.take(), plan)
+                    : overlayRenderer.render(source.take(), plan, restoreQuarterTurns);
             long rendererMillis = elapsedMillis(rendererStarted);
             byte[] renderedBytes = rendered.bytes();
             if (rendered.renderedBlockCount() == 0) {
@@ -577,6 +638,134 @@ public class ImageTranslationPipeline {
                     ImageOverlayDisposition.SAFETY_DEGRADED,
                     OverlayDegradationSummary.single(OverlayDegradationReason.OTHER, 1));
         }
+    }
+
+    /**
+     * The image turned into the upright frame of a rotated page, or null when the page the
+     * provider described is not the image that was sent (a size the provider cannot have seen, so
+     * the turn would put the regions in the wrong place). The returned image keeps the original
+     * bytes: they are what is stored and what the context carries.
+     */
+    private static ValidatedImage uprightImage(ValidatedImage image, PageFrame frame) {
+        if (image.image().getWidth() != frame.sourceWidth() || image.image().getHeight() != frame.sourceHeight()) {
+            log.warn("Page orientation normalization skipped: verdict=frame-mismatch, quarterTurns={}, "
+                            + "pageWidth={}, pageHeight={}, imageWidth={}, imageHeight={}",
+                    frame.quarterTurns(), frame.sourceWidth(), frame.sourceHeight(),
+                    image.image().getWidth(), image.image().getHeight());
+            return null;
+        }
+        return new ValidatedImage(image.bytes(), image.contentType(),
+                QuarterTurns.toUpright(image.image(), frame.quarterTurns()));
+    }
+
+    /** The regions of a recognition moved back to the frame of the image: the exact inverse of the turn. */
+    private static OcrRecognition inImageFrame(OcrRecognition recognition) {
+        PageFrame frame = recognition.frame();
+        return new OcrRecognition(recognition.text(), recognition.blocks(),
+                QuarterTurns.fromUpright(recognition.regions(), frame.quarterTurns(),
+                        frame.sourceWidth(), frame.sourceHeight()),
+                PageFrame.NONE);
+    }
+
+    /** The recognition to carry on with, and how many OCR calls were made to get it (0 or 1 here). */
+    private record RetryOutcome(OcrRecognition recognition, int calls) {
+    }
+
+    /**
+     * Reads a rotated page that was read poorly a second time, from its upright raster, and keeps
+     * the second reading only when it is clearly better. The retry never decides whether a page is
+     * rotated or written vertically: that was settled before it, from the first reading's
+     * geometry. It never turns an image into a failure and never falls back to AI recognition: any
+     * failure keeps the first reading.
+     */
+    private RetryOutcome retryFromUpright(ValidatedImage upright, OcrRecognition first, long firstCallMillis) {
+        PageFrame frame = first.frame();
+        if (firstCallMillis * 2 > ocrTimeoutMs) {
+            logRetry("skipped", "slow-first-call", frame.reliableShare(), -1, null, 0, 0, "n/a");
+            return new RetryOutcome(first, 0);
+        }
+        byte[] bytes;
+        String contentType;
+        try {
+            boolean opaque = !upright.image().getColorModel().hasAlpha();
+            bytes = opaque
+                    ? ImageTranslationOverlayRenderer.writeJpeg(upright.image(), RETRY_JPEG_QUALITY)
+                    : ImageTranslationOverlayRenderer.writePng(upright.image());
+            contentType = opaque ? "jpeg" : "png";
+        } catch (java.io.IOException failure) {
+            logRetry("skipped", "encode-failed", frame.reliableShare(), -1, null, 0, 0, "n/a");
+            return new RetryOutcome(first, 0);
+        }
+        if (bytes.length > properties.maxFileSizeBytes()) {
+            logRetry("skipped", "too-large", frame.reliableShare(), -1, null, 0, bytes.length, contentType);
+            return new RetryOutcome(first, 0);
+        }
+        long started = System.nanoTime();
+        OcrRecognition retried;
+        try (InputStream stream = new java.io.ByteArrayInputStream(bytes)) {
+            retried = ocrService.recognize(stream);
+        } catch (RuntimeException | java.io.IOException failure) {
+            // A timeout or a provider failure is an outage; anything else is a defect, which is
+            // counted like any other. Either way the first reading stands.
+            if (failure instanceof RuntimeException defect && !isExpectedFailure(defect)) {
+                logUnexpected(UnexpectedStage.RECOGNITION, defect);
+            }
+            log.info("Page orientation retry: outcome=failed, failure={}, firstReliableShare={}, "
+                            + "retryMs={}, encodedBytes={}, format={}",
+                    SafeLog.failure(failure), ratio(frame.reliableShare()), elapsedMillis(started),
+                    bytes.length, contentType);
+            return new RetryOutcome(first, 1);
+        }
+        long retryMillis = elapsedMillis(started);
+        if (retried == null) {
+            logRetry("rejected", "no-regions", frame.reliableShare(), -1, null, retryMillis,
+                    bytes.length, contentType);
+            return new RetryOutcome(first, 1);
+        }
+        PageFrame second = retried.frame();
+        List<OcrRegion> regions = retried.regions();
+        String rejection = null;
+        if (regions.isEmpty()) {
+            rejection = "no-regions";
+        } else if (regions.stream().map(OcrRegion::id).distinct().count() != regions.size()) {
+            rejection = "duplicate-ids";
+        } else if (second.verdict() != PageOrientation.Verdict.UPRIGHT) {
+            rejection = "not-upright";
+        } else if (second.sourceWidth() != upright.image().getWidth()
+                || second.sourceHeight() != upright.image().getHeight()) {
+            // Boxes the provider placed on a page of another size cannot be drawn on this raster.
+            rejection = "frame-mismatch";
+        } else {
+            long retryWeight = PageOrientationDetector.reliableWeight(regions);
+            long firstWeight = PageOrientationDetector.reliableWeight(first.regions());
+            if (retryWeight <= 0 || retryWeight * 100 < firstWeight * RETRY_MIN_GAIN_PERCENT) {
+                rejection = "no-gain";
+            }
+        }
+        logRetry(rejection == null ? "accepted" : "rejected", rejection == null ? "better-reading" : rejection,
+                frame.reliableShare(), second.reliableShare(), second.verdict(), retryMillis,
+                bytes.length, contentType);
+        if (rejection != null) {
+            return new RetryOutcome(first, 1);
+        }
+        // The regions are upright, as the first reading's were after the turn, so the frame keeps
+        // the turn and the renderer still restores the original orientation.
+        return new RetryOutcome(new OcrRecognition(retried.text(), retried.blocks(), regions,
+                new PageFrame(frame.quarterTurns(), frame.sourceWidth(), frame.sourceHeight(),
+                        PageOrientation.Verdict.ROTATED, false, second.reliableShare())), 1);
+    }
+
+    private static void logRetry(String outcome, String reason, double firstReliableShare,
+            double retryReliableShare, PageOrientation.Verdict retryVerdict, long retryMillis,
+            int encodedBytes, String format) {
+        log.info("Page orientation retry: outcome={}, reason={}, firstReliableShare={}, "
+                        + "retryReliableShare={}, retryVerdict={}, retryMs={}, encodedBytes={}, format={}",
+                outcome, reason, ratio(firstReliableShare), ratio(retryReliableShare),
+                retryVerdict == null ? "n/a" : retryVerdict, retryMillis, encodedBytes, format);
+    }
+
+    private static String ratio(double value) {
+        return value < 0 ? "n/a" : String.format(Locale.ROOT, "%.3f", value);
     }
 
     static ImageRegionLayout layout(OcrRegion region) {

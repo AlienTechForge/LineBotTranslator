@@ -65,11 +65,7 @@ public class OcrRegionSegmenter {
         }
         List<OcrRegion> ordered = new ArrayList<>(result.size());
         for (int index = 0; index < result.size(); index++) {
-            OcrRegion region = result.get(index);
-            ordered.add(new OcrRegion(
-                    region.id(), region.text(), region.polygon(), region.words(),
-                    region.confidence(), region.confidenceKnown(), region.blockType(), region.languages(),
-                    index, region.groupId(), region.compactLabel()));
+            ordered.add(result.get(index).withReadingOrder(index));
         }
         return List.copyOf(ordered);
     }

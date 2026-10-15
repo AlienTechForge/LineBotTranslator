@@ -173,7 +173,7 @@ final class OcrTrailingFragmentMerger {
 
         Measure measure = new Measure(hostIndex, distance, host, hostBox);
         if (host.compactLabel()) return measure.keep("kept-compact-label");
-        if (host.orientation() != OcrOrientation.HORIZONTAL) {
+        if (host.writingMode() != WritingMode.HORIZONTAL) {
             return measure.keep("kept-host-not-horizontal");
         }
         if (host.text().codePointCount(0, host.text().length()) < MIN_HOST_CODEPOINTS) {

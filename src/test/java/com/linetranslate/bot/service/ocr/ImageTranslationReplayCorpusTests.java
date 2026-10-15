@@ -86,6 +86,39 @@ class ImageTranslationReplayCorpusTests {
         assertThat(output).exists();
     }
 
+    /**
+     * The fixtures are the pages that must go through exactly as before: the detector leaves them
+     * alone (a mild skew mixed with upright text is not a rotated page), and every region reads as
+     * horizontal to the classifier exactly where it did under the three-bucket orientation.
+     */
+    @Test
+    @SuppressWarnings("deprecation")
+    void theSyntheticFixturesAreNotRotatedPagesAndTheirGeometryReadsAsBefore() throws Exception {
+        ReplayFixture korean = load("korean-package.json");
+        ReplayFixture vietnamese = load("vietnamese-poster.json");
+
+        PageOrientation skewed = PageOrientationDetector.detect(korean.regions());
+        PageOrientation upright = PageOrientationDetector.detect(vietnamese.regions());
+
+        // 14 and 10 degree skews mixed with upright labels: no quarter holds 80 percent of the text.
+        assertThat(skewed.verdict()).isEqualTo(PageOrientation.Verdict.MIXED);
+        assertThat(skewed.retryAdvised()).isFalse();
+        assertThat(upright.verdict()).isEqualTo(PageOrientation.Verdict.UPRIGHT);
+        for (ReplayFixture fixture : List.of(korean, vietnamese)) {
+            for (OcrRegion region : fixture.regions()) {
+                assertThat(region.writingMode() == WritingMode.HORIZONTAL)
+                        .as("%s %s", fixture.fixtureId(), region.id())
+                        .isEqualTo(region.orientation() == OcrOrientation.HORIZONTAL);
+                assertThat(region.writingMode().upright() && region.writingMode() != WritingMode.HORIZONTAL)
+                        .isFalse();
+            }
+        }
+        // And the decisions the fixtures pin are untouched by any of it.
+        assertDecision(korean, "ko-product", OcrQualification.TRANSLATE);
+        assertDecision(korean, "date", OcrQualification.PRESERVE);
+        assertDecision(korean, "decoration", OcrQualification.REJECT);
+    }
+
     private void assertStructuredResponse(ReplayFixture fixture) throws Exception {
         List<ImageRegionTranslationInput> inputs = fixture.regions().stream()
                 .map(region -> qualification.decide(region, .6f))
