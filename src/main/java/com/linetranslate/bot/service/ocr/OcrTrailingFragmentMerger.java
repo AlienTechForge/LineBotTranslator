@@ -33,6 +33,10 @@ import com.linetranslate.bot.service.ocr.OcrRegionSegmenter.WordBox;
  *       {@value #MAX_LEFT_OFFSET_GLYPHS} of a glyph, inside the host's column.</li>
  *   <li>It is one line of the same type size, within {@value #MAX_GLYPH_HEIGHT_DIFFERENCE} of the
  *       host's glyph height.</li>
+ *   <li>No other region sits between the host's last line and the fragment in the host's column,
+ *       so a heading or caption in between is never skipped over.</li>
+ *   <li>Its confidence is known at every level qualification reads, down to the symbols, so
+ *       folding it in cannot make the whole paragraph untrusted.</li>
  * </ul>
  * The host is found by geometry among all regions, not by list position, because Vision does not
  * promise to list the tail next to its paragraph.
@@ -76,7 +80,7 @@ final class OcrTrailingFragmentMerger {
             Measure best = null;
             for (int other = 0; other < count; other++) {
                 if (other == index || absorbed[other] || replacement[other] != null) continue;
-                Measure candidate = assess(input.get(other), other, fragment);
+                Measure candidate = assess(input, other, index);
                 if (candidate != null && (best == null || candidate.betterThan(best))) best = candidate;
             }
             if (best == null) continue;
@@ -146,7 +150,9 @@ final class OcrTrailingFragmentMerger {
      * all (not above the fragment, or in another column), so unrelated pairs are neither reported
      * nor considered.
      */
-    private static Measure assess(OcrRegion host, int hostIndex, OcrRegion fragment) {
+    private static Measure assess(List<OcrRegion> regions, int hostIndex, int fragmentIndex) {
+        OcrRegion host = regions.get(hostIndex);
+        OcrRegion fragment = regions.get(fragmentIndex);
         if (host == null || host.polygon().size() < 4) return null;
         Rectangle hostBox = OverlaySafetyPolicy.polygon(host.polygon()).getBounds();
         Rectangle fragmentBox = OverlaySafetyPolicy.polygon(fragment.polygon()).getBounds();
@@ -178,11 +184,15 @@ final class OcrTrailingFragmentMerger {
                 && host.text().codePoints().noneMatch(OcrWordJoiner::isCjk)) {
             return measure.keep("kept-script-mismatch");
         }
-        if (!host.confidenceKnown() || !fragment.confidenceKnown()
-                || fragment.words().stream().anyMatch(word -> !word.confidenceKnown())) {
+        if (!host.confidenceKnown() || hasUnknownConfidence(fragment)) {
             // An unknown confidence cannot be checked against the threshold, and folding it into
             // the host would make the whole paragraph untrusted.
             return measure.keep("kept-confidence-unknown");
+        }
+        if (hasSymbols(fragment) && !hasSymbols(host)) {
+            // Qualification averages symbol confidence over the whole region, so a host without
+            // symbols would be judged by the fragment's two alone.
+            return measure.keep("kept-symbols-unmatched");
         }
 
         VisualLine last = lines.get(lines.size() - 1);
@@ -225,7 +235,46 @@ final class OcrTrailingFragmentMerger {
         // The fragment wrapped because it did not fit after the last line, so the room left there
         // is smaller than the fragment, plus a glyph for punctuation that hangs or is pushed out.
         if (shortfall > Math.max(2.0 * glyph, ink.width + glyph)) return measure.keep("kept-last-line-short");
+        // Something else sits between the last line and the fragment, so the fragment is the line
+        // after that block and not the one after the paragraph, however small the gaps are.
+        if (blockBetween(regions, hostIndex, fragmentIndex, frame, last.bottom(), ink.y,
+                Math.min(contentLeft, ink.x), Math.max(contentRight, ink.x + ink.width))) {
+            return measure.keep("kept-block-between");
+        }
         return measure.accept();
+    }
+
+    /**
+     * Whether any other region lies between the host's last line and the fragment: its vertical
+     * centre falls in the gap and it overlaps the column, which is the host's text widened to the
+     * fragment. A block off to the side, in another column, is not in the way.
+     */
+    private static boolean blockBetween(List<OcrRegion> regions, int hostIndex, int fragmentIndex,
+            LocalFrame frame, int gapTop, int gapBottom, int columnLeft, int columnRight) {
+        for (int index = 0; index < regions.size(); index++) {
+            OcrRegion other = regions.get(index);
+            if (index == hostIndex || index == fragmentIndex || other == null
+                    || other.polygon().size() < 4) {
+                continue;
+            }
+            Rectangle box = frame.bounds(other.polygon());
+            int centre = box.y + box.height / 2;
+            if (centre > gapTop && centre < gapBottom
+                    && box.x < columnRight && columnLeft < box.x + box.width) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean hasUnknownConfidence(OcrRegion region) {
+        return !region.confidenceKnown()
+                || region.words().stream().anyMatch(word -> !word.confidenceKnown()
+                        || word.symbols().stream().anyMatch(symbol -> !symbol.confidenceKnown()));
+    }
+
+    private static boolean hasSymbols(OcrRegion region) {
+        return region.words().stream().anyMatch(word -> !word.symbols().isEmpty());
     }
 
     private static int typicalWordHeight(OcrRegion region, Rectangle fallback) {

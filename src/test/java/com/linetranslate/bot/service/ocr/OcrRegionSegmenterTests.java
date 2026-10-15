@@ -539,6 +539,102 @@ class OcrRegionSegmenterTests {
         assertThat(verdicts()).containsExactly("kept-confidence-unknown");
     }
 
+    @Test
+    void doesNotMergeATailWhoseSymbolConfidenceIsUnknownSoTheParagraphStaysTrusted() {
+        OcrRegionQualificationPolicy policy = new OcrRegionQualificationPolicy();
+        OcrRegion third = withSymbols(paragraph("p3", 780, 6, 0), .98f, true);
+        int top = nextLineTop(780, 6);
+        // Region and word confidence are known; only the symbols under the word are not. Vision
+        // records them independently, and qualification rejects a region with any unknown symbol.
+        OcrRegion orphan = withSymbols(tail("orphan", "る。", top, 1), 0f, false);
+        assertThat(orphan.confidenceKnown()).isTrue();
+        assertThat(orphan.words()).allMatch(OcrWord::confidenceKnown);
+
+        List<OcrRegion> result = new OcrRegionSegmenter().segment(List.of(third, orphan));
+
+        assertThat(result).extracting(OcrRegion::id).containsExactly("p3", "orphan");
+        assertThat(policy.decide(result.get(0), .6f).qualification()).isEqualTo(OcrQualification.TRANSLATE);
+        assertThat(verdicts()).containsExactly("kept-confidence-unknown");
+    }
+
+    @Test
+    void mergesATailWhoseSymbolsAreKnownAndTheParagraphStaysTranslatable() {
+        OcrRegionQualificationPolicy policy = new OcrRegionQualificationPolicy();
+        OcrRegion third = withSymbols(paragraph("p3", 780, 6, 0), .98f, true);
+        OcrRegion orphan = withSymbols(tail("orphan", "る。", nextLineTop(780, 6), 1), .95f, true);
+
+        List<OcrRegion> result = new OcrRegionSegmenter().segment(List.of(third, orphan));
+
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).words().get(result.get(0).words().size() - 1).symbols()).hasSize(2);
+        assertThat(policy.decide(result.get(0), .6f).qualification()).isEqualTo(OcrQualification.TRANSLATE);
+        assertThat(verdicts()).containsExactly("merged");
+    }
+
+    @Test
+    void doesNotMergeATailWithSymbolsIntoAParagraphThatHasNone() {
+        // Qualification averages symbols over the whole region. With none of its own, the host
+        // would be judged by the tail's two symbols alone.
+        OcrRegion third = paragraph("p3", 780, 6, 0);
+        OcrRegion orphan = withSymbols(tail("orphan", "る。", nextLineTop(780, 6), 1), .95f, true);
+
+        assertThat(new OcrRegionSegmenter().segment(List.of(third, orphan)))
+                .extracting(OcrRegion::id).containsExactly("p3", "orphan");
+        assertThat(verdicts()).containsExactly("kept-symbols-unmatched");
+    }
+
+    // A block between the paragraph and the fragment is in the way: the fragment is then the line
+    // after that block, not the one after the paragraph, however small the gaps are.
+
+    @Test
+    void aShortHeadingBetweenTheParagraphAndTheFragmentStopsTheMerge() {
+        OcrRegion third = paragraph("p3", 780, 6, 0);
+        int headingTop = nextLineTop(780, 6);
+        OcrRegion heading = new OcrRegion("heading", "まとめ", rectangle(LEFT, headingTop, 3 * GLYPH, GLYPH),
+                List.of(new OcrWord("まとめ", rectangle(LEFT, headingTop, 3 * GLYPH, GLYPH), .97f, true)),
+                .97f, true, OcrBlockType.TEXT, List.of(new OcrDetectedLanguage("ja", .97f)), 1);
+        // One pitch below the heading: 100px under the paragraph's last line, inside the 1.5 line
+        // heights (114px) that would otherwise be allowed.
+        OcrRegion orphan = tail("orphan", "る。", headingTop + PITCH, 2);
+
+        List<OcrRegion> result = new OcrRegionSegmenter().segment(List.of(third, heading, orphan));
+
+        assertThat(result).extracting(OcrRegion::id).containsExactly("p3", "heading", "orphan");
+        assertThat(result.get(0).text()).isEqualTo(third.text());
+        assertThat(verdicts()).doesNotContain("merged");
+    }
+
+    @Test
+    void aCenteredHeadingBetweenTheParagraphAndTheFragmentIsReportedAsABlockInTheWay() {
+        OcrRegion third = paragraph("p3", 780, 6, 0);
+        int headingTop = nextLineTop(780, 6);
+        // Centered under the paragraph, clear of the fragment's own column, so it is not a
+        // candidate host and only the paragraph is judged.
+        OcrRegion heading = shifted(new OcrRegion("heading", "まとめ",
+                rectangle(LEFT, headingTop, 3 * GLYPH, GLYPH),
+                List.of(new OcrWord("まとめ", rectangle(LEFT, headingTop, 3 * GLYPH, GLYPH), .97f, true)),
+                .97f, true, OcrBlockType.TEXT, List.of(new OcrDetectedLanguage("ja", .97f)), 1), 500, 0);
+        OcrRegion orphan = tail("orphan", "る。", headingTop + PITCH, 2);
+
+        assertThat(new OcrRegionSegmenter().segment(List.of(third, heading, orphan)))
+                .extracting(OcrRegion::id).containsExactly("p3", "heading", "orphan");
+        assertThat(verdicts()).containsExactly("kept-block-between");
+    }
+
+    @Test
+    void aBlockBesideTheColumnDoesNotStopTheMerge() {
+        OcrRegion third = paragraph("p3", 780, 6, 0);
+        int top = nextLineTop(780, 6);
+        // A caption level with the gap but wholly outside the paragraph's column.
+        OcrRegion beside = shifted(tail("beside", "図1", top - 40, 1), LINE_WIDTH + 80, 0);
+        OcrRegion orphan = tail("orphan", "る。", top, 2);
+
+        List<OcrRegion> result = new OcrRegionSegmenter().segment(List.of(third, beside, orphan));
+
+        assertThat(result).extracting(OcrRegion::id).containsExactly("p3", "beside");
+        assertThat(result.get(0).text()).isEqualTo(third.text() + "る。");
+    }
+
     // The negative cases: a short block next to a paragraph is not always the paragraph's tail.
 
     @Test
@@ -868,6 +964,18 @@ class OcrRegionSegmenterTests {
                 region.confidence(), region.confidenceKnown(), region.blockType(),
                 List.of(new OcrDetectedLanguage(code, .9f)), region.readingOrder(), region.groupId(),
                 region.compactLabel());
+    }
+
+    /** Every word given one symbol per character, with the confidence Vision would report for it. */
+    private static OcrRegion withSymbols(OcrRegion region, float confidence, boolean known) {
+        List<OcrWord> words = region.words().stream().map(word -> new OcrWord(word.text(),
+                word.polygon(), word.confidence(), word.confidenceKnown(),
+                word.text().codePoints().mapToObj(codePoint -> new OcrSymbol(
+                        new String(Character.toChars(codePoint)), word.polygon(), confidence, known))
+                        .toList())).toList();
+        return new OcrRegion(region.id(), region.text(), region.polygon(), words, region.confidence(),
+                region.confidenceKnown(), region.blockType(), region.languages(), region.readingOrder(),
+                region.groupId(), region.compactLabel());
     }
 
     private static OcrRegion shifted(OcrRegion region, int dx, int dy) {
