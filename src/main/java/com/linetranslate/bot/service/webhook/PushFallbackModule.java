@@ -4,16 +4,15 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.ZoneId;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionException;
 import java.util.concurrent.TimeUnit;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import com.linecorp.bot.client.base.Result;
-import com.linecorp.bot.client.base.exception.AbstractLineClientException;
 import com.linecorp.bot.messaging.client.MessagingApiClient;
 import com.linecorp.bot.messaging.model.MessageQuotaResponse;
 import com.linecorp.bot.messaging.model.PushMessageRequest;
@@ -79,34 +78,41 @@ public class PushFallbackModule {
     /**
      * Sends the reply's messages to its push target instead.
      *
-     * @return {@code true} when the fallback took over the reply, whether the push
-     *         succeeded or failed (a failure is logged and never thrown, and is
-     *         never retried so a user cannot receive the answer twice); {@code false}
-     *         when no push was attempted because the fallback is disabled, the reply
-     *         has no push target or the daily limit is reached
+     * @return {@link ReplyDelivery#PUSHED} when the push succeeded, or
+     *         {@link ReplyDelivery#PUSH_FAILED} when it failed (a failure is logged and
+     *         never thrown, and is never retried so a user cannot receive the answer
+     *         twice), so the fallback took over the reply either way; empty when no push
+     *         was attempted because the fallback is disabled, the reply has no push
+     *         target or the daily limit is reached
      */
-    public boolean pushInstead(WebhookReply reply) {
+    public Optional<ReplyDelivery> pushInstead(WebhookReply reply) {
         if (!properties.isEnabled() || reply.pushTarget() == null || reply.messages().isEmpty()) {
-            return false;
+            log.info("Fallback push skipped: reason={}, messages={}, kinds={}",
+                    properties.isEnabled() ? "no_push_target" : "disabled",
+                    reply.messages().size(), reply.messageKinds());
+            return Optional.empty();
         }
         if (!reservePush()) {
             pushSkippedLimit.increment();
-            return false;
+            log.info("Fallback push skipped: reason=daily_limit, messages={}, kinds={}",
+                    reply.messages().size(), reply.messageKinds());
+            return Optional.empty();
         }
         try {
             messagingApiClient.pushMessage(UUID.randomUUID(), new PushMessageRequest(
                     reply.pushTarget(), reply.messages(), false, null)).join();
         } catch (RuntimeException failure) {
             pushFailed.increment();
-            log.warn("Fallback push failed: messages={}, status={}, failure={}",
-                    reply.messages().size(), status(failure), SafeLog.failure(failure));
-            return true;
+            log.warn("Fallback push failed, not retried: messages={}, kinds={}, status={}, failure={}",
+                    reply.messages().size(), reply.messageKinds(),
+                    LineApiStatus.of(failure), SafeLog.failure(failure));
+            return Optional.of(ReplyDelivery.PUSH_FAILED);
         }
         pushSent.increment();
-        log.info("Reply token expired, delivered the answer by push: messages={}, pushedToday={}/{}",
-                reply.messages().size(), pushedToday(), properties.getDailyLimit());
+        log.info("Reply token expired, delivered the answer by push: messages={}, kinds={}, pushedToday={}/{}",
+                reply.messages().size(), reply.messageKinds(), pushedToday(), properties.getDailyLimit());
         warnWhenQuotaIsNearlyUsed();
-        return true;
+        return Optional.of(ReplyDelivery.PUSHED);
     }
 
     /** Reads the push quota from LINE; fails with the LINE client's exception. */
@@ -187,15 +193,6 @@ public class PushFallbackModule {
     private static <T> T await(CompletableFuture<Result<T>> response) {
         return response.orTimeout(QUOTA_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS)
                 .join().body();
-    }
-
-    private static String status(RuntimeException failure) {
-        Throwable cause = failure instanceof CompletionException && failure.getCause() != null
-                ? failure.getCause()
-                : failure;
-        return cause instanceof AbstractLineClientException clientFailure
-                ? String.valueOf(SafeLog.httpStatus(clientFailure.getCode()))
-                : "none";
     }
 
     private static Counter fallbackCounter(MeterRegistry registry, String result) {

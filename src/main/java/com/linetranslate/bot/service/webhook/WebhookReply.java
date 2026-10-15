@@ -29,4 +29,11 @@ public record WebhookReply(String replyToken, List<Message> messages, String pus
             pushTarget = null;
         }
     }
+
+    /** Class names of the messages in send order, such as {@code ImageMessage,TextMessage}; for logs. */
+    public String messageKinds() {
+        return messages.stream()
+                .map(message -> message.getClass().getSimpleName())
+                .collect(java.util.stream.Collectors.joining(","));
+    }
 }

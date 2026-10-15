@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -14,9 +15,11 @@ import static org.mockito.Mockito.when;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.net.SocketTimeoutException;
+import java.net.URI;
 import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
@@ -30,6 +33,9 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
+import com.linecorp.bot.messaging.client.MessagingApiClient;
+import com.linecorp.bot.messaging.client.MessagingApiClientException;
+import com.linecorp.bot.messaging.model.ImageMessage;
 import com.linecorp.bot.messaging.model.TextMessage;
 import com.linecorp.bot.webhook.model.Event;
 
@@ -38,6 +44,9 @@ import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import okhttp3.Protocol;
+import okhttp3.Request;
+import okhttp3.Response;
 
 class WebhookIngestionModuleTests {
 
@@ -156,7 +165,7 @@ class WebhookIngestionModuleTests {
         when(eventProcessor.process(event)).thenReturn(Optional.of(reply));
         doThrow(new IllegalStateException("temporary-1"))
                 .doThrow(new IllegalStateException("temporary-2"))
-                .doNothing()
+                .doReturn(ReplyDelivery.REPLIED)
                 .when(replySender).send(reply);
         WebhookIngestionModule module = module(Runnable::run);
 
@@ -309,6 +318,171 @@ class WebhookIngestionModuleTests {
         verify(receiptStore).markPoisoned(claim, "IllegalStateException", 0);
         assertThat(logMessages(Level.ERROR)).singleElement().asString()
                 .contains("failure=IllegalStateException");
+    }
+
+    @Test
+    void acceptedImageReplyIsLoggedWithItsAttemptAndMessageKinds() {
+        WebhookReply reply = imageReply();
+        stubReply("event-image-ok", reply);
+        doReturn(ReplyDelivery.REPLIED).when(replySender).send(reply);
+
+        module(Runnable::run).ingest(event("event-image-ok", 2_000L, false));
+
+        assertThat(logMessages(Level.INFO)).singleElement().asString()
+                .isEqualTo("Webhook reply sent: attempt=1/3, messages=2, kinds=ImageMessage,TextMessage");
+        assertThat(logMessages(Level.WARN)).isEmpty();
+    }
+
+    @Test
+    void pushedReplyIsLoggedAsDeliveredByPushNotAsSent() {
+        WebhookReply reply = imageReply();
+        WebhookClaim claim = stubReply("event-image-pushed", reply);
+        doReturn(ReplyDelivery.PUSHED).when(replySender).send(reply);
+
+        module(Runnable::run).ingest(event("event-image-pushed", 2_000L, false));
+
+        assertThat(logMessages(Level.INFO)).singleElement().asString().isEqualTo(
+                "Webhook reply delivered by push fallback: attempt=1/3, messages=2, "
+                        + "kinds=ImageMessage,TextMessage");
+        assertThat(logMessages(Level.WARN)).isEmpty();
+        verify(replySender, times(1)).send(reply);
+        verify(receiptStore).markCompleted(claim, 1);
+    }
+
+    @Test
+    void failedFallbackPushIsLoggedAsNotDeliveredYetStillCompletesWithoutRetryOrPoison() {
+        WebhookReply reply = imageReply();
+        WebhookClaim claim = stubReply("event-image-push-failed", reply);
+        doReturn(ReplyDelivery.PUSH_FAILED).when(replySender).send(reply);
+
+        module(Runnable::run).ingest(event("event-image-push-failed", 2_000L, false));
+
+        assertThat(logMessages(Level.WARN)).singleElement().asString().isEqualTo(
+                "Webhook reply not delivered: reason=fallback_push_failed, attempt=1/3, messages=2, "
+                        + "kinds=ImageMessage,TextMessage");
+        assertThat(logMessages(Level.INFO)).isEmpty();
+        assertThat(logMessages(Level.ERROR)).isEmpty();
+        verify(replySender, times(1)).send(reply);
+        verify(receiptStore).markCompleted(claim, 1);
+        verify(receiptStore, never()).markPoisoned(any(), any(), any(Integer.class));
+        assertThat(replyCount("retry")).isZero();
+        assertThat(replyCount("rejected")).isZero();
+    }
+
+    @Test
+    void expiredTokenWithAFailingPushThroughTheRealAdapterNeverClaimsTheReplyWasSent() {
+        MessagingApiClient lineClient = mock(MessagingApiClient.class);
+        when(lineClient.replyMessage(any())).thenReturn(CompletableFuture.failedFuture(
+                lineError(400, "Invalid reply token")));
+        when(lineClient.pushMessage(any(), any()))
+                .thenReturn(CompletableFuture.failedFuture(lineError(500, "error-body")));
+        LineMessagingReplyAdapter adapter = new LineMessagingReplyAdapter(lineClient,
+                new PushFallbackModule(lineClient, new PushFallbackProperties(), meterRegistry));
+        WebhookReply reply = new WebhookReply(
+                "reply-token", imageReply().messages(), "U-private-target");
+        WebhookClaim claim = stubReply("event-image-expired", reply);
+        WebhookIngestionModule module = new WebhookIngestionModule(
+                receiptStore, eventProcessor, adapter, Runnable::run, properties, meterRegistry);
+
+        module.ingest(event("event-image-expired", 2_000L, false));
+
+        assertThat(logMessages(Level.INFO)).noneMatch(line -> line.startsWith("Webhook reply sent"));
+        assertThat(logMessages(Level.WARN)).singleElement().asString()
+                .startsWith("Webhook reply not delivered: reason=fallback_push_failed, attempt=1/3");
+        verify(lineClient, times(1)).replyMessage(any());
+        verify(lineClient, times(1)).pushMessage(any(), any());
+        verify(receiptStore).markCompleted(claim, 1);
+        verify(receiptStore, never()).markPoisoned(any(), any(), any(Integer.class));
+    }
+
+    @Test
+    void everyFailedAttemptIsLoggedWithTheLineStatusAndWhetherItWillBeRetried() {
+        WebhookReply reply = imageReply();
+        stubReply("event-image-retry", reply);
+        doThrow(new CompletionException(lineError(503)))
+                .doThrow(new CompletionException(new SocketTimeoutException("secret-detail")))
+                .doReturn(ReplyDelivery.REPLIED)
+                .when(replySender).send(reply);
+
+        module(Runnable::run).ingest(event("event-image-retry", 2_000L, false));
+
+        assertThat(logMessages(Level.WARN)).hasSize(2);
+        assertThat(logMessages(Level.WARN).get(0)).isEqualTo(
+                "Webhook reply attempt failed: attempt=1/3, retrying=true, messages=2, "
+                        + "kinds=ImageMessage,TextMessage, status=503, failure=MessagingApiClientException");
+        assertThat(logMessages(Level.WARN).get(1)).isEqualTo(
+                "Webhook reply attempt failed: attempt=2/3, retrying=true, messages=2, "
+                        + "kinds=ImageMessage,TextMessage, status=none, failure=SocketTimeoutException");
+        assertThat(logMessages(Level.INFO)).singleElement().asString()
+                .startsWith("Webhook reply sent: attempt=3/3, messages=2");
+    }
+
+    @Test
+    void lastFailedAttemptSaysItWillNotBeRetried() {
+        WebhookReply reply = imageReply();
+        stubReply("event-image-exhausted", reply);
+        doThrow(new CompletionException(lineError(500))).when(replySender).send(reply);
+
+        module(Runnable::run).ingest(event("event-image-exhausted", 2_000L, false));
+
+        assertThat(logMessages(Level.WARN)).hasSize(3);
+        assertThat(logMessages(Level.WARN).get(2))
+                .contains("attempt=3/3", "retrying=false", "status=500");
+    }
+
+    @Test
+    void rejectedImageReplyLogsTheStatusAttemptAndKindsInTheExistingWarning() {
+        WebhookReply reply = imageReply();
+        stubReply("event-image-rejected", reply);
+        doThrow(new WebhookReplyRejectedException(400, new IOException("rejected")))
+                .when(replySender).send(reply);
+
+        module(Runnable::run).ingest(event("event-image-rejected", 2_000L, false));
+
+        assertThat(logMessages(Level.WARN)).singleElement().asString().isEqualTo(
+                "LINE rejected webhook reply, not retrying: status=400, attempt=1/3, "
+                        + "messages=2, kinds=ImageMessage,TextMessage");
+    }
+
+    @Test
+    void replyLogsNeverCarryUrlsOrMessageContent() {
+        WebhookReply reply = imageReply();
+        stubReply("event-image-safe", reply);
+        doThrow(new CompletionException(lineError(502)))
+                .doReturn(ReplyDelivery.REPLIED).when(replySender).send(reply);
+
+        module(Runnable::run).ingest(event("event-image-safe", 2_000L, false));
+
+        assertThat(logs.list).isNotEmpty().allSatisfy(entry -> assertThat(entry.getFormattedMessage())
+                .doesNotContain("X-Amz", "s3.azndev.com", "translated text", "reply-token", "error-body"));
+    }
+
+    private WebhookClaim stubReply(String eventId, WebhookReply reply) {
+        WebhookClaim claim = WebhookClaim.claimed(eventId, "claim-" + eventId);
+        when(receiptStore.claim(any())).thenReturn(claim);
+        when(eventProcessor.process(any())).thenReturn(Optional.of(reply));
+        return claim;
+    }
+
+    private static WebhookReply imageReply() {
+        URI image = URI.create("https://s3.azndev.com/line-bot/translated-images/1/a.png?X-Amz-Signature=abc");
+        URI preview = URI.create("https://s3.azndev.com/line-bot/translated-images/1/a-preview.jpg?X-Amz-Signature=def");
+        return new WebhookReply("reply-token",
+                List.of(new ImageMessage(image, preview), new TextMessage("translated text")));
+    }
+
+    private static MessagingApiClientException lineError(int status) {
+        return lineError(status, "error-body");
+    }
+
+    private static MessagingApiClientException lineError(int status, String lineMessage) {
+        Response response = new Response.Builder()
+                .request(new Request.Builder().url("https://api.line.me/v2/bot/message/reply").build())
+                .protocol(Protocol.HTTP_1_1)
+                .code(status)
+                .message("Error")
+                .build();
+        return new MessagingApiClientException(response, lineMessage, List.of(), List.of());
     }
 
     private List<String> logMessages(Level level) {

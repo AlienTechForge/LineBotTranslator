@@ -104,21 +104,39 @@ public class WebhookIngestionModule {
         }
     }
 
+    /**
+     * Sends the reply, retrying transient failures. Every attempt is logged with the count and
+     * kinds of its messages. LINE fetches an image message's URL itself, outside this call, so an
+     * accepted reply that carried an {@code ImageMessage} is the last outcome this service can
+     * observe for the image.
+     *
+     * <p>A sender that returns has finished with the reply, so nothing is retried, even when the
+     * fallback push failed; the log line says which of the outcomes it was.
+     */
     private int sendWithRetry(WebhookReply reply) {
         RuntimeException lastFailure = null;
-        for (int attempt = 1; attempt <= properties.getReplyMaxAttempts(); attempt++) {
+        int maxAttempts = properties.getReplyMaxAttempts();
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
-                replySender.send(reply);
+                ReplyDelivery delivery = replySender.send(reply);
                 replySucceeded.increment();
+                logDelivery(delivery, reply, attempt, maxAttempts);
                 return attempt;
             } catch (WebhookReplyRejectedException rejected) {
                 replyRejected.increment();
-                log.warn("LINE rejected webhook reply, not retrying: status={}, attempt={}",
-                        SafeLog.httpStatus(rejected.status()), attempt);
+                log.warn("LINE rejected webhook reply, not retrying: status={}, attempt={}/{}, "
+                                + "messages={}, kinds={}",
+                        SafeLog.httpStatus(rejected.status()), attempt, maxAttempts,
+                        reply.messages().size(), reply.messageKinds());
                 throw new ReplyAttemptException(attempt, rejected);
             } catch (RuntimeException failure) {
                 lastFailure = new ReplyAttemptException(attempt, failure);
-                if (attempt < properties.getReplyMaxAttempts()) {
+                boolean retrying = attempt < maxAttempts;
+                log.warn("Webhook reply attempt failed: attempt={}/{}, retrying={}, messages={}, kinds={}, "
+                                + "status={}, failure={}",
+                        attempt, maxAttempts, retrying, reply.messages().size(), reply.messageKinds(),
+                        LineApiStatus.of(failure), SafeLog.failure(failureCause(failure)));
+                if (retrying) {
                     replyRetried.increment();
                     backoff(properties.getReplyRetryBackoff());
                 }
@@ -127,6 +145,24 @@ public class WebhookIngestionModule {
         throw lastFailure == null
                 ? new IllegalStateException("Webhook reply failed without a cause")
                 : lastFailure;
+    }
+
+    /**
+     * Anything but the two push outcomes, even a missing value, is logged as replied: a logging
+     * decision must never make a delivered reply fail and be sent again.
+     */
+    private static void logDelivery(ReplyDelivery delivery, WebhookReply reply, int attempt, int maxAttempts) {
+        if (delivery == ReplyDelivery.PUSHED) {
+            log.info("Webhook reply delivered by push fallback: attempt={}/{}, messages={}, kinds={}",
+                    attempt, maxAttempts, reply.messages().size(), reply.messageKinds());
+        } else if (delivery == ReplyDelivery.PUSH_FAILED) {
+            log.warn("Webhook reply not delivered: reason=fallback_push_failed, attempt={}/{}, "
+                            + "messages={}, kinds={}",
+                    attempt, maxAttempts, reply.messages().size(), reply.messageKinds());
+        } else {
+            log.info("Webhook reply sent: attempt={}/{}, messages={}, kinds={}",
+                    attempt, maxAttempts, reply.messages().size(), reply.messageKinds());
+        }
     }
 
     private void backoff(Duration duration) {

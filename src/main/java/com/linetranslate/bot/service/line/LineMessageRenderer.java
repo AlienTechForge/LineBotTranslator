@@ -18,6 +18,7 @@ import com.linecorp.bot.messaging.model.PostbackAction;
 import com.linecorp.bot.messaging.model.QuickReply;
 import com.linecorp.bot.messaging.model.QuickReplyItem;
 import com.linecorp.bot.messaging.model.TextMessage;
+import com.linetranslate.bot.logging.SafeLog;
 import com.linetranslate.bot.service.ai.AiModelCatalog;
 import com.linetranslate.bot.service.ai.AiModelDescriptor;
 import com.linetranslate.bot.service.ai.AiModelPage;
@@ -32,8 +33,11 @@ import com.linetranslate.bot.service.translation.TranslationResponse;
 import com.linetranslate.bot.service.translation.TranslationStylePreset;
 import com.linetranslate.bot.util.LineTextLimit;
 
+import lombok.extern.slf4j.Slf4j;
+
 /** Central LINE message renderer for user-facing interaction results. */
 @Component
+@Slf4j
 public class LineMessageRenderer {
 
     private static final int MODEL_PAGE_LIMIT = 20;
@@ -155,13 +159,24 @@ public class LineMessageRenderer {
     public Message imageResult(String result) { return text(result); }
     public Message imageResult(TranslationResponse result) { return interactiveTranslation(result); }
     public Message imageResult(ImageTranslationReply reply) {
+        return deliver(reply).message();
+    }
+
+    /**
+     * Picks how the image reply is delivered: proxy links, the signed MinIO URL (optionally
+     * shortened), or plain text when there is no safe generated image. Pure apart from the proxy
+     * and short-link calls; {@link #imageResultMessages} logs the choice.
+     */
+    private ImageDelivery deliver(ImageTranslationReply reply) {
         if (reply == null) {
-            return text("");
+            return ImageDelivery.textFallback(text(""), "no_reply");
         }
         Optional<URI> signedImage = reply.renderedImageUrl()
                 .flatMap(LineMessageRenderer::safeHttpsUri);
         if (signedImage.isEmpty()) {
-            return interactiveTranslation(reply.response());
+            return ImageDelivery.textFallback(
+                    interactiveTranslation(reply.response()),
+                    reply.renderedImageUrl().isPresent() ? "unsafe_image_url" : "no_rendered_image");
         }
         RuntimeSettings settings = runtimeSettingsSource.current();
         boolean shorten = settings != null && settings.shortUrlEnabled();
@@ -170,34 +185,50 @@ public class LineMessageRenderer {
                     .flatMap(imageProxyLinkService::register);
             if (links.isPresent()) {
                 ImageProxyLinks selected = links.get();
+                ImageProxyLinks clean = selected;
                 if (shorten && dwzShortLinkService != null) {
                     selected = dwzShortLinkService.shorten(selected).orElse(selected);
                 }
-                return new ImageMessage(selected.original(), selected.preview());
+                return new ImageDelivery(
+                        new ImageMessage(selected.original(), selected.preview()),
+                        ImageBranch.PROXY_LINKS, "none", selected.original().getHost(),
+                        true, selected != clean);
             }
         }
-        if (signedImage.isPresent()) {
-            URI selected = signedImage.get();
-            if (shorten && dwzShortLinkService != null) {
-                selected = dwzShortLinkService.shortenSignedImage(selected).orElse(selected);
-            }
-            // Without the proxy nothing resizes the original, and LINE rejects a preview above
-            // 1 MB. The storage service saved a 240 px rendition for that case; it stays a signed
-            // URL because LINE's servers are the only ones that fetch it.
-            URI preview = reply.renderedPreviewUrl().flatMap(LineMessageRenderer::safeHttpsUri).orElse(selected);
-            return new ImageMessage(selected, preview);
+        URI direct = signedImage.get();
+        URI selected = direct;
+        if (shorten && dwzShortLinkService != null) {
+            selected = dwzShortLinkService.shortenSignedImage(selected).orElse(selected);
         }
-        return interactiveTranslation(reply.response());
+        // Without the proxy nothing resizes the original, and LINE rejects a preview above
+        // 1 MB. The storage service saved a 240 px rendition for that case; it stays a signed
+        // URL because LINE's servers are the only ones that fetch it.
+        Optional<URI> storedPreview = reply.renderedPreviewUrl().flatMap(LineMessageRenderer::safeHttpsUri);
+        return new ImageDelivery(
+                new ImageMessage(selected, storedPreview.orElse(selected)),
+                ImageBranch.SIGNED_IMAGE, "none", selected.getHost(),
+                storedPreview.isPresent(), selected != direct);
     }
 
     /**
      * Image reply as an ordered message list. A delivered overlay image is followed by the
      * recognised text and translation with their quick replies unless the administrator
      * switched {@code imageTextReplyEnabled} off. Quick replies only show on the last message.
+     *
+     * <p>Logs which delivery branch was taken, with the image host (never the URL: a signed URL
+     * carries its signature) and whether the stored preview was available, because a LINE image
+     * that fails to load leaves no other trace in this service.
      */
     public List<Message> imageResultMessages(ImageTranslationReply reply) {
-        Message primary = imageResult(reply);
-        if (!(primary instanceof ImageMessage) || !imageTextReplyEnabled()) {
+        ImageDelivery delivery = deliver(reply);
+        Message primary = delivery.message();
+        boolean textReply = primary instanceof ImageMessage && imageTextReplyEnabled();
+        String host = delivery.imageHost() == null ? "none" : SafeLog.metadata(delivery.imageHost());
+        log.info("Image reply composed: branch={}, reason={}, imageHost={}, previewUrlPresent={}, "
+                        + "shortened={}, textReply={}, messages={}",
+                delivery.branch(), delivery.reason(), host,
+                delivery.previewUrlPresent(), delivery.shortened(), textReply, textReply ? 2 : 1);
+        if (!textReply) {
             return List.of(primary);
         }
         return List.of(primary, interactiveTranslation(withoutImageLink(reply)));
@@ -340,5 +371,31 @@ public class LineMessageRenderer {
     }
 
     private record TargetAction(String label, String language) {
+    }
+
+    private enum ImageBranch {
+        /** Clean {@code /i/{token}} links served by the image proxy. */
+        PROXY_LINKS,
+        /** The signed MinIO URL, or its short link, handed to LINE directly. */
+        SIGNED_IMAGE,
+        /** No safe generated image: the reply is text only. */
+        TEXT_FALLBACK
+    }
+
+    /**
+     * The chosen image reply and what to log about the choice. {@code imageHost} is the host LINE
+     * is told to fetch the original from, or {@code null} for the text fallback.
+     */
+    private record ImageDelivery(
+            Message message,
+            ImageBranch branch,
+            String reason,
+            String imageHost,
+            boolean previewUrlPresent,
+            boolean shortened) {
+
+        static ImageDelivery textFallback(Message message, String reason) {
+            return new ImageDelivery(message, ImageBranch.TEXT_FALLBACK, reason, null, false, false);
+        }
     }
 }
