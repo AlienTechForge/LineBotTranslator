@@ -129,6 +129,7 @@ class OcrRegionSegmenterTests {
             assertThat(region.id()).startsWith("rotated-menu.l");
             assertThat(region.groupId()).isEqualTo("rotated-menu");
             assertThat(region.orientation()).isEqualTo(OcrOrientation.VERTICAL);
+            assertThat(region.writingMode()).isEqualTo(WritingMode.ROTATED_90);
             assertThat(region.compactLabel()).isTrue();
         });
     }
@@ -436,6 +437,7 @@ class OcrRegionSegmenterTests {
                 List.of(new OcrWord("る。", polygon, .95f, true)), .95f, true, OcrBlockType.TEXT,
                 List.of(), 1);
         assertThat(orphan.orientation()).isEqualTo(OcrOrientation.VERTICAL);
+        assertThat(orphan.writingMode()).isEqualTo(WritingMode.ROTATED_90);
 
         List<OcrRegion> result = new OcrRegionSegmenter().segment(List.of(third, orphan));
 
@@ -804,6 +806,7 @@ class OcrRegionSegmenterTests {
         OcrRegion turned = tilted(upright, 90, 600, 780);
         java.awt.Rectangle box = OverlaySafetyPolicy.polygon(turned.polygon()).getBounds();
         assertThat(turned.orientation()).isEqualTo(OcrOrientation.VERTICAL);
+        assertThat(turned.writingMode()).isEqualTo(WritingMode.ROTATED_90);
         OcrRegion orphan = tail("orphan", "る。", box.y + box.height + 24, 1);
         orphan = shifted(orphan, box.x - LEFT, 0);
 

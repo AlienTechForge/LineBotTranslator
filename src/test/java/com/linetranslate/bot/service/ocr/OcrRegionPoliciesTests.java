@@ -71,6 +71,10 @@ class OcrRegionPoliciesTests {
         assertThat(horizontal.orientation()).isEqualTo(OcrOrientation.HORIZONTAL);
         assertThat(vertical.orientation()).isEqualTo(OcrOrientation.VERTICAL);
         assertThat(rotated.orientation()).isEqualTo(OcrOrientation.ROTATED);
+        // The mode tells the quarter turns apart, which the three buckets above cannot.
+        assertThat(horizontal.writingMode()).isEqualTo(WritingMode.HORIZONTAL);
+        assertThat(vertical.writingMode()).isEqualTo(WritingMode.ROTATED_90);
+        assertThat(rotated.writingMode()).isEqualTo(WritingMode.SKEWED);
     }
 
     /** The ordered-token check the structured codec applies to a provider answer. */

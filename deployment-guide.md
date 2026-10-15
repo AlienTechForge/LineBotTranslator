@@ -83,6 +83,7 @@ Secrets 只作為容器環境變數傳入，不會寫入 image、Repository 或 
 | `IMAGE_PROXY_CONTENT_CACHE_MAX_BYTES` | `67108864` | `/i/{token}` proxy 快取保留的 original + preview 位元組上限（64 MiB）；取代已不再生效的 `IMAGE_PROXY_CONTENT_CACHE_ENTRIES`。 |
 | `IMAGE_TRANSLATION_MAX_TOTAL_MASK_RATIO` | `0.35` | 譯文覆蓋圖可修改的遮罩面積占整張圖的比例上限（照片等一般圖片；文件與海報另有上限）。超過時由遮罩面積最小的區塊開始保留譯文，最大的區塊保留原文，而不是讓閱讀順序最後的區塊整批保留原文。 |
 | `IMAGE_TRANSLATION_POSTER_MAX_TOTAL_MASK_RATIO` | `0.60` | 海報／資訊圖的遮罩面積合計上限。至少 10 個文字區塊、90% 以上高信心、80% 以上水平，且 80% 以上區塊周圍為平塗背景時採用；日誌 `Overlay content mode: verdict=poster` 可確認。不得小於 `IMAGE_TRANSLATION_MAX_TOTAL_MASK_RATIO`（較小時以後者為準）。 |
+| `IMAGE_TRANSLATION_ORIENTATION_RETRY_ENABLED` | `false` | 被轉了四分之一圈的頁面（整張圖九成以上文字沿同一個非零方向）一律用第一次 OCR 的幾何轉正後翻譯，輸出再轉回原方向，不多一次 OCR。開啟後，若轉正頁面中可靠文字不足 80%，會用轉正後的圖片再做一次 OCR（多一次呼叫，第一次已用掉逾時的一半以上則略過），較好才採用；失敗一律沿用第一次結果。日誌 `Page orientation decision: ... retryAdvised=true` 與 `Page orientation retry: outcome=...` 可評估頻率與效果。 |
 | `IMAGE_TRANSLATION_MAX_OUTPUT_BYTES` | `10485760` | 產生圖片的大小上限（LINE 原圖限制 10 MB）；PNG 超過時改輸出 JPEG 或縮小。 |
 | `IMAGE_TRANSLATION_DELIVERY_TARGET_BYTES` | `2097152` | 產生圖片的交付大小目標（2 MiB）。LINE 要在自己的逾時內從部署主機（MinIO 或 proxy）取回原圖，大張 PNG 可能取不到；不透明圖片的 PNG 超過此值時，改輸出 JPEG（品質 0.92，再 0.85），取第一個不超過目標者，都不符合則維持 PNG（仍受上限約束）。透明圖片一律維持 PNG。設為不小於 `IMAGE_TRANSLATION_MAX_OUTPUT_BYTES` 的值即停用。 |
 | `IMAGE_TEXT_REPLY_ENABLED` | `true` | 翻譯圖片後是否再附上辨識文字、譯文與快速操作的部署預設值；管理員可用 `/admin config image-text [on\|off]` 動態切換。 |

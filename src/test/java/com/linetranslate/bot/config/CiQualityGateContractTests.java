@@ -67,12 +67,31 @@ class CiQualityGateContractTests {
                 .contains("IMAGE_TRANSLATION_OVERLAY_ENABLED:")
                 .contains("IMAGE_TRANSLATION_MAX_REGION_AREA_RATIO:")
                 .contains("IMAGE_TRANSLATION_MAX_TOTAL_MASK_RATIO:")
-                .contains("IMAGE_TRANSLATION_POSTER_MAX_TOTAL_MASK_RATIO:");
+                .contains("IMAGE_TRANSLATION_POSTER_MAX_TOTAL_MASK_RATIO:")
+                .contains("IMAGE_TRANSLATION_ORIENTATION_RETRY_ENABLED: ${{ vars.IMAGE_TRANSLATION_ORIENTATION_RETRY_ENABLED || 'false' }}");
         assertThat(deployScript)
                 .contains("IMAGE_TRANSLATION_OVERLAY_ENABLED")
                 .contains("IMAGE_TRANSLATION_MAX_REGION_AREA_RATIO")
                 .contains("IMAGE_TRANSLATION_MAX_TOTAL_MASK_RATIO")
-                .contains("IMAGE_TRANSLATION_POSTER_MAX_TOTAL_MASK_RATIO");
+                .contains("IMAGE_TRANSLATION_POSTER_MAX_TOTAL_MASK_RATIO")
+                .contains("IMAGE_TRANSLATION_ORIENTATION_RETRY_ENABLED");
+    }
+
+    @Test
+    void theOrientationRetryIsOffEverywhereItIsConfiguredByDefault() throws IOException {
+        assertThat(Files.readString(Path.of("src", "main", "resources", "application.properties")))
+                .contains("app.image-translation.orientation-retry-enabled="
+                        + "${IMAGE_TRANSLATION_ORIENTATION_RETRY_ENABLED:false}");
+        assertThat(Files.readString(Path.of(".env.example")))
+                .contains("IMAGE_TRANSLATION_ORIENTATION_RETRY_ENABLED=false");
+        for (String workflow : List.of("ci-cd.yml", "rotate-mongodb-credential.yml")) {
+            assertThat(Files.readString(Path.of(".github", "workflows", workflow)))
+                    .as(workflow)
+                    .contains("IMAGE_TRANSLATION_ORIENTATION_RETRY_ENABLED: "
+                            + "${{ vars.IMAGE_TRANSLATION_ORIENTATION_RETRY_ENABLED || 'false' }}");
+        }
+        assertThat(Files.readString(Path.of("deployment-guide.md")))
+                .contains("`IMAGE_TRANSLATION_ORIENTATION_RETRY_ENABLED` | `false`");
     }
 
     @Test

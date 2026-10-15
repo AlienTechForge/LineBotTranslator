@@ -218,6 +218,21 @@ class OverlaySafetyPolicyTests {
     }
 
     @Test
+    void theOrientationRetryIsOffUnlessSwitchedOn() {
+        assertThat(ImageTranslationProperties.defaults().orientationRetryEnabled()).isFalse();
+        assertThat(new ImageTranslationProperties(1000, 100, 10000, .6f, true, .12, .35)
+                .orientationRetryEnabled()).isFalse();
+        assertThat(new ImageTranslationProperties(1000, 100, 10000, .6f, true, .12, .35, .60)
+                .orientationRetryEnabled()).isFalse();
+        assertThat(new ImageTranslationProperties(1000, 100, 10000, .6f, true, .12, .35, .60, true)
+                .orientationRetryEnabled()).isTrue();
+        // The flag does not relax the numeric limits.
+        assertThatThrownBy(() -> new ImageTranslationProperties(
+                1000, 100, 10000, .6f, true, .12, .35, Double.NaN, true))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
     void documentModeAllowsDenseTextCoverageWithoutDisablingPerRegionSafety() {
         ImageTranslationProperties limits = new ImageTranslationProperties(
                 1000, 100, 10000, .6f, true, .25, .35);

@@ -18,6 +18,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import javax.imageio.ImageIO;
 
@@ -150,6 +151,114 @@ class ImageTranslationPipelineMemoryTests {
         assertThat(outcome).isInstanceOf(ImageTranslationOutcome.Success.class);
         assertThat(Reachability.collected(storage.rendered)).as("rendered raster").isTrue();
         assertThat(Reachability.collected(validator.source)).as("source raster").isTrue();
+    }
+
+    // --- a page that was turned a quarter -----------------------------------------------------------
+
+    /**
+     * A turned page keeps the same two rasters alive at most: the photo is dropped as soon as the
+     * upright raster exists, the upright source as soon as the upright output is drawn, and that
+     * output as soon as it has been turned back. The upload gets the turned-back raster alone.
+     */
+    @Test
+    void aTurnedPageHandsTheUploadTheRestoredRasterAndHasDroppedBothUprightRastersByThen() throws Exception {
+        turnedPage();
+        MinioStorageService storage = mock(MinioStorageService.class);
+        TrackingValidator validator = new TrackingValidator();
+        UprightTrackingRenderer renderer = new UprightTrackingRenderer();
+        AtomicBoolean photoCollected = new AtomicBoolean();
+        AtomicBoolean uprightSourceCollected = new AtomicBoolean();
+        AtomicInteger uploadedWidth = new AtomicInteger();
+        AtomicInteger uploadedHeight = new AtomicInteger();
+        when(storage.uploadTranslatedImage(any(byte[].class), anyString(), any())).thenAnswer(invocation -> {
+            photoCollected.set(Reachability.collected(validator.source));
+            uprightSourceCollected.set(Reachability.collected(renderer.uprightSource));
+            BufferedImage raster = invocation.getArgument(2);
+            uploadedWidth.set(raster.getWidth());
+            uploadedHeight.set(raster.getHeight());
+            return ImageStorageResult.stored("https://storage.example/translated.png");
+        });
+
+        ImageTranslationOutcome outcome = pipeline(storage, validator, renderer).execute(request());
+
+        assertThat(outcome).isInstanceOf(ImageTranslationOutcome.Success.class);
+        assertThat(renderer.uprightSource).isNotNull();
+        assertThat(photoCollected).as("the photo's raster collected before the upload").isTrue();
+        assertThat(uprightSourceCollected).as("the upright source raster collected before the upload").isTrue();
+        // The photo is 240 x 120 and the page is 120 x 240: the upload is in the photo's frame.
+        assertThat(uploadedWidth.get()).isEqualTo(240);
+        assertThat(uploadedHeight.get()).isEqualTo(120);
+    }
+
+    @Test
+    void theRasterTheUploadGetsForATurnedPageIsTheOneItsBytesEncode() throws Exception {
+        turnedPage();
+        MinioStorageService storage = mock(MinioStorageService.class);
+        when(storage.uploadTranslatedImage(any(byte[].class), anyString(), any()))
+                .thenReturn(ImageStorageResult.stored("https://storage.example/translated.png"));
+
+        pipeline(storage, new TrackingValidator(), new UprightTrackingRenderer()).execute(request());
+
+        ArgumentCaptor<byte[]> rendered = ArgumentCaptor.forClass(byte[].class);
+        ArgumentCaptor<BufferedImage> raster = ArgumentCaptor.forClass(BufferedImage.class);
+        verify(storage).uploadTranslatedImage(rendered.capture(), org.mockito.ArgumentMatchers.eq("image/png"),
+                raster.capture());
+        BufferedImage decoded = ImageIO.read(new ByteArrayInputStream(rendered.getValue()));
+        assertThat(raster.getValue().getWidth()).isEqualTo(decoded.getWidth()).isEqualTo(240);
+        assertThat(raster.getValue().getHeight()).isEqualTo(decoded.getHeight()).isEqualTo(120);
+        for (int y = 0; y < decoded.getHeight(); y++) {
+            for (int x = 0; x < decoded.getWidth(); x++) {
+                assertThat(raster.getValue().getRGB(x, y)).isEqualTo(decoded.getRGB(x, y));
+            }
+        }
+    }
+
+    @Test
+    void noRasterOfATurnedPageIsKeptByTheResultOnceTheRequestIsDone() throws Exception {
+        turnedPage();
+        WeakRasterStorage storage = new WeakRasterStorage();
+        TrackingValidator validator = new TrackingValidator();
+        UprightTrackingRenderer renderer = new UprightTrackingRenderer();
+
+        ImageTranslationOutcome outcome = pipeline(storage, validator, renderer).execute(request());
+
+        assertThat(storage.rendered).as("restored raster reached the upload").isNotNull();
+        assertThat(outcome).isInstanceOf(ImageTranslationOutcome.Success.class);
+        assertThat(Reachability.collected(storage.rendered)).as("restored raster").isTrue();
+        assertThat(Reachability.collected(validator.source)).as("photo raster").isTrue();
+        assertThat(Reachability.collected(renderer.uprightSource)).as("upright raster").isTrue();
+    }
+
+    /** The OCR reads the 240 x 120 photo as a page that is 120 x 240 when upright, turned one quarter. */
+    private void turnedPage() {
+        doReturn(OcrRecognition.structured(List.of(
+                region("r-hello", "hello", 10, 10, 90, 35), region("r-world", "world", 10, 60, 90, 35)),
+                new PageFrame(1, 240, 120, PageOrientation.Verdict.ROTATED, false, 1d)))
+                .when(ocrService).recognize(any(InputStream.class));
+    }
+
+    /** The real renderer, remembering its upright source only weakly. */
+    private static final class UprightTrackingRenderer extends ImageTranslationOverlayRenderer {
+
+        private volatile WeakReference<BufferedImage> uprightSource;
+
+        UprightTrackingRenderer() {
+            super(new ImageTranslationFontProvider(Set.of("dejavu sans")));
+        }
+
+        @Override
+        public RenderedImage render(ValidatedImage source, OverlaySafetyPlan plan, int restoreQuarterTurns) {
+            uprightSource = new WeakReference<>(source.image());
+            return super.render(source, plan, restoreQuarterTurns);
+        }
+    }
+
+    private ImageTranslationPipeline pipeline(
+            MinioStorageService storage, ImageInputValidator validator, ImageTranslationOverlayRenderer renderer) {
+        return new ImageTranslationPipeline(
+                ocrServiceProvider, workflowModule, mock(AiProviderExecutionModule.class),
+                userPreferencesModule, messagingApiBlobClient, storage, validator, renderer,
+                ImageTranslationProperties.defaults());
     }
 
     private ImageTranslationPipeline pipeline(MinioStorageService storage, ImageInputValidator validator) {

@@ -373,6 +373,271 @@ class GoogleVisionOcrServiceTests {
                 .hasCause(transport);
     }
 
+    // --- a page that was turned a quarter ----------------------------------------------------------
+
+    @Test
+    void aPageTurnedAQuarterComesBackUprightWithItsFrameAndTheIdsOfTheProviderPolygons() {
+        RotatedPageFixtures page = new RotatedPageFixtures(600, 400, 1);
+        Reading reading = reading(page.pageWidth(), page.pageHeight(), cafePage(page));
+
+        OcrRecognition recognition = reading.service().recognize(new ByteArrayInputStream(new byte[] {1}));
+
+        PageFrame frame = recognition.frame();
+        assertThat(frame.quarterTurns()).isEqualTo(1);
+        assertThat(frame.sourceWidth()).isEqualTo(400);
+        assertThat(frame.sourceHeight()).isEqualTo(600);
+        assertThat(frame.verdict()).isEqualTo(PageOrientation.Verdict.ROTATED);
+        assertThat(frame.retryAdvised()).isFalse();
+        assertThat(recognition.regions()).extracting(OcrRegion::text).containsExactly(
+                "Welcome to our little cafe", "Fresh bread baked every morning",
+                "Chicken", "110", "Fish", "90",
+                "Open daily from nine to five", "Thank you for visiting us");
+        // The price row is split in upright order, into cells that read along +x.
+        assertThat(recognition.regions()).allSatisfy(region -> {
+            assertThat(region.writingMode()).isEqualTo(WritingMode.HORIZONTAL);
+            assertThat(region.rotationDegrees()).isZero();
+            assertThat(region.polygon().get(0).x()).isLessThan(region.polygon().get(1).x());
+            assertThat(region.polygon().get(0).y()).isLessThan(region.polygon().get(3).y());
+        });
+        assertThat(recognition.regions().stream().filter(region -> region.id().contains(".l")))
+                .extracting(OcrRegion::text).containsExactly("Chicken", "110", "Fish", "90");
+
+        // Ids are hashes of the provider polygons, so they are the ids of the page as the provider
+        // sent it, and the regions are exactly that page's, moved by the inverse of the turn.
+        List<OcrRegion> inProviderFrame = reading.service()
+                .recognizeRegions(new ByteArrayInputStream(new byte[] {1}));
+        assertThat(recognition.regions()).extracting(OcrRegion::id)
+                .containsExactlyElementsOf(inProviderFrame.stream().map(OcrRegion::id).toList());
+        assertThat(QuarterTurns.fromUpright(recognition.regions(), 1, 400, 600))
+                .containsExactlyElementsOf(inProviderFrame);
+    }
+
+    @Test
+    void aRotatedPageStillCostsOneDocumentRequest() {
+        RotatedPageFixtures page = new RotatedPageFixtures(600, 400, 3);
+        Reading reading = reading(page.pageWidth(), page.pageHeight(), cafePage(page));
+
+        OcrRecognition recognition = reading.service().recognize(new ByteArrayInputStream(new byte[] {1}));
+
+        assertThat(recognition.frame().quarterTurns()).isEqualTo(3);
+        assertSingleDocumentRequest(reading.client());
+    }
+
+    @Test
+    void theOrientationDecisionIsLoggedOnceWithNumbersOnly() {
+        RotatedPageFixtures page = new RotatedPageFixtures(600, 400, 1);
+        Reading reading = reading(page.pageWidth(), page.pageHeight(), cafePage(page));
+
+        OcrRecognition recognition = reading.service().recognize(new ByteArrayInputStream(new byte[] {1}));
+
+        List<String> lines = logs.list.stream().map(ILoggingEvent::getFormattedMessage).toList();
+        assertThat(lines).filteredOn(line -> line.startsWith("Page orientation decision")).singleElement()
+                .satisfies(line -> assertThat(line)
+                        .contains("verdict=ROTATED", "quarterTurns=1", "regions=5", "reliableRegions=5",
+                                "dominantShare=1.000", "skewedShare=0.000", "reliableShare=1.000",
+                                "cjkShare=0.000", "action=normalize", "retryAdvised=false",
+                                "pageWidth=400", "pageHeight=600"));
+        // Nothing the page says, and no region id, reaches any line written for this image.
+        List<String> secrets = new java.util.ArrayList<>();
+        for (OcrRegion region : recognition.regions()) {
+            secrets.add(region.id());
+            for (String word : region.text().split(" ")) {
+                if (word.length() >= 5 && word.chars().allMatch(Character::isLetter)) secrets.add(word);
+            }
+        }
+        assertThat(String.join("\n", lines)).doesNotContain(secrets.toArray(String[]::new));
+    }
+
+    @Test
+    void theRecognitionKeepsTheProviderFrameWhenNothingCallsForTurningThePage() {
+        RotatedPageFixtures upright = new RotatedPageFixtures(600, 400, 0);
+        RotatedPageFixtures turned = new RotatedPageFixtures(600, 400, 1);
+        List<OcrRegion> mixed = new java.util.ArrayList<>(latinLines(turned, 4));
+        mixed.addAll(latinLines(upright, 2, 300));
+        List<OcrRegion> ambiguous = new java.util.ArrayList<>();
+        for (int index = 0; index < 6; index++) {
+            ambiguous.add(turned.cjk("c" + index, "日本語の文章を読みます、そして書きます。", 20, 20 + index * 40,
+                    RotatedPageFixtures.Marks.NONE, RotatedPageFixtures.SymbolFrame.FOLLOWS_LINE, index));
+        }
+        List<OcrRegion> skewed = List.of(
+                RotatedPageFixtures.atAngle("skew", "Slanted text on a tilted page", 19, 20, 20, .95f, 0));
+        record Case(String name, int width, int height, List<OcrRegion> regions, PageOrientation.Verdict verdict) {
+        }
+        List<Case> cases = List.of(
+                new Case("upright", 600, 400, latinLines(upright, 6), PageOrientation.Verdict.UPRIGHT),
+                new Case("mixed", 400, 600, mixed, PageOrientation.Verdict.MIXED),
+                new Case("ambiguous", 400, 600, ambiguous, PageOrientation.Verdict.AMBIGUOUS),
+                new Case("skewed", 600, 400, skewed, PageOrientation.Verdict.INSUFFICIENT));
+
+        for (Case scenario : cases) {
+            Reading reading = reading(scenario.width(), scenario.height(), scenario.regions());
+
+            OcrRecognition recognition = reading.service().recognize(new ByteArrayInputStream(new byte[] {1}));
+            List<OcrRegion> legacy = reading.service().recognizeRegions(new ByteArrayInputStream(new byte[] {1}));
+
+            assertThat(recognition.frame().quarterTurns()).as(scenario.name()).isZero();
+            assertThat(recognition.frame().verdict()).as(scenario.name()).isEqualTo(scenario.verdict());
+            assertThat(recognition.frame().retryAdvised()).as(scenario.name()).isFalse();
+            // The same ids, the same polygons, the same order: nothing about the page changed.
+            assertThat(recognition.regions()).as(scenario.name())
+                    .containsExactlyElementsOf(OcrRecognition.structured(legacy).regions());
+            assertThat(logs.list.stream().map(ILoggingEvent::getFormattedMessage)
+                    .filter(line -> line.startsWith("Page orientation decision")).reduce((first, last) -> last))
+                    .as(scenario.name()).hasValueSatisfying(line -> assertThat(line)
+                            .contains("verdict=" + scenario.verdict(), "action=none"));
+        }
+    }
+
+    @Test
+    void aRotatedPageWithoutASizeToMapByIsLeftInTheFrameOfTheImage() {
+        RotatedPageFixtures page = new RotatedPageFixtures(600, 400, 1);
+        Reading unsized = reading(0, 0, cafePage(page));
+
+        OcrRecognition recognition = unsized.service().recognize(new ByteArrayInputStream(new byte[] {1}));
+
+        assertThat(recognition.frame().quarterTurns()).isZero();
+        assertThat(recognition.frame().verdict()).isEqualTo(PageOrientation.Verdict.ROTATED);
+        assertThat(recognition.frame().retryAdvised()).isFalse();
+        assertThat(recognition.regions()).extracting(OcrRegion::writingMode)
+                .containsOnly(WritingMode.ROTATED_90);
+        assertThat(logs.list.stream().map(ILoggingEvent::getFormattedMessage))
+                .anyMatch(line -> line.startsWith("Page orientation decision")
+                        && line.contains("action=skip-page-size"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void aResponseWithSeveralPagesIsNeverTurned() {
+        RotatedPageFixtures page = new RotatedPageFixtures(600, 400, 1);
+        ImageAnnotatorClient client = mock(ImageAnnotatorClient.class);
+        ObjectProvider<ImageAnnotatorClient> provider = mock(ObjectProvider.class);
+        when(provider.getIfAvailable()).thenReturn(client);
+        TextAnnotation.Builder annotation = TextAnnotation.newBuilder();
+        for (int index = 0; index < 2; index++) {
+            Page.Builder pageBuilder = Page.newBuilder().setWidth(page.pageWidth()).setHeight(page.pageHeight());
+            cafePage(page).forEach(region -> pageBuilder.addBlocks(Block.newBuilder()
+                    .setBlockType(Block.BlockType.TEXT).addParagraphs(proto(region))));
+            annotation.addPages(pageBuilder);
+        }
+        when(client.batchAnnotateImages(anyList())).thenReturn(BatchAnnotateImagesResponse.newBuilder()
+                .addResponses(AnnotateImageResponse.newBuilder().setFullTextAnnotation(annotation)).build());
+
+        OcrRecognition recognition = new GoogleVisionOcrService(provider)
+                .recognize(new ByteArrayInputStream(new byte[] {1}));
+
+        assertThat(recognition.frame().quarterTurns()).isZero();
+        assertThat(logs.list.stream().map(ILoggingEvent::getFormattedMessage))
+                .anyMatch(line -> line.startsWith("Page orientation decision")
+                        && line.contains("action=skip-pages"));
+    }
+
+    @Test
+    void theRegionApiNeverTurnsAPageBecauseItsCallerDrawsOnTheImageItSent() {
+        RotatedPageFixtures page = new RotatedPageFixtures(600, 400, 1);
+        List<OcrRegion> provider = cafePage(page);
+        Reading reading = reading(page.pageWidth(), page.pageHeight(), provider);
+
+        List<OcrRegion> regions = reading.service().recognizeRegions(new ByteArrayInputStream(new byte[] {1}));
+        List<OcrService.TextBlock> blocks = reading.service()
+                .recognizeTextWithLocations(new ByteArrayInputStream(new byte[] {1}));
+
+        assertThat(regions.get(0).polygon()).isEqualTo(provider.get(0).polygon());
+        assertThat(regions.get(0).writingMode()).isEqualTo(WritingMode.ROTATED_90);
+        assertThat(blocks.get(0).getX()).isEqualTo(
+                provider.get(0).polygon().stream().mapToInt(OcrPoint::x).min().orElseThrow());
+        assertThat(logs.list.stream().map(ILoggingEvent::getFormattedMessage))
+                .noneMatch(line -> line.startsWith("Page orientation decision"));
+    }
+
+    @Test
+    void inspectionReadsTheProviderPageWithoutActingOnIt() {
+        RotatedPageFixtures page = new RotatedPageFixtures(600, 400, 2);
+        List<OcrRegion> provider = cafePage(page);
+        Reading reading = reading(page.pageWidth(), page.pageHeight(), provider);
+
+        GoogleVisionOcrService.ProviderInspection inspection =
+                reading.service().inspect(new ByteArrayInputStream(new byte[] {1}));
+
+        assertThat(inspection.page().width()).isEqualTo(600);
+        assertThat(inspection.page().height()).isEqualTo(400);
+        assertThat(inspection.page().pageCount()).isEqualTo(1);
+        assertThat(inspection.page().regions()).extracting(OcrRegion::polygon)
+                .containsExactlyElementsOf(provider.stream().map(OcrRegion::polygon).toList());
+        assertThat(inspection.orientation().verdict()).isEqualTo(PageOrientation.Verdict.ROTATED);
+        assertThat(inspection.orientation().quarterTurns()).isEqualTo(2);
+        assertSingleDocumentRequest(reading.client());
+    }
+
+    /** Five paragraphs of a cafe page, one of them a two-row price list, on the upright page. */
+    private static List<OcrRegion> cafePage(RotatedPageFixtures page) {
+        return List.of(
+                page.latin("welcome", "Welcome to our little cafe", 20, 20, .97f, 0),
+                page.latin("bread", "Fresh bread baked every morning", 20, 60, .96f, 1),
+                page.block("menu", "en", .97f, 2,
+                        new RotatedPageFixtures.Placed("Chicken", 20, 120, 100, 24),
+                        new RotatedPageFixtures.Placed("110", 300, 120, 35, 24),
+                        new RotatedPageFixtures.Placed("Fish", 20, 160, 100, 24),
+                        new RotatedPageFixtures.Placed("90", 300, 160, 35, 24)),
+                page.latin("hours", "Open daily from nine to five", 20, 240, .96f, 3),
+                page.latin("thanks", "Thank you for visiting us", 20, 280, .95f, 4));
+    }
+
+    private static List<OcrRegion> latinLines(RotatedPageFixtures page, int count) {
+        return latinLines(page, count, 20);
+    }
+
+    private static List<OcrRegion> latinLines(RotatedPageFixtures page, int count, int top) {
+        List<OcrRegion> regions = new java.util.ArrayList<>();
+        for (int index = 0; index < count; index++) {
+            regions.add(page.latin("l" + top + "-" + index, "The quick brown fox jumps over",
+                    20, top + index * 40, .95f, index));
+        }
+        return regions;
+    }
+
+    private record Reading(GoogleVisionOcrService service, ImageAnnotatorClient client) {
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Reading reading(int pageWidth, int pageHeight, List<OcrRegion> regions) {
+        ImageAnnotatorClient client = mock(ImageAnnotatorClient.class);
+        ObjectProvider<ImageAnnotatorClient> provider = mock(ObjectProvider.class);
+        when(provider.getIfAvailable()).thenReturn(client);
+        Page.Builder page = Page.newBuilder().setWidth(pageWidth).setHeight(pageHeight);
+        regions.forEach(region -> page.addBlocks(Block.newBuilder()
+                .setBlockType(Block.BlockType.TEXT).addParagraphs(proto(region))));
+        when(client.batchAnnotateImages(anyList())).thenReturn(BatchAnnotateImagesResponse.newBuilder()
+                .addResponses(AnnotateImageResponse.newBuilder()
+                        .setFullTextAnnotation(TextAnnotation.newBuilder().addPages(page)))
+                .build());
+        return new Reading(new GoogleVisionOcrService(provider), client);
+    }
+
+    /** The Vision paragraph that carries this region's exact vertices, down to its symbols. */
+    private static Paragraph proto(OcrRegion region) {
+        Paragraph.Builder paragraph = Paragraph.newBuilder()
+                .setBoundingBox(polygon(region.polygon())).setConfidence(region.confidence());
+        region.languages().forEach(language -> paragraph.getPropertyBuilder().addDetectedLanguages(
+                TextAnnotation.DetectedLanguage.newBuilder()
+                        .setLanguageCode(language.code()).setConfidence(language.confidence())));
+        for (OcrWord word : region.words()) {
+            Word.Builder builder = Word.newBuilder()
+                    .setBoundingBox(polygon(word.polygon())).setConfidence(word.confidence());
+            for (OcrSymbol symbol : word.symbols()) {
+                builder.addSymbols(Symbol.newBuilder().setText(symbol.text())
+                        .setBoundingBox(polygon(symbol.polygon())).setConfidence(symbol.confidence()));
+            }
+            paragraph.addWords(builder);
+        }
+        return paragraph.build();
+    }
+
+    private static BoundingPoly polygon(List<OcrPoint> points) {
+        BoundingPoly.Builder polygon = BoundingPoly.newBuilder();
+        points.forEach(point -> polygon.addVertices(Vertex.newBuilder().setX(point.x()).setY(point.y())));
+        return polygon.build();
+    }
+
     private static ImageAnnotatorSettings settingsWithTimeout(Duration timeout) {
         try {
             ImageAnnotatorSettings.Builder builder = ImageAnnotatorSettings.newBuilder();

@@ -134,6 +134,46 @@ public class ImageTranslationOverlayRenderer {
                 encode(drawn.output()), drawn.rendered(), drawn.skipped(), drawn.decisions());
     }
 
+    /**
+     * As {@link #render(ValidatedImage, OverlaySafetyPlan)}, for a page that was brought upright:
+     * {@code source} is the upright raster, the plan is in its frame, and the output is turned
+     * back clockwise by {@code restoreQuarterTurns} before it is encoded, so the delivered image
+     * has the dimensions of the original and differs from it only where text was replaced.
+     *
+     * <p>Memory stays at two rasters. While drawing there are the upright source and the upright
+     * output; once the output is drawn the source is let go, and the output is turned into the
+     * delivered raster and let go in turn, so the encoder sees the delivered raster alone. This is
+     * a method of its own, not a call from the one above, because a caller that delegates keeps
+     * the source reachable in its own frame for as long as the callee runs.
+     */
+    public RenderedImage render(ValidatedImage source, OverlaySafetyPlan plan, int restoreQuarterTurns) {
+        if (plan == null || !plan.safe()) {
+            // Turning gives a new raster; only an unturned one has to be copied.
+            BufferedImage unchanged = restoreQuarterTurns == 0
+                    ? copy(source.image()) : restore(source.image(), restoreQuarterTurns);
+            return new RenderedImage(
+                    encode(unchanged), 0, plan == null ? 0 : plan.skipped(),
+                    plan == null ? List.of() : plan.decisions());
+        }
+        Drawn drawn = draw(source.image(), plan);
+        source = null;
+        if (restoreQuarterTurns != 0) {
+            // The assignment drops the record that holds the upright output, so only the delivered
+            // raster is reachable from here on.
+            drawn = drawn.withOutput(restore(drawn.output(), restoreQuarterTurns));
+        }
+        return new RenderedImage(
+                encode(drawn.output()), drawn.rendered(), drawn.skipped(), drawn.decisions());
+    }
+
+    /**
+     * Turns an upright output back clockwise into the frame of the original image. Package-private
+     * so a test can see what is still reachable when the turned raster exists.
+     */
+    BufferedImage restore(BufferedImage upright, int quarterTurns) {
+        return QuarterTurns.restore(upright, quarterTurns);
+    }
+
     /** Draws the approved overlays onto a copy of {@code pristine}; the source stays untouched. */
     private Drawn draw(BufferedImage pristine, OverlaySafetyPlan plan) {
         BufferedImage output = copy(pristine);
@@ -195,8 +235,10 @@ public class ImageTranslationOverlayRenderer {
                 // drawing frame a quarter turn swaps the axes, so the translation runs along the
                 // column instead of across it. Start from the top-right corner: after the extra
                 // quarter turn the local x axis points down the column and y points back across it.
+                boolean turned = false;
                 if (localHeightPixels > localWidthPixels * NARROW_COLUMN_RATIO
                         && isMostlyLatin(overlay.replacement())) {
+                    turned = true;
                     origin = polygon.get(1);
                     angle += Math.PI / 2;
                     int rotated = localWidthPixels;
@@ -254,11 +296,13 @@ public class ImageTranslationOverlayRenderer {
                             overlay.region().id(), OverlayRenderStatus.PRESERVED, "text-fit"));
                     log.info("Overlay cell preserved by fit: cellWidth={}, cellHeight={}, "
                                     + "sourceFontSize={}, translatedChars={}, lines={}, compactLabel={}, "
-                                    + "freeRowsBelow={}, affordableRows={}, remainingRatio={}",
+                                    + "freeRowsBelow={}, affordableRows={}, remainingRatio={}, "
+                                    + "writingMode={}, layout={}",
                             localBounds.width(), localBounds.height(), style.maximumFontSize(),
                             overlay.replacement().codePointCount(0, overlay.replacement().length()),
                             layout.lines().size(), overlay.region().compactLabel(), freeRows,
-                            affordableRows, ratio(remainingRatio));
+                            affordableRows, ratio(remainingRatio), overlay.region().writingMode(),
+                            turned ? "turned" : "horizontal");
                     continue;
                 }
                 logPolygonSkew(overlay.region(), localWidthPixels, localHeightPixels);
@@ -1112,7 +1156,7 @@ public class ImageTranslationOverlayRenderer {
         return new RenderedImage.Encoded(bytes, contentType, null);
     }
 
-    private static byte[] writePng(BufferedImage image) throws IOException {
+    static byte[] writePng(BufferedImage image) throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         if (!ImageIO.write(image, "png", output)) {
             throw new IOException("PNG writer is unavailable");
@@ -1120,7 +1164,7 @@ public class ImageTranslationOverlayRenderer {
         return output.toByteArray();
     }
 
-    private static byte[] writeJpeg(BufferedImage image, float quality) throws IOException {
+    static byte[] writeJpeg(BufferedImage image, float quality) throws IOException {
         Iterator<ImageWriter> writers = ImageIO.getImageWritersByFormatName("jpeg");
         if (!writers.hasNext()) {
             throw new IOException("JPEG writer is unavailable");
@@ -1166,6 +1210,10 @@ public class ImageTranslationOverlayRenderer {
     /** The rendered raster and the bookkeeping of one draw, before it is encoded. */
     private record Drawn(
             BufferedImage output, int rendered, int skipped, List<OverlayRenderDecision> decisions) {
+
+        Drawn withOutput(BufferedImage replacement) {
+            return new Drawn(replacement, rendered, skipped, decisions);
+        }
     }
 
     private record PreparedOverlay(

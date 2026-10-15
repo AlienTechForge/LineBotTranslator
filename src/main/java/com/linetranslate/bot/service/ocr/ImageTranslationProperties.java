@@ -3,7 +3,13 @@ package com.linetranslate.bot.service.ocr;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
-/** Security and rendering limits for image translation. */
+/**
+ * Security and rendering limits for image translation.
+ *
+ * @param orientationRetryEnabled whether a rotated page that was read poorly is read a second time
+ *                                from its upright raster, at the price of one more OCR call. Off by
+ *                                default until the decision log shows how often it would run.
+ */
 @Component
 public record ImageTranslationProperties(
         long maxFileSizeBytes,
@@ -13,7 +19,8 @@ public record ImageTranslationProperties(
         boolean overlayEnabled,
         double maxRegionAreaRatio,
         double maxTotalMaskRatio,
-        double posterMaxTotalMaskRatio) {
+        double posterMaxTotalMaskRatio,
+        boolean orientationRetryEnabled) {
 
     /** Total mask limit for {@link OverlayContentMode#POSTER} unless configured otherwise. */
     public static final double DEFAULT_POSTER_MAX_TOTAL_MASK_RATIO = .60;
@@ -28,7 +35,9 @@ public record ImageTranslationProperties(
             @Value("${app.image-translation.max-region-area-ratio:0.12}") double maxRegionAreaRatio,
             @Value("${app.image-translation.max-total-mask-ratio:0.35}") double maxTotalMaskRatio,
             @Value("${app.image-translation.poster-max-total-mask-ratio:0.60}")
-            double posterMaxTotalMaskRatio) {
+            double posterMaxTotalMaskRatio,
+            @Value("${app.image-translation.orientation-retry-enabled:false}")
+            boolean orientationRetryEnabled) {
         if (maxFileSizeBytes <= 0
                 || maxFileSizeBytes >= Integer.MAX_VALUE
                 || maxDimension <= 0
@@ -56,10 +65,25 @@ public record ImageTranslationProperties(
         this.maxRegionAreaRatio = maxRegionAreaRatio;
         this.maxTotalMaskRatio = maxTotalMaskRatio;
         this.posterMaxTotalMaskRatio = posterMaxTotalMaskRatio;
+        this.orientationRetryEnabled = orientationRetryEnabled;
     }
 
     private static boolean isRatio(double value) {
         return Double.isFinite(value) && value > 0 && value <= 1;
+    }
+
+    /** The limits of an image read once: callers that predate the orientation retry. */
+    public ImageTranslationProperties(
+            long maxFileSizeBytes,
+            int maxDimension,
+            long maxPixels,
+            float lowConfidenceThreshold,
+            boolean overlayEnabled,
+            double maxRegionAreaRatio,
+            double maxTotalMaskRatio,
+            double posterMaxTotalMaskRatio) {
+        this(maxFileSizeBytes, maxDimension, maxPixels, lowConfidenceThreshold, overlayEnabled,
+                maxRegionAreaRatio, maxTotalMaskRatio, posterMaxTotalMaskRatio, false);
     }
 
     /** The limits of an image that is not a poster: callers that predate the poster limit. */
@@ -78,6 +102,6 @@ public record ImageTranslationProperties(
     public static ImageTranslationProperties defaults() {
         return new ImageTranslationProperties(
                 10_485_760, 4_096, 16_000_000, 0.60f, true, .12, .35,
-                DEFAULT_POSTER_MAX_TOTAL_MASK_RATIO);
+                DEFAULT_POSTER_MAX_TOTAL_MASK_RATIO, false);
     }
 }
