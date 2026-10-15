@@ -86,6 +86,36 @@ class LineMessagingReplyAdapterTests {
     }
 
     @Test
+    void acceptedReplyIsReportedAsReplied() {
+        when(messagingApiClient.replyMessage(any())).thenReturn(CompletableFuture.completedFuture(
+                new Result<>("request", null, new com.linecorp.bot.messaging.model.ReplyMessageResponse(List.of()))));
+
+        assertThat(adapter.send(pushableReply)).isEqualTo(ReplyDelivery.REPLIED);
+
+        verify(messagingApiClient, never()).pushMessage(any(), any());
+    }
+
+    @Test
+    void expiredTokenWithAcceptedPushIsReportedAsPushed() {
+        expireReplyToken("Invalid reply token");
+        when(messagingApiClient.pushMessage(any(), any())).thenReturn(pushed());
+        stubQuota(QuotaType.NONE, null, 0L);
+
+        assertThat(adapter.send(pushableReply)).isEqualTo(ReplyDelivery.PUSHED);
+    }
+
+    @Test
+    void expiredTokenWithFailedPushIsReportedAsPushFailedNotAsReplied() {
+        expireReplyToken("Invalid reply token");
+        when(messagingApiClient.pushMessage(any(), any()))
+                .thenReturn(CompletableFuture.failedFuture(lineError(500)));
+
+        assertThat(adapter.send(pushableReply)).isEqualTo(ReplyDelivery.PUSH_FAILED);
+
+        verify(messagingApiClient, times(1)).pushMessage(any(), any());
+    }
+
+    @Test
     void ordinaryRejectionsAndRetryableFailuresAreNotLoggedHere() {
         when(messagingApiClient.replyMessage(any())).thenReturn(CompletableFuture.failedFuture(
                 lineError(400, "The request body has 1 error(s)")));

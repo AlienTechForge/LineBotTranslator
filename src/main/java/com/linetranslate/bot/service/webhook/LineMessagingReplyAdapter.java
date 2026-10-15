@@ -1,6 +1,7 @@
 package com.linetranslate.bot.service.webhook;
 
 import java.util.Locale;
+import java.util.Optional;
 import java.util.concurrent.CompletionException;
 
 import org.springframework.stereotype.Component;
@@ -13,8 +14,9 @@ import com.linecorp.bot.messaging.model.ReplyMessageRequest;
 import lombok.extern.slf4j.Slf4j;
 
 /**
- * Outbound LINE messaging Adapter. A reply that LINE accepts is logged by the ingestion Module,
- * which knows the attempt number; this class logs only the hand-over to the push fallback.
+ * Outbound LINE messaging Adapter. It reports how each reply was delivered; the ingestion Module,
+ * which knows the attempt number, logs that outcome. This class logs only the hand-over to the
+ * push fallback.
  */
 @Component
 @Slf4j
@@ -29,18 +31,20 @@ public class LineMessagingReplyAdapter implements WebhookReplySender {
     }
 
     @Override
-    public void send(WebhookReply reply) {
+    public ReplyDelivery send(WebhookReply reply) {
         try {
             messagingApiClient.replyMessage(new ReplyMessageRequest(
                     reply.replyToken(), reply.messages(), false)).join();
+            return ReplyDelivery.REPLIED;
         } catch (CompletionException failure) {
             if (failure.getCause() instanceof AbstractLineClientException clientFailure
                     && isRejected(clientFailure.getCode())) {
                 if (isExpiredReplyToken(clientFailure)) {
                     log.info("LINE reply token expired, trying the push fallback: messages={}, kinds={}",
                             reply.messages().size(), reply.messageKinds());
-                    if (pushFallback.pushInstead(reply)) {
-                        return;
+                    Optional<ReplyDelivery> pushed = pushFallback.pushInstead(reply);
+                    if (pushed.isPresent()) {
+                        return pushed.get();
                     }
                 }
                 throw new WebhookReplyRejectedException(clientFailure.getCode(), clientFailure);

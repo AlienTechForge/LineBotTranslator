@@ -4,6 +4,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.ZoneId;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
@@ -77,24 +78,25 @@ public class PushFallbackModule {
     /**
      * Sends the reply's messages to its push target instead.
      *
-     * @return {@code true} when the fallback took over the reply, whether the push
-     *         succeeded or failed (a failure is logged and never thrown, and is
-     *         never retried so a user cannot receive the answer twice); {@code false}
-     *         when no push was attempted because the fallback is disabled, the reply
-     *         has no push target or the daily limit is reached
+     * @return {@link ReplyDelivery#PUSHED} when the push succeeded, or
+     *         {@link ReplyDelivery#PUSH_FAILED} when it failed (a failure is logged and
+     *         never thrown, and is never retried so a user cannot receive the answer
+     *         twice), so the fallback took over the reply either way; empty when no push
+     *         was attempted because the fallback is disabled, the reply has no push
+     *         target or the daily limit is reached
      */
-    public boolean pushInstead(WebhookReply reply) {
+    public Optional<ReplyDelivery> pushInstead(WebhookReply reply) {
         if (!properties.isEnabled() || reply.pushTarget() == null || reply.messages().isEmpty()) {
             log.info("Fallback push skipped: reason={}, messages={}, kinds={}",
                     properties.isEnabled() ? "no_push_target" : "disabled",
                     reply.messages().size(), reply.messageKinds());
-            return false;
+            return Optional.empty();
         }
         if (!reservePush()) {
             pushSkippedLimit.increment();
             log.info("Fallback push skipped: reason=daily_limit, messages={}, kinds={}",
                     reply.messages().size(), reply.messageKinds());
-            return false;
+            return Optional.empty();
         }
         try {
             messagingApiClient.pushMessage(UUID.randomUUID(), new PushMessageRequest(
@@ -104,13 +106,13 @@ public class PushFallbackModule {
             log.warn("Fallback push failed, not retried: messages={}, kinds={}, status={}, failure={}",
                     reply.messages().size(), reply.messageKinds(),
                     LineApiStatus.of(failure), SafeLog.failure(failure));
-            return true;
+            return Optional.of(ReplyDelivery.PUSH_FAILED);
         }
         pushSent.increment();
         log.info("Reply token expired, delivered the answer by push: messages={}, kinds={}, pushedToday={}/{}",
                 reply.messages().size(), reply.messageKinds(), pushedToday(), properties.getDailyLimit());
         warnWhenQuotaIsNearlyUsed();
-        return true;
+        return Optional.of(ReplyDelivery.PUSHED);
     }
 
     /** Reads the push quota from LINE; fails with the LINE client's exception. */

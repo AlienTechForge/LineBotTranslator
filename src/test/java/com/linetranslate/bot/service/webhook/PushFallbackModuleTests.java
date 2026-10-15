@@ -74,13 +74,13 @@ class PushFallbackModuleTests {
     void dailyCounterRestartsAtMidnightInUtcPlusEight() {
         properties.setDailyLimit(1);
 
-        assertThat(module.pushInstead(reply)).isTrue();
-        assertThat(module.pushInstead(reply)).isFalse();
+        assertThat(module.pushInstead(reply)).contains(ReplyDelivery.PUSHED);
+        assertThat(module.pushInstead(reply)).isEmpty();
 
         clock.set(Instant.parse("2026-10-13T16:00:00Z"));
 
-        assertThat(module.pushInstead(reply)).isTrue();
-        assertThat(module.pushInstead(reply)).isFalse();
+        assertThat(module.pushInstead(reply)).contains(ReplyDelivery.PUSHED);
+        assertThat(module.pushInstead(reply)).isEmpty();
         verify(messagingApiClient, times(2)).pushMessage(any(), any());
         assertThat(count("sent")).isEqualTo(2);
         assertThat(count("skipped_limit")).isEqualTo(2);
@@ -108,7 +108,7 @@ class PushFallbackModuleTests {
     void zeroDailyLimitBlocksEveryPush() {
         properties.setDailyLimit(0);
 
-        assertThat(module.pushInstead(reply)).isFalse();
+        assertThat(module.pushInstead(reply)).isEmpty();
 
         verify(messagingApiClient, never()).pushMessage(any(), any());
         assertThat(count("skipped_limit")).isEqualTo(1);
@@ -120,8 +120,8 @@ class PushFallbackModuleTests {
         when(messagingApiClient.pushMessage(any(), any()))
                 .thenReturn(CompletableFuture.failedFuture(new IOException("timeout")));
 
-        assertThat(module.pushInstead(reply)).isTrue();
-        assertThat(module.pushInstead(reply)).isFalse();
+        assertThat(module.pushInstead(reply)).contains(ReplyDelivery.PUSH_FAILED);
+        assertThat(module.pushInstead(reply)).isEmpty();
 
         verify(messagingApiClient, times(1)).pushMessage(any(), any());
         assertThat(count("failed")).isEqualTo(1);
@@ -172,7 +172,7 @@ class PushFallbackModuleTests {
         when(messagingApiClient.getMessageQuota())
                 .thenReturn(CompletableFuture.failedFuture(new IOException("quota down")));
 
-        assertThat(module.pushInstead(reply)).isTrue();
+        assertThat(module.pushInstead(reply)).contains(ReplyDelivery.PUSHED);
 
         assertThat(count("sent")).isEqualTo(1);
         assertThat(count("failed")).isZero();
@@ -180,7 +180,7 @@ class PushFallbackModuleTests {
 
     @Test
     void deliveredPushNamesTheMessageKinds() {
-        assertThat(module.pushInstead(imageReply())).isTrue();
+        assertThat(module.pushInstead(imageReply())).contains(ReplyDelivery.PUSHED);
 
         assertThat(infoLines()).singleElement().asString().isEqualTo(
                 "Reply token expired, delivered the answer by push: messages=2, "
@@ -191,7 +191,7 @@ class PushFallbackModuleTests {
     void failedPushLogsKindsAndLineStatusAndSaysItIsNotRetried() {
         when(messagingApiClient.pushMessage(any(), any())).thenReturn(CompletableFuture.failedFuture(lineError(500)));
 
-        assertThat(module.pushInstead(imageReply())).isTrue();
+        assertThat(module.pushInstead(imageReply())).contains(ReplyDelivery.PUSH_FAILED);
 
         assertThat(logs.list).filteredOn(event -> event.getLevel() == Level.WARN).singleElement()
                 .satisfies(event -> assertThat(event.getFormattedMessage()).isEqualTo(
