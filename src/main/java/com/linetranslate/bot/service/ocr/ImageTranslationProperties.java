@@ -35,15 +35,17 @@ public record ImageTranslationProperties(
                 || maxPixels <= 0) {
             throw new IllegalArgumentException("Image translation limits must be positive");
         }
-        if (lowConfidenceThreshold <= 0 || lowConfidenceThreshold > 1) {
+        // NaN fails every comparison, so a range test written as "<= 0 || > 1" lets it through and
+        // then every limit built on it silently stops limiting: finiteness is checked first.
+        if (!Float.isFinite(lowConfidenceThreshold) || lowConfidenceThreshold <= 0
+                || lowConfidenceThreshold > 1) {
             throw new IllegalArgumentException("OCR confidence threshold must be in (0, 1]");
         }
-        if (maxRegionAreaRatio <= 0 || maxRegionAreaRatio > 1
-                || maxTotalMaskRatio <= 0 || maxTotalMaskRatio > 1
+        if (!isRatio(maxRegionAreaRatio) || !isRatio(maxTotalMaskRatio)
                 || maxRegionAreaRatio > maxTotalMaskRatio) {
             throw new IllegalArgumentException("Overlay area ratios are invalid");
         }
-        if (posterMaxTotalMaskRatio <= 0 || posterMaxTotalMaskRatio > 1) {
+        if (!isRatio(posterMaxTotalMaskRatio)) {
             throw new IllegalArgumentException("Poster overlay area ratio must be in (0, 1]");
         }
         this.maxFileSizeBytes = maxFileSizeBytes;
@@ -54,6 +56,10 @@ public record ImageTranslationProperties(
         this.maxRegionAreaRatio = maxRegionAreaRatio;
         this.maxTotalMaskRatio = maxTotalMaskRatio;
         this.posterMaxTotalMaskRatio = posterMaxTotalMaskRatio;
+    }
+
+    private static boolean isRatio(double value) {
+        return Double.isFinite(value) && value > 0 && value <= 1;
     }
 
     /** The limits of an image that is not a poster: callers that predate the poster limit. */

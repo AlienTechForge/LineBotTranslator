@@ -151,7 +151,8 @@ public class OverlaySafetyPolicy {
                         + "totalMaskRatio={}, limit={}, image={}x{}",
                 mode, requested.size(), accepted.size(), skipped, keptTotal, maxTotalRatio,
                 imageWidth, imageHeight);
-        return new OverlaySafetyPlan(true, "safe", accepted, skipped, decisions);
+        return new OverlaySafetyPlan(
+                true, "safe", accepted, skipped, decisions, maxRegionRatio, maxTotalRatio, keptTotal);
     }
 
     /**
@@ -278,7 +279,8 @@ public class OverlaySafetyPolicy {
         return result;
     }
 
-    private static double area(Area area) {
+    /** Pixel area of a shape, by integrating its outline. */
+    static double area(Area area) {
         PathIterator iterator = area.getPathIterator(null, .25);
         double[] coordinates = new double[6];
         double startX = 0, startY = 0, lastX = 0, lastY = 0, signedTwiceArea = 0;

@@ -127,6 +127,11 @@ public class ImageTranslationOverlayRenderer {
                     .map(approved -> OverlaySafetyPolicy.mask(
                             approved.region(), output.getWidth(), output.getHeight()).getBounds())
                     .toList();
+            // What growing may still spend: enlarged masks are charged against the plan's total
+            // limit and its single-region limit, and each band granted is kept clear of by the next.
+            double imageArea = (double) output.getWidth() * output.getHeight();
+            double remainingRatio = plan.remainingRatio();
+            List<java.awt.Rectangle> grantedBands = new ArrayList<>();
             for (int overlayIndex = 0; overlayIndex < plan.overlays().size(); overlayIndex++) {
                 ImageRegionOverlay overlay = plan.overlays().get(overlayIndex);
                 ImageTranslationTextStyle style = ImageTranslationStyleEstimator.estimate(
@@ -183,25 +188,39 @@ public class ImageTranslationOverlayRenderer {
                 Layout layout = fitHorizontal(graphics, overlay.replacement(), localBounds,
                         supportedFont, style.maximumFontSize(), overlay.region().compactLabel());
                 int freeRows = 0;
-                if (!layout.fits()) {
+                int affordableRows = 0;
+                Growth growth = null;
+                if (!layout.fits() && remainingRatio > 0 && plan.maxRegionRatio() > 0) {
                     List<java.awt.Rectangle> others = new ArrayList<>(approvedBounds);
                     others.remove(overlayIndex);
+                    others.addAll(grantedBands);
                     freeRows = freeRowsBelow(pristine, style.background(), origin, angle,
                             localWidthPixels, localHeightPixels,
                             Math.min(localHeightPixels, style.maximumFontSize()), others);
+                    affordableRows = affordableRows(overlay.region(), layoutMask, modifiedMask,
+                            origin, angle, localWidthPixels, localHeightPixels, freeRows,
+                            output.getWidth(), output.getHeight(), plan.maxRegionRatio(), remainingRatio);
                     Grown grown = growDownward(graphics, overlay.replacement(), localBounds,
                             supportedFont, style.maximumFontSize(), overlay.region().compactLabel(),
-                            freeRows);
+                            affordableRows);
                     if (grown != null) {
                         Area band = band(origin, angle, localWidthPixels, localHeightPixels,
                                 grown.rows(), output.getWidth(), output.getHeight());
+                        double charged = OverlaySafetyPolicy.area(subtract(band, modifiedMask)) / imageArea;
+                        remainingRatio = Math.max(0, remainingRatio - charged);
+                        grantedBands.add(band.getBounds());
+                        growth = new Growth(grown.rows(), layoutMask, modifiedMask, localBounds,
+                                localWidthPixels, localHeightPixels,
+                                output.getWidth(), output.getHeight());
                         layoutMask = union(layoutMask, band);
                         modifiedMask = union(modifiedMask, band);
                         log.info("Overlay cell grown into free space: cellWidth={}, cellHeight={}, "
-                                        + "grownBy={}, fontSize={}, sourceFontSize={}, translatedChars={}",
+                                        + "grownBy={}, fontSize={}, sourceFontSize={}, translatedChars={}, "
+                                        + "grownRatio={}, remainingRatio={}",
                                 localBounds.width(), localBounds.height(), grown.rows(),
                                 grown.layout().font().getSize(), style.maximumFontSize(),
-                                overlay.replacement().codePointCount(0, overlay.replacement().length()));
+                                overlay.replacement().codePointCount(0, overlay.replacement().length()),
+                                ratio(charged), ratio(remainingRatio));
                         localBounds = localBounds.taller(grown.rows());
                         layout = grown.layout();
                     }
@@ -211,20 +230,21 @@ public class ImageTranslationOverlayRenderer {
                             overlay.region().id(), OverlayRenderStatus.PRESERVED, "text-fit"));
                     log.info("Overlay cell preserved by fit: cellWidth={}, cellHeight={}, "
                                     + "sourceFontSize={}, translatedChars={}, lines={}, compactLabel={}, "
-                                    + "freeRowsBelow={}",
+                                    + "freeRowsBelow={}, affordableRows={}, remainingRatio={}",
                             localBounds.width(), localBounds.height(), style.maximumFontSize(),
                             overlay.replacement().codePointCount(0, overlay.replacement().length()),
-                            layout.lines().size(), overlay.region().compactLabel(), freeRows);
+                            layout.lines().size(), overlay.region().compactLabel(), freeRows,
+                            affordableRows, ratio(remainingRatio));
                     continue;
                 }
                 logPolygonSkew(overlay.region(), localWidthPixels, localHeightPixels);
                 prepared.add(new PreparedOverlay(overlay, style, layoutMask, modifiedMask,
                         OverlaySafetyPolicy.sourceCleanupAreas(
                                 overlay.region(), output.getWidth(), output.getHeight()),
-                        origin, angle, localBounds, layout));
+                        origin, angle, localBounds, layout, growth));
             }
 
-            prepared = normalizeGroupFontSizes(graphics, prepared);
+            prepared = normalizeGroupFontSizes(graphics, prepared, decisions);
 
             List<Area> approvedMasks = prepared.stream().map(PreparedOverlay::modifiedMask).toList();
             for (PreparedOverlay item : prepared) {
@@ -266,7 +286,7 @@ public class ImageTranslationOverlayRenderer {
      * length. The group therefore adopts the smallest size that any of its members already fits at.
      */
     private static List<PreparedOverlay> normalizeGroupFontSizes(
-            Graphics2D graphics, List<PreparedOverlay> prepared) {
+            Graphics2D graphics, List<PreparedOverlay> prepared, List<OverlayRenderDecision> decisions) {
         java.util.Map<String, Integer> smallest = new java.util.HashMap<>();
         for (PreparedOverlay item : prepared) {
             smallest.merge(item.overlay().region().groupId(), item.layout().font().getSize(), Math::min);
@@ -289,9 +309,26 @@ public class ImageTranslationOverlayRenderer {
                 result.add(item);
                 continue;
             }
-            result.add(new PreparedOverlay(item.overlay(), item.style(), item.layoutMask(),
-                    item.modifiedMask(), item.cleanupAreas(), item.origin(), item.angle(),
-                    item.localBounds(), new Layout(font, lines, true)));
+            Layout layout = new Layout(font, lines, true);
+            if (item.growth() == null) {
+                result.add(item.withLayout(layout));
+                continue;
+            }
+            // A cell that only has a layout because it grew must still be worth its band at the
+            // size the group settles on, and takes only the rows that size uses.
+            int sourceSize = item.style().maximumFontSize();
+            if (target < growthTarget(sourceSize)) {
+                decisions.add(new OverlayRenderDecision(
+                        item.overlay().region().id(), OverlayRenderStatus.PRESERVED, "text-fit"));
+                log.info("Overlay grown cell preserved by group size: groupFontSize={}, "
+                                + "growthTarget={}, sourceFontSize={}, grownBy={}, translatedChars={}",
+                        target, growthTarget(sourceSize), sourceSize, item.growth().rows(),
+                        item.overlay().replacement().codePointCount(
+                                0, item.overlay().replacement().length()));
+                continue;
+            }
+            result.add(item.withLayout(layout).trimmedTo(
+                    Math.max(0, textHeight(metrics, lines.size()) - item.growth().baseBounds().height())));
         }
         return result;
     }
@@ -598,6 +635,51 @@ public class ImageTranslationOverlayRenderer {
             if (matching < frameWidth * FREE_ROW_BACKGROUND_SHARE) return row;
         }
         return Math.max(0, limit);
+    }
+
+    /**
+     * The most rows, at most {@code freeRows}, a cell may grow without the enlarged region passing
+     * the plan's single-region limit (as the policy measures it, on the region polygon) or the part
+     * of the plan's total limit that is left (on the mask, so what the cell's own padding already
+     * covers is not charged twice). Cost only rises with rows, so the answer is found by halving.
+     */
+    private static int affordableRows(
+            OcrRegion region,
+            Area layoutMask,
+            Area modifiedMask,
+            OcrPoint origin,
+            double angle,
+            int frameWidth,
+            int frameHeight,
+            int freeRows,
+            int imageWidth,
+            int imageHeight,
+            double maxRegionRatio,
+            double remainingRatio) {
+        double imageArea = (double) imageWidth * imageHeight;
+        int low = 0;
+        int high = Math.max(0, freeRows);
+        while (low < high) {
+            int middle = (low + high + 1) / 2;
+            Area band = band(origin, angle, frameWidth, frameHeight, middle, imageWidth, imageHeight);
+            boolean withinTotal = OverlaySafetyPolicy.area(subtract(band, modifiedMask)) / imageArea
+                    <= remainingRatio;
+            boolean withinRegion = (region.area() + OverlaySafetyPolicy.area(subtract(band, layoutMask)))
+                    / imageArea <= maxRegionRatio;
+            if (withinTotal && withinRegion) low = middle;
+            else high = middle - 1;
+        }
+        return low;
+    }
+
+    private static Area subtract(Area shape, Area removed) {
+        Area result = new Area(shape);
+        result.subtract(removed);
+        return result;
+    }
+
+    private static String ratio(double value) {
+        return String.format(java.util.Locale.ROOT, "%.4f", value);
     }
 
     /** The rows a cell grew into, in image coordinates, with a row of overlap with the cell. */
@@ -1043,10 +1125,49 @@ public class ImageTranslationOverlayRenderer {
             OcrPoint origin,
             double angle,
             Bounds localBounds,
-            Layout layout) {
+            Layout layout,
+            Growth growth) {
         PreparedOverlay {
             cleanupAreas = List.copyOf(cleanupAreas);
         }
+
+        PreparedOverlay withLayout(Layout replacement) {
+            return new PreparedOverlay(overlay, style, layoutMask, modifiedMask, cleanupAreas,
+                    origin, angle, localBounds, replacement, growth);
+        }
+
+        /**
+         * The same cell holding only {@code rows} of the rows it grew into, none when the layout
+         * now fits without them. Never more than it grew, so the masks only shrink.
+         */
+        PreparedOverlay trimmedTo(int rows) {
+            if (growth == null || rows >= growth.rows()) return this;
+            if (rows <= 0) {
+                return new PreparedOverlay(overlay, style, growth.baseLayoutMask(),
+                        growth.baseModifiedMask(), cleanupAreas, origin, angle,
+                        growth.baseBounds(), layout, null);
+            }
+            Area band = band(origin, angle, growth.frameWidth(), growth.frameHeight(), rows,
+                    growth.imageWidth(), growth.imageHeight());
+            return new PreparedOverlay(overlay, style, union(growth.baseLayoutMask(), band),
+                    union(growth.baseModifiedMask(), band), cleanupAreas, origin, angle,
+                    growth.baseBounds().taller(rows), layout,
+                    new Growth(rows, growth.baseLayoutMask(), growth.baseModifiedMask(),
+                            growth.baseBounds(), growth.frameWidth(), growth.frameHeight(),
+                            growth.imageWidth(), growth.imageHeight()));
+        }
+    }
+
+    /** What a cell had before it grew, and the frame it grew in, so the growth can be given back. */
+    private record Growth(
+            int rows,
+            Area baseLayoutMask,
+            Area baseModifiedMask,
+            Bounds baseBounds,
+            int frameWidth,
+            int frameHeight,
+            int imageWidth,
+            int imageHeight) {
     }
 
     private record Bounds(int x, int y, int width, int height) {

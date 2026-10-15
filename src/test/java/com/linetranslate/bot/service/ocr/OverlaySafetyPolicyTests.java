@@ -149,6 +149,61 @@ class OverlaySafetyPolicyTests {
                 .hasSize(3);
     }
 
+    /**
+     * NaN fails every comparison, so "<= 0 || > 1" lets it through and a limit built on it never
+     * limits: in the policy {@code total + ratio > NaN} is false for every region.
+     */
+    @Test
+    void notANumberAndInfinityAreRejectedForEveryLimitThatIsARatio() {
+        double nan = Double.NaN;
+        double infinity = Double.POSITIVE_INFINITY;
+        for (double bad : new double[] {nan, infinity, Double.NEGATIVE_INFINITY}) {
+            assertThatThrownBy(() -> new ImageTranslationProperties(
+                    1000, 100, 10000, .6f, true, .12, .35, bad))
+                    .as("poster limit %s", bad).isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> new ImageTranslationProperties(
+                    1000, 100, 10000, .6f, true, .12, bad))
+                    .as("total limit %s", bad).isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> new ImageTranslationProperties(
+                    1000, 100, 10000, .6f, true, bad, .35))
+                    .as("region limit %s", bad).isInstanceOf(IllegalArgumentException.class);
+        }
+        assertThatThrownBy(() -> new ImageTranslationProperties(
+                1000, 100, 10000, Float.NaN, true, .12, .35))
+                .as("confidence threshold").isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void planCarriesTheLimitsItWasApprovedUnderAndHowMuchOfTheTotalItUses() {
+        ImageTranslationProperties limits = new ImageTranslationProperties(
+                1000, 100, 10000, .6f, true, .25, .35, .60);
+        List<ImageRegionOverlay> lines = List.of(
+                new ImageRegionOverlay(region("l1", 5, 5, 50, 10, .98f, true), "一"),
+                new ImageRegionOverlay(region("l2", 5, 30, 50, 10, .98f, true), "二"));
+
+        OverlaySafetyPlan general = policy.evaluate(lines, 100, 100, limits);
+        OverlaySafetyPlan poster = policy.evaluate(lines, 100, 100, limits, OverlayContentMode.POSTER);
+        OverlaySafetyPlan document = policy.evaluate(lines, 100, 100, limits, OverlayContentMode.DOCUMENT);
+
+        assertThat(general.maxRegionRatio()).isEqualTo(.25);
+        assertThat(general.maxTotalRatio()).isEqualTo(.35);
+        assertThat(poster.maxTotalRatio()).isEqualTo(.60);
+        assertThat(document.maxTotalRatio()).isEqualTo(.90);
+        assertThat(document.maxRegionRatio()).isEqualTo(.45);
+        assertThat(general.acceptedRatio()).isGreaterThan(.10).isLessThan(.35);
+        assertThat(general.remainingRatio()).isEqualTo(.35 - general.acceptedRatio());
+    }
+
+    @Test
+    void planBuiltWithoutLimitsHasNoAllowanceToSpend() {
+        OverlaySafetyPlan unaccounted = new OverlaySafetyPlan(true, "safe", List.of(), 0);
+
+        assertThat(unaccounted.remainingRatio()).isZero();
+        assertThat(unaccounted.maxRegionRatio()).isZero();
+        assertThat(new OverlaySafetyPlan(true, "safe", List.of(), 0, List.of(),
+                Double.NaN, Double.NaN, Double.NaN).remainingRatio()).isZero();
+    }
+
     @Test
     void posterLimitIsValidatedAndDefaultsWhenOmitted() {
         assertThat(new ImageTranslationProperties(1000, 100, 10000, .6f, true, .12, .35)
