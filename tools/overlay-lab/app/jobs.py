@@ -1,13 +1,19 @@
 """Background jobs: Mode A (optional) next to up to four Mode B models, then publish the result.
 
-One job = one uploaded image. Every Mode B model runs in its own thread:
+One job = one uploaded image. Every Mode B model runs `runs` times (1-3, batch mode); every
+(model, run) pair is a unit of its own in its own thread:
 
-    generate (attempt 1) -> Vision OCR of the output -> verify.verify_output
+    generate (attempt 1) -> Vision OCR of the output -> semantic judge -> verify.verify_output
         -> when the verdict is not `pass`: ONE retry (prompt + what went wrong) -> verify again
         -> verify.choose_attempt picks the attempt that is shown as the result
 
+Units are independent (own attempts, retry, verification and judge). Only the image GENERATIONS
+are throttled: at most MAX_CONCURRENT_GENERATIONS of them are in flight at once, across all jobs,
+so that a 4-model x 3-run batch does not hit OpenRouter's rate limits; verification and judging
+are not throttled. `batch.summarise_runs` folds the runs of each model into a pass rate and means.
+
 The Vision call on the SOURCE image is made once per job (SourceOcr) and shared by Mode A and
-by the verification of every Mode B model.
+by the verification of every Mode B unit.
 """
 
 from __future__ import annotations
@@ -22,8 +28,8 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from . import openrouter, pipeline_a, publish, verify, vision
-from .config import get_settings
+from . import batch, judge, openrouter, pipeline_a, publish, verify, vision
+from .config import MAX_CONCURRENT_GENERATIONS, MAX_RUNS, get_settings
 from .imaging import LoadedImage, bytes_for_vision
 from .redaction import SECRET_ENV, describe_error, redact  # noqa: F401 - re-exported
 
@@ -31,6 +37,9 @@ log = logging.getLogger("lab.jobs")
 
 JOB_ID_RE = re.compile(r"^[0-9a-f]{16}$")
 LIVE = ("pending", "running")
+
+# one slot per image generation in flight (see the module docstring)
+_GENERATION_SLOTS = threading.BoundedSemaphore(MAX_CONCURRENT_GENERATIONS)
 
 
 class SourceOcr:
@@ -77,6 +86,7 @@ def _refresh(job: dict) -> None:
             job["mode_b"]["status"] = "running"
         else:
             job["mode_b"]["status"] = "error" if all(s == "error" for s in states) else "done"
+    job["mode_b"]["summary"] = batch.summarise_runs(results) if results else []
     parts = [job["mode_a"]["status"]] + [r["status"] for r in results]
     running = any(s in LIVE for s in parts)
     job["status"] = "running" if running else "done"
@@ -164,8 +174,18 @@ def _sum_usage(tries: list[dict]) -> dict:
     return out
 
 
+def _sum_costs(values: list) -> float | None:
+    known = [v for v in values if isinstance(v, (int, float))]
+    return round(sum(known), 6) if known else None
+
+
 def summarise_model(result: dict, tries: list[dict]) -> dict:
-    """Fold the attempts into the model's result: the chosen attempt's fields plus summed cost / time."""
+    """Fold the attempts of one run into its result: the chosen attempt's fields plus summed cost / time.
+
+    `cost_usd` is the image generation (OpenRouter's `usage.cost`), `judge_cost_usd` the judge calls
+    (Anthropic, from the price table) and `total_cost_usd` both; `verify_ms` covers the OCR and the
+    judge of every attempt, `judge_ms` the judge part of it.
+    """
     chosen = verify.choose_attempt([t.get("verification") for t in tries])
     for i, t in enumerate(tries):
         t["selected"] = i == chosen
@@ -173,6 +193,7 @@ def summarise_model(result: dict, tries: list[dict]) -> dict:
     usage = _sum_usage(tries)
     generation = sum(t["elapsed_ms"] for t in tries)
     checking = sum(t.get("verify_ms") or 0 for t in tries)
+    judge_cost = _sum_costs([t.get("judge_cost_usd") for t in tries])
     result.update(
         output=main["output"],
         output_size=main["output_size"],
@@ -187,18 +208,23 @@ def summarise_model(result: dict, tries: list[dict]) -> dict:
         selected_attempt=main["n"],
         usage=usage,
         cost_usd=usage.get("cost"),
+        judge_cost_usd=judge_cost,
+        total_cost_usd=_sum_costs([usage.get("cost"), judge_cost]),
         generation_ms=generation,
         verify_ms=checking,
+        judge_ms=sum(t.get("judge_ms") or 0 for t in tries),
         elapsed_ms=generation + checking,
         tries=tries,
     )
     return result
 
 
-def _mode_b_model(
+def _mode_b_run(
     store: JobStore,
     job_id: str,
     index: int,
+    model_index: int,
+    run: int,
     image: LoadedImage,
     lang: str,
     model: str,
@@ -206,15 +232,21 @@ def _mode_b_model(
     source: SourceOcr,
     job_dir: Path,
 ) -> None:
+    """One independent run of one model: its attempts, retry, verification and judge.
+
+    `index` is the position in the job's flat result list, `model_index` the position of the model,
+    `run` the 1-based run number (they name the files: B<model>_<slug>_r<run>_a<attempt>).
+    """
     slug = model_slug(model)
+    ident = {"model": model, "index": index, "model_index": model_index, "run": run, "runs": opts["runs"]}
     result: dict = {
-        "model": model,
-        "index": index,
+        **ident,
         "status": "running",
         "error": None,
         "route_preference": openrouter.preferred_route(model),
         "resolution_requested": opts["output_size"],
         "verify": opts["verify"],
+        "judge": opts["judge"],
         "retry_error": None,
         "tries": [],
     }
@@ -222,8 +254,9 @@ def _mode_b_model(
     in_ratio = image.width / image.height
 
     def generate(n: int, prompt: str | None) -> tuple[dict, bytes]:
-        res = openrouter.run_image_model(image, lang, model, prompt=prompt, resolution=opts["output_size"])
-        name = f"B{index + 1}_{slug}_a{n}.png"
+        with _GENERATION_SLOTS:  # at most MAX_CONCURRENT_GENERATIONS generations in flight
+            res = openrouter.run_image_model(image, lang, model, prompt=prompt, resolution=opts["output_size"])
+        name = f"B{model_index + 1}_{slug}_r{run}_a{n}.png"
         (job_dir / name).write_bytes(res["png"])
         usage = res["usage"] or {}
         out_ratio = res["size"][0] / res["size"][1]
@@ -245,28 +278,42 @@ def _mode_b_model(
             "verification_file": None,
             "verify_ms": None,
             "verify_error": None,
+            "judge_status": None,
+            "judge_ms": None,
+            "judge_cost_usd": None,
         }
         return attempt, res["png"]
 
     def check(attempt: dict, png: bytes) -> None:
-        """Vision OCR of the output against the (shared) OCR of the source."""
+        """Vision OCR of the output against the (shared) OCR of the source, then the judge."""
         t0 = time.perf_counter()
         try:
             source_ocr = source.get()
             width, height = attempt["output_size"]
             output_ocr = vision.ocr_words(bytes_for_vision(png), width, height)
-            report = verify.verify_output(source_ocr, output_ocr, lang, include_text=opts["verify_details"])
+            judged = None
+            if opts["judge"]:
+                judged = judge.judge_output(source_ocr, output_ocr, lang)  # never raises
+                attempt["judge_status"] = judged.get("status")
+                attempt["judge_ms"] = judged.get("elapsed_ms")
+                attempt["judge_cost_usd"] = judged.get("cost_usd")
+            report = verify.verify_output(
+                source_ocr, output_ocr, lang, include_text=opts["verify_details"], judge=judged
+            )
             attempt["verification"] = report
             attempt["verdict"] = report["verdict"]
-            name = f"B{index + 1}_{slug}_a{attempt['n']}_verify.json"
-            doc = {"job_id": job_id, "model": model, "attempt": attempt["n"], "image": attempt["output"], **report}
+            name = f"B{model_index + 1}_{slug}_r{run}_a{attempt['n']}_verify.json"
+            doc = {
+                "job_id": job_id, "model": model, "run": run, "attempt": attempt["n"],
+                "image": attempt["output"], **report,
+            }  # fmt: skip
             try:
                 (job_dir / name).write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
                 attempt["verification_file"] = name
             except OSError:
                 log.warning("could not write %s", name)
         except Exception as exc:  # noqa: BLE001 - the picture is still shown, just unverified
-            log.warning("stage=verify job=%s model=%s failed: %s", job_id, model, type(exc).__name__)
+            log.warning("stage=verify job=%s model=%s run=%d failed: %s", job_id, model, run, type(exc).__name__)
             attempt["verify_error"] = describe_error(exc)
             attempt["verdict"] = verify.VERDICT_UNVERIFIED
         attempt["verify_ms"] = int((time.perf_counter() - t0) * 1000)
@@ -287,19 +334,20 @@ def _mode_b_model(
                     store.set_model(job_id, index, dict(summarise_model(result, tries), status="running"))
                     check(second, png2)
                 except Exception as exc:  # noqa: BLE001 - attempt 1 stays the result
-                    log.warning("stage=mode-b-retry job=%s model=%s failed: %s", job_id, model, type(exc).__name__)
+                    log.warning(
+                        "stage=mode-b-retry job=%s model=%s run=%d failed: %s", job_id, model, run, type(exc).__name__
+                    )
                     result["retry_error"] = describe_error(exc)
         summarise_model(result, tries)
         result.update(status="done", error=None)
         log.info(
-            "stage=mode-b-done job=%s model=%s attempts=%d selected=%s verdict=%s",
-            job_id, model, len(tries), result["selected_attempt"], result["verdict"],
+            "stage=mode-b-done job=%s model=%s run=%d attempts=%d selected=%s verdict=%s",
+            job_id, model, run, len(tries), result["selected_attempt"], result["verdict"],
         )  # fmt: skip
-    except Exception as exc:  # noqa: BLE001 - shown in this model's error box only
-        log.exception("mode B (%s) failed for job %s", model, job_id)
+    except Exception as exc:  # noqa: BLE001 - shown in this run's error box only
+        log.exception("mode B (%s, run %d) failed for job %s", model, run, job_id)
         result = {
-            "model": model,
-            "index": index,
+            **ident,
             "status": "error",
             "error": describe_error(exc),
             "route_preference": openrouter.preferred_route(model),
@@ -345,8 +393,12 @@ def start_job(
     verify_on: bool = True,
     verify_details: bool = False,
     output_size: str = "",
+    runs: int = 1,
+    judge_on: bool = True,
 ) -> str:
     settings = get_settings()
+    runs = max(1, min(MAX_RUNS, int(runs)))
+    judge_on = bool(judge_on and verify_on)  # the judge reads the verification's OCR: no check, no judge
     job_id = uuid.uuid4().hex[:16]
     job_dir = settings.data_dir / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
@@ -354,7 +406,13 @@ def start_job(
     (job_dir / original).write_bytes(image.data)
 
     models = list(models) if run_b else []
-    opts = {"verify": verify_on, "verify_details": verify_details, "output_size": output_size}
+    opts = {
+        "verify": verify_on,
+        "verify_details": verify_details,
+        "output_size": output_size,
+        "judge": judge_on,
+        "runs": runs,
+    }
     job = {
         "job_id": job_id,
         "status": "running",
@@ -369,6 +427,9 @@ def start_job(
             "output_size": output_size,
             "verify": verify_on,
             "verify_details": verify_details,
+            "runs": runs,
+            "judge": judge_on,
+            "judge_model": settings.claude_judge_model,
             "claude_model": settings.claude_model,
             "mock": settings.mock,
         },
@@ -377,37 +438,47 @@ def start_job(
         "mode_b": {
             "status": "pending" if models else "skipped",
             "error": None,
+            # flat and model-major: [m0 run1, m0 run2, ..., m1 run1, ...]
             "results": [
                 {
                     "model": m,
-                    "index": i,
+                    "index": mi * runs + (k - 1),
+                    "model_index": mi,
+                    "run": k,
+                    "runs": runs,
                     "status": "pending",
                     "error": None,
                     "route_preference": openrouter.preferred_route(m),
                     "tries": [],
                 }
-                for i, m in enumerate(models)
+                for mi, m in enumerate(models)
+                for k in range(1, runs + 1)
             ],
+            "summary": [],
         },
         "publish": {"status": "pending", "note": None},
     }
     store.put(job, job_dir)
     log.info(
-        "job=%s started lang=%s a=%s b=%s models=%d size=%s verify=%s image=%dx%d",
-        job_id, lang, run_a, run_b, len(models), output_size or "default", verify_on, image.width, image.height,
+        "job=%s started lang=%s a=%s b=%s models=%d runs=%d size=%s verify=%s judge=%s image=%dx%d",
+        job_id, lang, run_a, run_b, len(models), runs, output_size or "default", verify_on, judge_on,
+        image.width, image.height,
     )  # fmt: skip
 
     source = SourceOcr(image)
 
     def runner() -> None:
         try:
-            with ThreadPoolExecutor(max_workers=len(models) + 2, thread_name_prefix=f"job-{job_id}") as pool:
+            workers = len(models) * runs + 2  # one thread per unit; generations queue on _GENERATION_SLOTS
+            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix=f"job-{job_id}") as pool:
                 if run_a:
                     pool.submit(_mode_a, store, job_id, image, lang, job_dir, source)
                 elif models and verify_on:
                     pool.submit(source.prefetch)  # overlaps with the (slow) image generation
-                for i, model in enumerate(models):
-                    pool.submit(_mode_b_model, store, job_id, i, image, lang, model, opts, source, job_dir)
+                for k in range(1, runs + 1):  # run-major: every model's first run starts before any second run
+                    for mi, model in enumerate(models):
+                        index = mi * runs + (k - 1)
+                        pool.submit(_mode_b_run, store, job_id, index, mi, k, image, lang, model, opts, source, job_dir)
         except Exception:  # noqa: BLE001 - never leave the job "running" forever
             log.exception("job runner crashed for %s", job_id)
 

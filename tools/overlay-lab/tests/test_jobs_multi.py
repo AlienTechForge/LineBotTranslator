@@ -5,7 +5,7 @@ import threading
 
 import pytest
 from fastapi.testclient import TestClient
-from scenario import Scenario, ocr, png_of_size, wait_for
+from scenario import Scenario, judge_record, ocr, png_of_size, wait_for
 
 from app import mock, openrouter
 from app.main import create_app
@@ -14,6 +14,9 @@ SOURCE = png_of_size((80, 60))
 SRC_OCR = ocr(("TEL", "en"), ("77446716", "en"), ("営業時間", "ja"), ("メニュー", "ja"), ("ご飯", "ja"), ("定食", "ja"))
 GOOD = ocr(("TEL", "en"), ("77446716", "en"), ("Hours", "en"), ("Menu", "en"), ("Rice", "en"), ("Set", "en"))
 DIGITS = ocr(("TEL", "en"), ("09446916", "en"), ("Hours", "en"), ("Menu", "en"), ("Rice", "en"), ("Set", "en"))
+# English words that are not words: the OCR checks see nothing wrong, only the judge does
+GIBBERISH = ocr(("TEL", "en"), ("77446716", "en"), ("Banero", "en"), ("Salaino", "en"), ("Az-infe", "en"), ("Rilchkan", "en"))
+GIBBERISH_JUDGE = judge_record(coverage=0.35, garbled=[("Banero Salaino Az-infe Rilchkan", "営業時間 メニュー ご飯 定食")], cost=0.02)
 PARTIAL = ocr(("TEL", "en"), ("77446716", "en"), ("営業時間", "ja"), ("Menu", "en"), ("Rice", "en"), ("Set", "en"))
 BOTH = ocr(("TEL", "en"), ("09446916", "en"), ("営業時間", "ja"), ("Menu", "en"), ("Rice", "en"), ("Set", "en"))
 
@@ -247,12 +250,19 @@ def test_invalid_model_id_in_the_list_is_rejected(client, monkeypatch):
     assert post(client, ["m/ok", "bad model!"]).status_code == 400
 
 
-@pytest.mark.parametrize("size", ["1K", "2K", "4K", ""])
-def test_output_size_reaches_the_image_call_and_the_result(client, monkeypatch, size):
+@pytest.mark.parametrize("size, sent", [("1K", "1K"), ("2K", "2K"), ("4K", "4K"), ("default", "")])
+def test_output_size_reaches_the_image_call_and_the_result(client, monkeypatch, size, sent):
     scenario, job = run(client, monkeypatch, {"m/a": [step(GOOD)]}, output_size=size)
-    assert scenario.calls[0]["resolution"] == size
-    assert job["params"]["output_size"] == size
-    assert job["mode_b"]["results"][0]["resolution_requested"] == size
+    assert scenario.calls[0]["resolution"] == sent
+    assert job["params"]["output_size"] == sent
+    assert job["mode_b"]["results"][0]["resolution_requested"] == sent
+
+
+def test_the_output_size_defaults_to_2K_when_it_is_left_out_or_empty(client, monkeypatch):
+    scenario, job = run(client, monkeypatch, {"m/a": [step(GOOD)]})
+    assert scenario.calls[0]["resolution"] == "2K" and job["params"]["output_size"] == "2K"
+    scenario, job = run(client, monkeypatch, {"m/a": [step(GOOD)]}, output_size="")  # an empty form value is "not given"
+    assert scenario.calls[0]["resolution"] == "2K"
 
 
 def test_unknown_output_size_is_rejected(client, monkeypatch):
@@ -266,6 +276,227 @@ def test_index_page_offers_the_size_option_and_the_multi_model_picker(client):
         assert needle in html, needle
     assert 'id="mode-a" checked' not in html  # Mode A defaults to off
     assert 'id="mode-b" checked' in html
+
+
+def test_index_page_has_the_batch_and_judge_controls_and_defaults_to_2K(client):
+    html = client.get("/").text
+    assert "每個模型連跑 N 次" in html and 'id="runs"' in html
+    assert '<option value="1" selected>1</option>' in html and '<option value="3">3</option>' in html
+    assert '<option value="4"' not in html  # 1 to 3 runs
+    assert '<option value="2K" selected>2K</option>' in html and '<option value="1K" selected' not in html
+    assert '<option value="default">' in html  # the provider's own size is still selectable
+    assert 'id="judge" checked' in html and "claude-sonnet-5-5" in html
+    assert "同時最多 4 個生成" in html and 'id="summary"' in html
+    for needle in ("garbled", "digits-changed+garbled+partial", "judge 的參考翻譯", "各模型彙總", "無法確認的數字", "大字沒翻"):
+        assert needle in html, needle
+
+
+# ---------------------------------------------------------------- round 4: batch runs
+
+
+def batch_job(client, monkeypatch, plan, *, runs, models=None, **kw):
+    scenario = Scenario(SOURCE, SRC_OCR, plan, **kw).install(monkeypatch)
+    r = post(client, models or list(plan), runs=str(runs))
+    assert r.status_code == 200, r.text
+    return scenario, wait_for(client, r.json()["job_id"])
+
+
+def test_every_run_is_its_own_independent_column_with_its_own_files(client, monkeypatch):
+    plan = {"m/a": [step(GOOD, cost=0.04) for _ in range(3)], "m/b": [step(GOOD, cost=0.05) for _ in range(3)]}
+    scenario, job = batch_job(client, monkeypatch, plan, runs=3)
+    results = job["mode_b"]["results"]
+    assert len(results) == 6 and len(scenario.calls) == 6 and job["params"]["runs"] == 3
+    # flat and model-major, one entry per (model, run)
+    assert [(r["model"], r["model_index"], r["run"], r["runs"], r["index"]) for r in results] == [
+        ("m/a", 0, 1, 3, 0), ("m/a", 0, 2, 3, 1), ("m/a", 0, 3, 3, 2),
+        ("m/b", 1, 1, 3, 3), ("m/b", 1, 2, 3, 4), ("m/b", 1, 3, 3, 5),
+    ]  # fmt: skip
+    assert all(r["status"] == "done" and r["verdict"] == "pass" for r in results)
+    names = [r["output"] for r in results]
+    assert names == [f"B{m}_m_{x}_r{k}_a1.png" for m, x in ((1, "a"), (2, "b")) for k in (1, 2, 3)]
+    assert len(set(names)) == 6
+    for r in results:  # own attempts, verification file, judge
+        assert len(r["tries"]) == 1 and r["tries"][0]["verification_file"] == r["output"].replace(".png", "_verify.json")
+        assert client.get(f"/files/{job['job_id']}/{r['output']}").status_code == 200
+        assert client.get(f"/files/{job['job_id']}/{r['tries'][0]['verification_file']}").status_code == 200
+    assert job["mode_b"]["status"] == "done" and job["status"] == "done"
+    assert scenario.source_ocr_calls == 1 and len(scenario.ocr_calls) == 6 and len(scenario.judge_calls) == 6
+
+
+def test_the_summary_has_one_row_per_model_with_pass_rate_means_and_the_best_run(client, monkeypatch):
+    plan = {
+        "m/a": [step(GOOD, cost=0.04, ms=1000) for _ in range(3)],
+        "m/b": [step(GOOD, cost=0.06, ms=3000), step(None, fail=RuntimeError("m/b blew up")), step(GOOD, cost=0.06, ms=3000)],
+    }
+    _, job = batch_job(client, monkeypatch, plan, runs=3)
+    a, b = job["mode_b"]["summary"]
+    assert (a["model"], a["runs_requested"], a["runs_done"], a["runs_failed"]) == ("m/a", 3, 3, 0)
+    assert a["passes"] == 3 and a["pass_rate"] == 1.0 and a["best_run"] == 1 and a["best_verdict"] == "pass"
+    # per run total cost = generation + judge ($0.01 scripted per attempt)
+    assert a["mean_total_cost_usd"] == pytest.approx(0.05) and a["total_cost_usd"] == pytest.approx(0.15)
+    assert a["mean_elapsed_ms"] >= 1000
+
+    # one run of m/b failed: the others finished, and the failure counts against the pass rate
+    assert (b["runs_done"], b["runs_failed"], b["runs_live"]) == (2, 1, 0)
+    assert b["passes"] == 2 and b["pass_rate"] == pytest.approx(2 / 3, abs=1e-4)
+    assert sorted(b["verdicts"]) == ["error", "pass", "pass"]
+    assert b["mean_total_cost_usd"] == pytest.approx(0.07) and b["mean_elapsed_ms"] >= 3000
+    failed = [r for r in job["mode_b"]["results"] if r["model"] == "m/b" and r["status"] == "error"]
+    assert len(failed) == 1 and "blew up" in failed[0]["error"] and failed[0]["tries"] == []
+    assert b["best_run"] in (r["run"] for r in job["mode_b"]["results"] if r["model"] == "m/b" and r["status"] == "done")
+    assert job["mode_b"]["status"] == "done" and job["status"] == "done"  # a failed run is not a failed job
+
+
+def test_a_single_run_keeps_the_round_3_shape_and_still_has_a_summary(client, monkeypatch):
+    _, job = run(client, monkeypatch, {"m/a": [step(GOOD, cost=0.04)]})
+    (r,) = job["mode_b"]["results"]
+    assert (r["run"], r["runs"], r["model_index"], r["index"]) == (1, 1, 0, 0) and job["params"]["runs"] == 1
+    assert r["output"] == "B1_m_a_r1_a1.png"
+    (s,) = job["mode_b"]["summary"]
+    assert s["pass_rate"] == 1.0 and s["runs_requested"] == 1 and s["best_run"] == 1
+
+
+def test_a_run_with_a_failed_check_retries_on_its_own_and_does_not_touch_the_other_runs(client, monkeypatch):
+    # every call returns the digits-changed output first and the good one for the retry: 2 runs = 4 calls
+    steps = [step(DIGITS, cost=0.05), step(DIGITS, cost=0.05), step(GOOD, cost=0.06), step(GOOD, cost=0.06)]
+    scenario, job = batch_job(client, monkeypatch, {"m/a": steps}, runs=2)
+    first_prompts = [c["prompt"] for c in scenario.calls]
+    assert first_prompts[:2] == [None, None] and all("77446716" in p for p in first_prompts[2:])
+    for r in job["mode_b"]["results"]:
+        assert [t["verdict"] for t in r["tries"]] == ["digits-changed", "pass"] and r["selected_attempt"] == 2
+        assert r["cost_usd"] == pytest.approx(0.11)
+    assert job["mode_b"]["summary"][0]["pass_rate"] == 1.0
+
+
+def test_at_most_four_generations_are_in_flight_at_once_whatever_models_times_runs_asks_for(client, monkeypatch):
+    plan = {m: [step(GOOD, sleep=0.2) for _ in range(3)] for m in ("m/a", "m/b", "m/c")}  # 3 models x 3 runs
+    scenario, job = batch_job(client, monkeypatch, plan, runs=3)
+    assert len(scenario.calls) == 9 and all(r["status"] == "done" for r in job["mode_b"]["results"])
+    assert scenario.peak == 4  # parallel, but never more than 4 (the 5th..9th wait for a slot)
+
+
+def test_four_models_of_one_run_each_still_run_together(client, monkeypatch):
+    plan = {f"m/{c}": [step(GOOD)] for c in "abcd"}
+    # the barrier times out (and the runs fail) unless all four generations are in flight at the same moment
+    scenario, job = batch_job(client, monkeypatch, plan, runs=1, barrier=threading.Barrier(4))
+    assert [r["verdict"] for r in job["mode_b"]["results"]] == ["pass"] * 4
+
+
+def test_a_failing_generation_gives_its_slot_back(client, monkeypatch):
+    from app import jobs
+
+    plan = {"m/a": [step(None, fail=RuntimeError("x")) for _ in range(6)]}
+    batch_job(client, monkeypatch, plan, runs=3, models=["m/a"])
+    # all slots are free again: 4 can be taken without blocking
+    held = [jobs._GENERATION_SLOTS.acquire(blocking=False) for _ in range(4)]
+    assert all(held) and not jobs._GENERATION_SLOTS.acquire(blocking=False)
+    for _ in held:
+        jobs._GENERATION_SLOTS.release()
+
+
+@pytest.mark.parametrize("runs, status", [(0, 400), (4, 400), (-1, 400), (1, 200), (3, 200)])
+def test_runs_must_be_between_one_and_three(client, monkeypatch, runs, status):
+    Scenario(SOURCE, SRC_OCR, {"m/a": [step(GOOD) for _ in range(3)]}).install(monkeypatch)
+    r = post(client, ["m/a"], runs=str(runs))
+    assert r.status_code == status
+    if status == 400:
+        assert "runs must be between 1 and 3" in r.json()["detail"]
+    else:
+        wait_for(client, r.json()["job_id"])
+
+
+def test_runs_default_to_one_and_a_non_number_is_rejected(client, monkeypatch):
+    scenario, job = run(client, monkeypatch, {"m/a": [step(GOOD)]})
+    assert job["params"]["runs"] == 1 and len(job["mode_b"]["results"]) == 1
+    Scenario(SOURCE, SRC_OCR, {}).install(monkeypatch)
+    assert post(client, ["m/a"], runs="many").status_code == 422
+
+
+# ---------------------------------------------------------------- round 4: the judge inside the attempt loop
+
+
+def test_a_garbled_output_is_caught_by_the_judge_retried_with_its_findings_and_the_clean_attempt_wins(client, monkeypatch):
+    plan = {"m/a": [step(GIBBERISH, cost=0.05), step(GOOD, cost=0.06)]}
+    judge_plan = {" ".join(w.text for w in GIBBERISH.words): GIBBERISH_JUDGE}
+    scenario = Scenario(SOURCE, SRC_OCR, plan, judge=judge_plan).install(monkeypatch)
+    r = post(client, ["m/a"])
+    job = wait_for(client, r.json()["job_id"])
+    (res,) = job["mode_b"]["results"]
+
+    t1, t2 = res["tries"]
+    assert (t1["verdict"], t2["verdict"]) == ("garbled", "pass")  # the OCR checks alone would have said pass
+    assert t1["verification"]["digits_ok"] and t1["verification"]["leftover_ok"] and t1["verification"]["coverage"] == 0.35
+    assert res["selected_attempt"] == 2 and res["verdict"] == "pass"
+    retry = scenario.calls[1]["prompt"]
+    assert "These parts of your output are not real English text: \"Banero Salaino Az-infe Rilchkan\"" in retry
+    assert "correct translation of: \"営業時間 メニュー ご飯 定食\"" in retry
+    # one judge call per attempt, fed with the OCR of both sides
+    assert len(scenario.judge_calls) == 2 and scenario.judge_calls[0]["output"] == "TEL 77446716 Banero Salaino Az-infe Rilchkan"
+    assert scenario.judge_calls[0]["source"].startswith("TEL 77446716 営業時間") and scenario.judge_calls[0]["lang"] == "en"
+    # the judge's cost and time are kept next to the generation's
+    assert t1["judge_status"] == "ok" and t1["judge_cost_usd"] == pytest.approx(0.02) and t2["judge_cost_usd"] == pytest.approx(0.01)
+    assert res["judge_cost_usd"] == pytest.approx(0.03) and res["cost_usd"] == pytest.approx(0.11)
+    assert res["total_cost_usd"] == pytest.approx(0.14) and res["judge_ms"] == 14  # the scripted judge says 7 ms per call
+    saved = client.get(f"/files/{job['job_id']}/{t1['verification_file']}").json()
+    assert saved["verdict"] == "garbled" and saved["judge"]["garbled_segments"][0]["output_text"].startswith("Banero")
+    assert saved["run"] == 1 and saved["attempt"] == 1
+
+
+def test_a_garbled_attempt_never_beats_a_clean_one_whichever_comes_first(client, monkeypatch):
+    plan = {"m/a": [step(GOOD), step(GOOD)]}
+    judge_plan = {" ".join(w.text for w in GOOD.words): judge_record(coverage=0.5)}  # the judge doubts both
+    scenario = Scenario(SOURCE, SRC_OCR, plan, judge=judge_plan).install(monkeypatch)
+    job = wait_for(client, post(client, ["m/a"]).json()["job_id"])
+    (res,) = job["mode_b"]["results"]
+    assert [t["verdict"] for t in res["tries"]] == ["garbled", "garbled"] and res["selected_attempt"] == 1  # tie: the earlier
+    assert len(scenario.calls) == 2
+
+
+def test_an_unavailable_judge_does_not_fail_or_retry_the_attempt(client, monkeypatch):
+    unavailable = judge_record(status="unavailable", error="Claude API error 500: upstream down", cost=None)
+    judge_plan = {" ".join(w.text for w in GOOD.words): unavailable}
+    scenario = Scenario(SOURCE, SRC_OCR, {"m/a": [step(GOOD, cost=0.04)]}, judge=judge_plan).install(monkeypatch)
+    job = wait_for(client, post(client, ["m/a"]).json()["job_id"])
+    (res,) = job["mode_b"]["results"]
+    assert res["status"] == "done" and res["verdict"] == "pass" and len(res["tries"]) == 1 and len(scenario.calls) == 1
+    (t,) = res["tries"]
+    assert t["judge_status"] == "unavailable" and t["verification"]["judge"]["status"] == "unavailable"
+    assert t["verification"]["coverage"] is None and t["verify_error"] is None
+    assert res["judge_cost_usd"] is None and res["total_cost_usd"] == pytest.approx(0.04)
+
+
+def test_the_judge_can_be_switched_off_and_is_off_without_verification(client, monkeypatch):
+    scenario, job = run(client, monkeypatch, {"m/a": [step(GOOD)]}, judge="0")
+    (res,) = job["mode_b"]["results"]
+    assert scenario.judge_calls == [] and job["params"]["judge"] is False and res["judge"] is False
+    assert res["verification"]["judge"] is None and res["tries"][0]["judge_status"] is None and res["verdict"] == "pass"
+    scenario, job = run(client, monkeypatch, {"m/a": [step(GOOD)]}, verify="0")
+    assert scenario.judge_calls == [] and job["params"]["judge"] is False  # no check, no judge
+    scenario, job = run(client, monkeypatch, {"m/a": [step(GOOD)]})
+    assert len(scenario.judge_calls) == 1 and job["params"]["judge"] is True and job["params"]["judge_model"] == "claude-sonnet-5-5"
+
+
+def test_a_big_leftover_word_triggers_the_retry_even_with_a_tiny_ratio(client, monkeypatch):
+    src = ocr(*[("こんにちは", "ja")] * 100, ("TEL", "en"), ("77446716", "en"))
+    big = ocr(*[("Hello", "en")] * 99, ("メニュー", "ja", 0.9, 40), ("TEL", "en"), ("77446716", "en"))
+    good = ocr(*[("Hello", "en")] * 100, ("TEL", "en"), ("77446716", "en"))
+    scenario = Scenario(SOURCE, src, {"m/a": [step(big), step(good)]}).install(monkeypatch)
+    job = wait_for(client, post(client, ["m/a"]).json()["job_id"])
+    (res,) = job["mode_b"]["results"]
+    assert [t["verdict"] for t in res["tries"]] == ["partial", "pass"]
+    assert res["tries"][0]["verification"]["leftover_ratio"] < 0.08 and res["tries"][0]["verification"]["big_leftover_words"][0]["word"] == "メニュー"
+    assert "メニュー" in scenario.calls[1]["prompt"]
+
+
+def test_the_ocr_confidence_reaches_the_digit_check_through_the_job(client, monkeypatch):
+    # the round-3 false alarm: Vision read the handwritten 77446716 as 97446716 (confidence 0.5); the model had it right
+    src = ocr(("TEL", "en", 0.99), ("97446716", "en", 0.5), ("営業時間", "ja"), ("メニュー", "ja"), ("ご飯", "ja"), ("定食", "ja"))
+    scenario = Scenario(SOURCE, src, {"m/a": [step(GOOD)]}).install(monkeypatch)
+    job = wait_for(client, post(client, ["m/a"]).json()["job_id"])
+    (res,) = job["mode_b"]["results"]
+    assert res["verdict"] == "pass" and len(res["tries"]) == 1 and len(scenario.calls) == 1  # no needless retry
+    run_info = res["verification"]["digit_runs"][0]
+    assert (run_info["soft"], run_info["status"], run_info["matched"]) == (True, "near", "77446716")
 
 
 def test_models_endpoint_carries_the_route_preference(client):

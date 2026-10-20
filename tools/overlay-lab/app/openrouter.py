@@ -39,6 +39,7 @@ from .config import (
     openrouter_api_key,
     openrouter_referer,
 )
+from . import verify
 from .imaging import LoadedImage, to_jpeg_base64
 from .models import ModeError
 
@@ -47,6 +48,7 @@ log = logging.getLogger("lab.openrouter")
 BASE_URL = "https://openrouter.ai/api/v1"
 MODELS_TTL_S = 600.0
 MAX_SIDE_SENT = 2048
+RATE_LIMIT_WAIT_S = 20.0  # a 429 is retried once after this long, then it counts as a failure
 
 # The one place the prompt lives (README.md shows it; a test keeps the two in sync).
 PROMPT_TEMPLATE = (
@@ -79,8 +81,27 @@ RETRY_LEFTOVER_LINE = (
     "- These words are still in the source language in your output. Translate them into "
     "{language} as well: {words}."
 )
+# what the semantic judge (judge.py) found; each line appears only when there is something to name
+RETRY_GARBLED_LINE = (
+    "- These parts of your output are not real {language} text: {outputs}. Re-render them as the "
+    "correct translation of: {sources}."
+)
+RETRY_GARBLED_BLIND_LINE = (
+    "- These parts of your output are not real {language} text: {outputs}. Re-render them as "
+    "correct {language} text that translates the original text at the same place."
+)
+RETRY_UNTRANSLATED_LINE = (
+    "- These parts of your output are still in the source language. Translate them into "
+    "{language} as well: {segments}."
+)
+RETRY_NUMBERS_LINE = (
+    "- These numbers differ between the original image and your output. Copy each of them exactly "
+    "as it is written in the original: {pairs}."
+)
 MAX_RETRY_RUNS = 20
 MAX_RETRY_WORDS = 10
+MAX_RETRY_SEGMENTS = 10  # garbled / untranslated segments and altered numbers named in the retry
+MAX_QUOTED_CHARS = 120
 
 # Image-output models that are served better by the dedicated Image API than by chat/completions
 # (round 2: chat failed once with finish_reason=error for gemini-3-pro-image, /images worked).
@@ -104,12 +125,27 @@ def build_prompt(lang: str) -> str:
     return PROMPT_TEMPLATE.format(language=LANGUAGES.get(lang, lang))
 
 
+def _quote(text: str) -> str:
+    """A fragment of OCR text as a short, single-line, double-quoted string for the prompt."""
+    flat = " ".join(str(text).replace('"', "'").split())
+    return '"' + (flat[: MAX_QUOTED_CHARS - 1] + "\u2026" if len(flat) > MAX_QUOTED_CHARS else flat) + '"'
+
+
+def _unique(items: list[str]) -> list[str]:
+    return list(dict.fromkeys(i for i in items if i))
+
+
 def build_retry_prompt(lang: str, verification: dict) -> str:
-    """The prompt plus a second paragraph naming what the verification found wrong.
+    """The prompt plus a second paragraph naming what the verification and the judge found wrong.
 
     Missing digit runs are given as they were written in the source (up to 20) and up to 10
-    leftover source-language words must be translated too; a check that found nothing is not
-    mentioned, and with nothing to name the plain prompt comes back.
+    leftover source-language words must be translated too (the big ones, which make the verdict
+    `partial` by themselves, first). From the judge: up to 10 garbled segments, each with the
+    source text it stands for, up to 10 untranslated segments and up to 10 altered numbers. A
+    number that only differs from a *soft* source run (low-confidence handwriting that Vision
+    may have misread) is not named: telling the model to "copy" a misread number would make it
+    wrong. A check that found nothing is not mentioned, and with nothing to name the plain
+    prompt comes back.
     """
     language = LANGUAGES.get(lang, lang)
     problems: list[str] = []
@@ -117,11 +153,47 @@ def build_retry_prompt(lang: str, verification: dict) -> str:
     runs = runs or list(verification.get("missing_digit_runs") or [])
     if runs:
         problems.append(RETRY_DIGITS_LINE.format(runs=", ".join(runs[:MAX_RETRY_RUNS])))
-    words = list(verification.get("leftover_words") or [])
+    big = [b["word"] for b in verification.get("big_leftover_words") or [] if b.get("word")]
+    words = _unique(big + list(verification.get("leftover_words") or []))
     if words:
         problems.append(
             RETRY_LEFTOVER_LINE.format(language=language, words=", ".join(words[:MAX_RETRY_WORDS]))
         )
+
+    judge = verification.get("judge") or {}
+    if judge.get("status") == "ok":
+        garbled = [s for s in judge.get("garbled_segments") or [] if (s.get("output_text") or "").strip()]
+        garbled = garbled[:MAX_RETRY_SEGMENTS]
+        if garbled:
+            outputs = ", ".join(_quote(s["output_text"]) for s in garbled)
+            sources = _unique([(s.get("source_text") or "").strip() for s in garbled])
+            if sources:
+                problems.append(
+                    RETRY_GARBLED_LINE.format(
+                        language=language, outputs=outputs, sources=", ".join(_quote(s) for s in sources)
+                    )
+                )
+            else:
+                problems.append(RETRY_GARBLED_BLIND_LINE.format(language=language, outputs=outputs))
+        untranslated = _unique([(s or "").strip() for s in judge.get("untranslated_segments") or []])
+        if untranslated:
+            problems.append(
+                RETRY_UNTRANSLATED_LINE.format(
+                    language=language,
+                    segments=", ".join(_quote(s) for s in untranslated[:MAX_RETRY_SEGMENTS]),
+                )
+            )
+        soft = {d["run"] for d in verification.get("digit_runs") or [] if d.get("soft")}
+        pairs = []
+        for item in judge.get("altered_numbers") or []:
+            src, out = str(item.get("source") or ""), str(item.get("output") or "")
+            digits = verify.digit_string(src)
+            if not digits or digits == verify.digit_string(out) or digits in soft:
+                continue
+            pairs.append(f"{_quote(src)} (your output has {_quote(out)})")
+        if pairs:
+            problems.append(RETRY_NUMBERS_LINE.format(pairs=", ".join(_unique(pairs)[:MAX_RETRY_SEGMENTS])))
+
     if not problems:
         return build_prompt(lang)
     return build_prompt(lang) + "\n\n" + RETRY_TEMPLATE.format(problems="\n".join(problems))
@@ -354,6 +426,22 @@ def _call_images(model: str, prompt: str, data_url: str, params: dict) -> tuple[
     return image, body.get("usage") or {}, ""
 
 
+def _with_rate_limit_retry(call, *args):
+    """``call(*args)``; an OpenRouter 429 is retried once after RATE_LIMIT_WAIT_S seconds.
+
+    A second 429 propagates as the usual OpenRouterHTTPError and ends the run as a failure (the
+    route/parameter fallbacks never swallow a 429).
+    """
+    try:
+        return call(*args)
+    except OpenRouterHTTPError as exc:
+        if exc.status != 429:
+            raise
+        log.warning("stage=mode-b OpenRouter answered 429, waiting %.0f s before one retry", RATE_LIMIT_WAIT_S)
+        time.sleep(RATE_LIMIT_WAIT_S)
+        return call(*args)
+
+
 def _png_bytes(data: bytes) -> tuple[bytes, tuple[int, int]]:
     try:
         im = Image.open(io.BytesIO(data))
@@ -429,7 +517,7 @@ def run_image_model(
         call = _call_chat if api == "chat" else _call_images
         for params, dropped in _param_variants(aspect, resolution, api):
             try:
-                result = call(model, prompt, data_url, params)
+                result = _with_rate_limit_retry(call, model, prompt, data_url, params)
                 api_used = _label(api, dropped)
                 resolution_applied = bool(params.get("resolution"))
                 break

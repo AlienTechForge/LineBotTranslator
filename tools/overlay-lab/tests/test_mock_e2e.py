@@ -149,6 +149,13 @@ def test_mock_end_to_end_both_modes(client):
     assert b["verdict"] == "pass" and b["verification"]["digits_ok"] and b["verification"]["leftover_ok"]
     assert b["verification"]["output_text"].startswith("TONKATSU SET MENU") and isinstance(b["verify_ms"], int)
     assert len(b["tries"]) == 1 and b["selected_attempt"] == 1
+    # the semantic judge has a canned answer in mock mode: fully offline, nothing wrong, 1800 / 420 tokens
+    judged = b["verification"]["judge"]
+    assert judged["status"] == "ok" and judged["fallback_form"] == "mock" and judged["coverage"] == 1.0
+    assert (judged["input_tokens"], judged["output_tokens"]) == (1800, 420) and judged["garbled_segments"] == []
+    assert judged["reference_translation"][0].startswith("(mock) TONKATSU SET MENU")
+    assert b["judge_cost_usd"] == pytest.approx((1800 * 2 + 420 * 10) / 1e6) and b["tries"][0]["judge_status"] == "ok"
+    assert b["verification"]["coverage"] == 1.0 and b["output"] == "B1_mock_image-model_r1_a1.png"
     assert np.array_equal(fetch_png(client, job_id, b["output"]), original)
     assert b["output_size"] == [640, 480] and b["aspect_drift_pct"] == 0.0
 
@@ -157,6 +164,38 @@ def test_mock_end_to_end_both_modes(client):
     assert (client.app.state.store.snapshot(job_id) or {}).get("status") == "done"
     fresh = TestClient(create_app())  # a restarted server finds result.json on disk
     assert fresh.get(f"/api/jobs/{job_id}").json()["mode_a"]["translated_count"] == 3
+
+
+def test_mock_batch_end_to_end_is_offline_and_summarises_the_runs(client, monkeypatch):
+    import anthropic
+    import httpx2
+
+    from app import publish
+
+    # nothing may leave the box: no Claude client, no HTTP client of any kind
+    monkeypatch.setattr(anthropic, "Anthropic", lambda **kw: pytest.fail("mock mode must not build a Claude client"))
+    monkeypatch.setattr(httpx2, "Client", lambda *a, **k: pytest.fail("mock mode must not open an HTTP connection"))
+    publish.mock_client().objects.clear()
+    fx = mock.make_fixture()
+    r = client.post(
+        "/api/jobs",
+        files={"file": ("fixture.png", png_of(fx.image), "image/png")},
+        data={"target_lang": "en", "mode_a": "0", "mode_b": "1", "image_models": ["mock/image-model", "other/mock"], "runs": "3"},
+    )
+    assert r.status_code == 200
+    job = wait_published(client, r.json()["job_id"])
+    results = job["mode_b"]["results"]
+    assert len(results) == 6 and all(x["status"] == "done" and x["verdict"] == "pass" for x in results)
+    assert [(x["model"], x["run"]) for x in results] == [(m, k) for m in ("mock/image-model", "other/mock") for k in (1, 2, 3)]
+    assert all(x["verification"]["judge"]["fallback_form"] == "mock" for x in results)
+    first, second = job["mode_b"]["summary"]
+    for row in (first, second):
+        assert (row["runs_done"], row["passes"], row["pass_rate"], row["best_run"]) == (3, 3, 1.0, 1)
+    # published, with every run in the manifest
+    assert job["publish"]["status"] == "done" and job["publish"]["mock"] is True
+    manifest = client.get(f"/files/{job['job_id']}/manifest.json").json()
+    assert [len(m["runs"]) for m in manifest["mode_b"]] == [3, 3] and manifest["options"]["runs"] == 3
+    assert manifest["mode_b"][0]["summary"]["pass_rate"] == 1.0
 
 
 def test_mock_cjk_target_exercises_vertical_cjk_layout(client):
