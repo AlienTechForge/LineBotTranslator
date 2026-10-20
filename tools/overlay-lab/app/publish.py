@@ -531,8 +531,29 @@ def batch_key(settings: MinioSettings, batch_id: str) -> str:
     return "/".join(p for p in (settings.prefix, f"batch-{batch_id}", MANIFEST_NAME) if p)
 
 
+def batch_languages(batch_doc: dict) -> list[str]:
+    """The target languages of a batch, each once, in the order the images were submitted (round 6).
+
+    Read from the jobs (each keeps its own language); a batch document without jobs falls back to its
+    own record, then to the single `target_lang` of its params.
+    """
+    langs = [(job.get("params") or {}).get("target_lang") for job in batch_doc.get("jobs") or []]
+    langs = [lang for lang in dict.fromkeys(langs) if lang]
+    if langs:
+        return langs
+    recorded = batch_doc.get("target_language")
+    if isinstance(recorded, list) and recorded:
+        return [str(lang) for lang in recorded]
+    single = (batch_doc.get("params") or {}).get("target_lang")
+    return [single] if single else []
+
+
 def build_batch_manifest(batch_doc: dict, settings: MinioSettings, manifest_ref: dict, published_at: float) -> dict:
-    """The batch manifest (schema 3): every job manifest's presigned URL, the options and the summary rows."""
+    """The batch manifest (schema 3): every job manifest's presigned URL, the options and the summary rows.
+
+    `target_language` is the list of the distinct languages of the batch (["en", "zh-TW"]); every entry of
+    `jobs` carries its own `target_language`.
+    """
     params = batch_doc.get("params") or {}
     warnings: list[str] = list(batch_doc.get("warnings") or [])
     jobs = []
@@ -555,6 +576,7 @@ def build_batch_manifest(batch_doc: dict, settings: MinioSettings, manifest_ref:
                 "index": job.get("index"),
                 "job_id": job.get("job_id"),
                 "image_name": image.get("name") or "",
+                "target_language": (job.get("params") or {}).get("target_lang"),
                 "width": image.get("width"),
                 "height": image.get("height"),
                 "status": job.get("status"),
@@ -573,7 +595,7 @@ def build_batch_manifest(batch_doc: dict, settings: MinioSettings, manifest_ref:
         "urls_expire_at": _iso(published_at + settings.expiry_hours * 3600),
         "url_expiry_hours": settings.expiry_hours,
         "mock": bool(params.get("mock")),
-        "target_language": params.get("target_lang"),
+        "target_language": batch_languages(batch_doc),
         "options": {
             "mode_a": bool(params.get("mode_a")),
             "mode_b": bool(params.get("mode_b")),

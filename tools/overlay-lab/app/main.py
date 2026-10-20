@@ -101,6 +101,20 @@ def form_options(
     return Options(target_lang, mode_a, mode_b, models, output_size, verify, verify_details, runs, judge, mode_a_retry)
 
 
+def resolve_target_langs(values: list[str], default: str, count: int) -> list[str]:
+    """One language per file in file order: blank or missing entries use the batch's `target_lang`."""
+    if len(values) > count:
+        raise HTTPException(400, f"target_langs has {len(values)} values for {count} file(s): at most one per file")
+    out: list[str] = []
+    for i in range(count):
+        value = values[i].strip() if i < len(values) else ""
+        value = value or default
+        if value not in LANGUAGES:
+            raise HTTPException(400, f"target_langs[{i}] must be one of {', '.join(LANGUAGES)}")
+        out.append(value)
+    return out
+
+
 def safe_name(filename: str | None) -> str:
     """The upload's file name for the page and the manifests: no path, no control characters, 80 characters."""
     name = Path((filename or "").replace("\\", "/")).name
@@ -207,16 +221,20 @@ def create_app() -> FastAPI:
 
     @app.post("/api/batches")
     async def create_batch(
-        request: Request, files: list[UploadFile] = File(...), opts: Options = Depends(form_options)
+        request: Request,
+        files: list[UploadFile] = File(...),
+        target_langs: list[str] = Form(default_factory=list),
+        opts: Options = Depends(form_options),
     ) -> JSONResponse:
         if not 1 <= len(files) <= MAX_BATCH_FILES:
             raise HTTPException(400, f"send between 1 and {MAX_BATCH_FILES} images (field `files`)")
+        langs = resolve_target_langs(target_langs, opts.target_lang, len(files))
         # every image is checked before the first job starts: a bad one rejects the whole batch
         images = [(await read_image(f), safe_name(f.filename)) for f in files]
         batch_id, job_ids = jobs.start_batch(
             request.app.state.store, images, opts.target_lang, opts.mode_a, opts.mode_b, opts.models, opts.verify,
             opts.verify_details, opts.output_size, runs=opts.runs, judge_on=opts.judge,
-            mode_a_retry=opts.mode_a_retry,
+            mode_a_retry=opts.mode_a_retry, langs=langs,
         )  # fmt: skip
         return JSONResponse({"batch_id": batch_id, "job_ids": job_ids})
 

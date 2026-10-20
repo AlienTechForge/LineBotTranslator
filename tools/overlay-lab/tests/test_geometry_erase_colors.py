@@ -533,3 +533,244 @@ def test_extension_polygons_are_the_strips_added_by_the_growth():
 def test_a_polygon_mask_outside_the_image_is_none():
     assert build_polygon_mask((50, 50), [np.array([[100, 100], [120, 100], [120, 120], [100, 120]], float)]) is None
     assert build_polygon_mask((50, 50), []) is None
+
+
+# ------------------------------------------------------------------ round 6: the ring decides, the fill is the ring's colour
+
+
+def ring_unit(img, rect_xyxy, glyph_h=14.0, exclude=None, uid="u01"):
+    """Like unit_of, but with the words of the page left out of the ring (what pipeline_a does)."""
+    x0, y0, x1, y1 = rect_xyxy
+    um = build_unit_mask(img.shape[:2], [word(1, "x", rect(x0, y0, x1, y1))], glyph_h)
+    return EraseUnit(uid, um, measure_background(img, um, exclude))
+
+
+def paper_with_box(page=(240, 240, 240), box_bg=(236, 236, 236), size=(60, 200), rect_xyxy=(80, 20, 120, 40), seed=1):
+    """Paper of one colour, a slightly different background inside the word box and glyph-like black ink in it."""
+    img = np.full((*size, 3), page, np.uint8)
+    x0, y0, x1, y1 = rect_xyxy
+    img[y0:y1, x0:x1] = box_bg
+    img[y0 + 2 : y1 - 2, x0 + 2 : x1 - 2][np.random.default_rng(seed).random((y1 - y0 - 4, x1 - x0 - 4)) < 0.35] = (10, 10, 10)
+    return img
+
+
+def test_the_round_6_constants():
+    assert (erase.RING_PX, erase.RING_MATCH_MAX, erase.FEATHER_SIGMA) == (6, 8.0, 1.5)
+    assert erase.FLAT_STD_MAX == 10.0 and 4 <= erase.RING_PX <= 8
+
+
+def test_the_flat_fill_is_the_colour_of_the_ring_not_the_colour_inside_the_box():
+    img = paper_with_box(page=(240, 240, 240), box_bg=(236, 236, 236))  # the box is 4 levels darker than the paper around it
+    unit = ring_unit(img, (80, 20, 120, 40))
+    info = unit.info
+    assert info.color == (236, 236, 236) and info.ring_color == (240, 240, 240)
+    assert info.flat and info.reason == erase.REASON_RING_AGREES and info.fill_color == (240, 240, 240)
+    assert info.ring_spread == pytest.approx(0.0, abs=0.01) and info.ring_px > 200 and info.interior_flat
+    out = erase_units(img, [unit]).erased
+    assert (out[22:38, 82:118] == 240).all()  # the glyphs are gone and the patch is the paper's colour, not 236
+    slightly_more = paper_with_box(page=(240, 240, 240), box_bg=(235, 235, 235))  # 5 levels = distance 8.7, over RING_MATCH_MAX
+    assert not ring_unit(slightly_more, (80, 20, 120, 40)).info.flat
+
+
+def test_a_unit_on_flat_paper_without_ring_evidence_falls_back_to_the_box():
+    img = np.full((24, 40, 3), (200, 210, 220), np.uint8)
+    img[8:16, 10:30][np.random.default_rng(2).random((8, 20)) < 0.4] = (0, 0, 0)
+    um = build_unit_mask(img.shape[:2], [word(1, "x", rect(8, 6, 32, 18))], 12.0)
+    taken = np.ones(img.shape[:2], bool)  # every pixel of the page belongs to some other word: no ring
+    info = measure_background(img, um, taken)
+    assert info.ring_color is None and info.ring_px == 0 and info.flat and info.reason == erase.REASON_NO_RING
+    assert info.fill_color == info.color == (200, 210, 220)
+
+
+def test_a_gentle_gradient_takes_the_inpaint_path_although_the_glyph_box_looks_flat():
+    ramp = np.linspace(60, 230, 200)[None, :, None]  # one level per pixel, left to right
+    img = np.repeat(np.repeat(ramp, 60, axis=0), 3, axis=2).astype(np.uint8)
+    speckle(img, (22, 38, 84, 106), (10, 10, 10), seed=3)
+    unit = ring_unit(img, (82, 20, 108, 40))
+    info = unit.info
+    assert info.interior_flat and info.spread <= erase.FLAT_STD_MAX  # the box alone would have been a flat fill
+    assert not info.flat and info.method == "inpaint"
+    assert info.reason in (erase.REASON_RING_COLOUR, erase.REASON_RING_NOT_FLAT, erase.REASON_RING_GRADIENT)
+    result = erase_units(img, [unit])
+    assert result.methods == {"u01": "inpaint"}
+    inside = result.erased[24:36, 86:104].astype(int)
+    expected = img[24:36, 86:104].astype(int)
+    assert inside.min() > 100  # the black ink is gone ...
+    assert np.abs(inside - np.array([[[c] * 3 for c in np.linspace(60, 230, 200)[86:104]]])).max() < 40  # ... and the gradient continues
+    assert expected.min() < 20  # (the source really had ink there)
+
+
+def test_a_slight_shading_along_a_long_label_is_not_flat_either():
+    ramp = np.linspace(100, 190, 200)[None, :, None]  # half a level per pixel: the ring itself is flat enough
+    img = np.repeat(np.repeat(ramp, 60, axis=0), 3, axis=2).astype(np.uint8)
+    speckle(img, (22, 38, 84, 106), (10, 10, 10), seed=4)
+    info = ring_unit(img, (82, 20, 108, 40)).info
+    assert info.interior_flat and info.ring_spread <= erase.FLAT_STD_MAX
+    assert info.ring_gap > erase.RING_MATCH_MAX and not info.flat and info.reason == erase.REASON_RING_GRADIENT
+    flatter = np.repeat(np.repeat(np.linspace(100, 125, 200)[None, :, None], 60, axis=0), 3, axis=2).astype(np.uint8)
+    speckle(flatter, (22, 38, 84, 106), (10, 10, 10), seed=4)
+    assert ring_unit(flatter, (82, 20, 108, 40)).info.flat  # a tenth of a level per pixel is fine
+
+
+def test_a_flat_page_still_flat_fills_with_the_ring_colour_next_to_a_dark_neighbour():
+    img = table_scene()  # the receipt case: a white cell, a black price cell right of it, a rule below
+    unit = unit_of(img, (42, 20, 82, 44))
+    assert unit.info.flat and unit.info.color == WHITE and unit.info.ring_color == WHITE  # the black cell is no evidence
+    assert unit.info.reason == erase.REASON_RING_AGREES and unit.info.fill_color == WHITE
+    out = erase_units(img, [unit]).erased
+    assert (out[:56, :84] == 255).all() and (out[:, 84:] == 0).all()  # white stays white, black stays black
+
+
+def test_white_inside_the_box_on_cream_paper_is_not_flat_and_leaves_no_white_rectangle():
+    cream = (240, 228, 196)
+    img = np.full((60, 200, 3), cream, np.uint8)
+    img[20:40, 80:120] = (255, 255, 255)  # the box background is white, the paper around it is cream
+    img[22:38, 82:118][np.random.default_rng(5).random((16, 36)) < 0.3] = (10, 10, 10)
+    unit = ring_unit(img, (80, 20, 120, 40))
+    assert unit.info.color == (255, 255, 255) and unit.info.ring_color == cream
+    assert not unit.info.flat and unit.info.reason == erase.REASON_RING_COLOUR
+    out = erase_units(img, [unit]).erased
+    assert np.abs(out[22:38, 82:118].astype(int) - np.array(cream)).max() < 30  # inpainted from the cream, not a white patch
+
+
+def test_the_ring_never_samples_the_words_of_the_page():
+    img = np.full((60, 200, 3), WHITE, np.uint8)
+    speckle(img, (22, 38, 82, 108), BLACK, seed=6)
+    img[18:42, 114:150] = (215, 215, 215)  # a neighbour's pale label, 4 px right of the unit's dilated box
+    um = build_unit_mask(img.shape[:2], [word(1, "x", rect(80, 20, 110, 40))], 14.0)
+    without, _ = erase.ring_sample(img, um)
+    taken = erase.occupied_map(img.shape[:2], [rect(112, 18, 152, 42)])  # the neighbour is a word of the page
+    with_taken, _ = erase.ring_sample(img, um, taken)
+    pale = lambda px: int((px[:, 0] == 215).sum())  # noqa: E731
+    assert pale(without) > 50 and pale(with_taken) == 0 and with_taken.shape[0] < without.shape[0]
+    assert ring_unit(img, (80, 20, 110, 40), glyph_h=14.0, exclude=taken).info.ring_color == WHITE
+
+
+def test_the_ring_is_clipped_to_the_image_and_a_unit_at_the_edge_is_measured():
+    img = np.full((40, 80, 3), WHITE, np.uint8)
+    speckle(img, (2, 14, 2, 40), BLACK, seed=7)
+    unit = ring_unit(img, (0, 0, 42, 16), glyph_h=14.0)  # the box touches the top and left edge
+    assert unit.info.ring_color == WHITE and unit.info.flat
+    assert (erase_units(img, [unit]).erased[:16, :42] == 255).all()
+
+
+def test_the_report_fields_of_the_decision_are_complete():
+    info = ring_unit(paper_with_box(), (80, 20, 120, 40)).info
+    data = info.to_dict()
+    assert data["ring_color"] == [240, 240, 240] and data["fill_color"] == [240, 240, 240] and data["flat"] is True
+    assert data["ring_spread"] == 0.0 and data["ring_gap"] == 0.0 and data["reason"] == erase.REASON_RING_AGREES
+
+
+def test_the_feather_is_wider_than_in_round_5():
+    page, fill = 100, 240
+    out = np.full((40, 80, 3), page, np.uint8)
+    um = build_unit_mask(out.shape[:2], [word(1, "x", rect(30, 10, 50, 30))], 14.0, dilate=0)
+    um.guarded = um.raw.copy()
+    um.allowed = np.ones(um.raw.shape, bool)
+    erase._flat_fill(out, um, (fill, fill, fill), np.zeros(out.shape[:2], bool))
+    row = out[20, :, 0].astype(int)
+    assert row[40] == fill and row[20] == page
+    assert row[51] > page + 8 and row[52] > page + 8  # still fading two pixels past the edge (sigma 1.0 gave +3 there)
+    assert list(row[50:54]) == sorted(row[50:54], reverse=True)  # and monotonic
+
+
+def test_an_extension_that_is_not_the_fill_colour_is_neither_grown_into_nor_filled():
+    from app import pipeline_a
+
+    img = np.full((60, 260, 3), WHITE, np.uint8)
+    speckle(img, (22, 38, 24, 80), BLACK, seed=8)
+    img[:, 130:] = (228, 228, 228)  # paper that is a little darker from here on: inside the guard tolerance, but not the fill's colour
+    unit = unit_of(img, (22, 20, 82, 40), glyph_h=14.0)
+    geom = compute_geometry([word(1, "x", rect(22, 20, 82, 40))])
+    run = pipeline_a._flat_run(img, geom, 0, True, 150.0, unit.info)
+    assert 0 <= run < 60  # the old rule (colour within the guard tolerance) would have run on to the image edge
+    stepped = img.copy()
+    stepped[:, 90:] = (228, 228, 228)
+    assert pipeline_a._flat_run(stepped, geom, 0, True, 150.0, unit_of(stepped, (22, 20, 82, 40), glyph_h=14.0).info) == 0.0
+
+
+def test_a_lane_over_shaded_paper_is_cut_where_the_shading_starts():
+    from app import pipeline_a
+
+    img = np.full((60, 260, 3), 240, np.uint8)
+    speckle(img, (22, 38, 24, 80), (10, 10, 10), seed=9)
+    ramp = 240.0 - 0.6 * np.clip(np.arange(260) - 100, 0, None)  # flat up to x = 100, then darker by 0.6 a pixel
+    img = np.where(np.arange(260)[None, :, None] > 100, ramp[None, :, None], img).astype(np.uint8)
+    img[22:38, 24:80][np.random.default_rng(9).random((16, 56)) < 0.35] = (10, 10, 10)
+    unit = unit_of(img, (22, 20, 82, 40), glyph_h=14.0)
+    geom = compute_geometry([word(1, "x", rect(22, 20, 82, 40))])
+    run = pipeline_a._flat_run(img, geom, 0, True, 160.0, unit.info)
+    assert 14 <= run <= 60  # the flat 18 px, and a little of the shading, never the 160 px the colour guard alone would allow
+
+
+def test_the_erase_leaves_a_grown_part_alone_when_it_is_not_the_fill_colour():
+    img = np.full((60, 200, 3), WHITE, np.uint8)
+    speckle(img, (20, 40, 20, 80), BLACK, seed=10)
+    img[:, 100:] = (232, 232, 232)  # within the guard tolerance of white (distance 40 < 56), but not its colour
+    unit = unit_of(img, (18, 18, 82, 42))
+    unit.extension = build_polygon_mask(img.shape[:2], [np.array([[82, 18], [170, 18], [170, 42], [82, 42]], float)])
+    result = erase_units(img, [unit])
+    assert result.extension == {"u01": "skipped"} and result.mask_px["u01"] == int(np.count_nonzero(unit.mask.guarded))
+    assert np.array_equal(result.erased[:, 100:], img[:, 100:])  # the grown part is not painted over
+    assert (result.erased[20:40, 20:80] == 255).all()  # the unit itself still is erased
+    ok = np.full((60, 200, 3), WHITE, np.uint8)
+    speckle(ok, (20, 40, 20, 80), BLACK, seed=10)
+    fine = unit_of(ok, (18, 18, 82, 42))
+    fine.extension = build_polygon_mask(ok.shape[:2], [np.array([[82, 18], [170, 18], [170, 42], [82, 42]], float)])
+    assert erase_units(ok, [fine]).extension == {"u01": "filled"}
+
+
+def test_region_agrees_is_the_rule_of_the_ring_applied_to_a_block_of_pixels():
+    flat = np.full((10, 10, 3), 240, np.uint8)
+    assert erase.region_agrees(flat, (240, 240, 240))[0] and erase.region_agrees(flat, (236, 236, 240))[0]
+    assert not erase.region_agrees(flat, (230, 240, 240))[0]  # ten levels off the fill
+    noisy = np.clip(240 + np.random.default_rng(0).normal(0, 14, (20, 20, 3)), 0, 255)
+    assert not erase.region_agrees(noisy, (240, 240, 240))[0]  # not flat
+    assert erase.region_agrees(np.zeros((2, 2, 3)), (240, 240, 240))[0]  # too small to judge
+
+
+PAPER = (253, 254, 240)
+
+
+def halo_heading(ring_noise=0.0, k=5, drop=0.085, seed=1):
+    """A heading of thick black strokes, each wrapped in a pale halo, on cream paper (the poster's title)."""
+    rng = np.random.default_rng(seed)
+    img = np.full((80, 260, 3), PAPER, np.uint8)
+    if ring_noise:
+        img = np.clip(img + rng.normal(0, ring_noise, img.shape[:2] + (1,)), 0, 255).astype(np.uint8)
+    ink = np.zeros(img.shape[:2], bool)
+    for x in range(40, 200, 22):
+        ink[24:56, x : x + 12] = True
+    halo = (cv2.dilate(ink.astype(np.uint8), np.ones((k, k), np.uint8)) > 0) & ~ink
+    img = np.where(halo[..., None], (img * (1 - drop)).astype(np.uint8), img)
+    img[ink] = (10, 10, 10)
+    return img
+
+
+def heading_unit(img, exclude=None):
+    um = build_unit_mask(img.shape[:2], [word(1, "x", rect(36, 20, 206, 60))], 34.0)
+    return EraseUnit("u01", um, measure_background(img, um, exclude))
+
+
+def test_a_box_a_little_too_noisy_for_a_flat_fill_is_accepted_when_the_ring_vouches_for_it():
+    img = halo_heading()
+    unit = heading_unit(img)
+    info = unit.info
+    assert not info.interior_flat and erase.FLAT_STD_MAX < info.spread <= erase.BOX_SPREAD_WITH_RING_MAX  # the halo inflates the std
+    assert info.flat and info.reason == erase.REASON_RING_VOUCHES and info.ring_color == PAPER and info.fill_color == PAPER
+    result = erase_units(img, [unit])
+    assert result.methods == {"u01": "flat"}
+    assert (result.erased[20:60, 36:206] == np.array(PAPER)).all()  # no inpaint smear where the title was
+
+
+def test_the_ring_must_be_clean_for_that_and_the_allowance_has_a_ceiling_and_needs_a_ring(monkeypatch):
+    noisy_paper = halo_heading(ring_noise=14.0)
+    info = heading_unit(noisy_paper).info
+    assert not info.flat and info.reason in (erase.REASON_RING_NOT_FLAT, erase.REASON_RING_COLOUR, erase.REASON_RING_MIXED)
+    img = halo_heading()
+    taken = np.ones(img.shape[:2], bool)  # no ring at all: the box alone is not flat, so there is no vouching either
+    info = heading_unit(img, exclude=taken).info
+    assert info.ring_color is None and not info.flat and info.reason == erase.REASON_BOX_NOT_FLAT
+    monkeypatch.setattr(erase, "BOX_SPREAD_WITH_RING_MAX", 10.5)  # the box spread of this heading is 10.7
+    low = heading_unit(img).info
+    assert not low.flat and low.reason == erase.REASON_BOX_NOT_FLAT

@@ -563,3 +563,40 @@ def test_an_unverified_attempt_never_replaces_a_verified_one():
 def test_the_attempt_key_ranks_verified_attempts_above_unverified_ones():
     assert verify.attempt_key(None) == verify.attempt_key({"verdict": "unverified"}) == (0,)
     assert verify.attempt_key(v("pass", 0.9, 0.8)) == (1, True, True, True, True, True, 0.9, 0.8)
+
+
+# ---------------------------------------------------------------- round 6: only entries that name a row count for `rows`
+
+RECEIPT_ENTRY = (
+    "missing_row",
+    "The 澎湃六菜飯 row is mistranslated, but all 21 rows are present. The 和悦炸雞腿飯 row is also present. "
+    "No row is missing or duplicated, and the handwritten marks stay on the same rows.",
+)  # the entry the judge wrote on the receipt in round 5 (job a46b86da6b9744fa), verbatim
+
+
+def test_a_structure_issue_without_a_detail_does_not_fail_the_rows_check():
+    for detail in ("", "   ", "\n"):
+        for kind in ("duplicated_row", "missing_row", "misaligned_marks"):
+            checks = verify.judge_checks(judge_record(rows=[(kind, detail)]))
+            assert checks["rows"] == {"ok": True, "count": 0}, (kind, detail)
+    assert verify.judge_checks({"status": "ok", "usability": 1.0, "structure_issues": [{"type": "missing_row"}]})["rows"]["ok"]
+    assert verify.judge_checks({"status": "ok", "usability": 1.0, "structure_issues": [{"type": "missing_row", "detail": None}]})["rows"]["ok"]
+    report = verify.verify_output(None, None, "en", judge=judge_record(rows=[("duplicated_row", "")]), ocr_error="x")
+    assert report["verdict"] == "pass" and report["failed_checks"] == []
+
+
+def test_a_structure_issue_that_names_a_row_still_fails_the_rows_check():
+    for kind in ("duplicated_row", "missing_row", "misaligned_marks"):
+        assert verify.judge_checks(judge_record(rows=[(kind, "scallion rice")]))["rows"] == {"ok": False, "count": 1}
+    mixed = judge_record(rows=[("duplicated_row", ""), ("missing_row", "Total row"), ("shifted", "marks"), ("other", "font")])
+    assert verify.judge_checks(mixed)["rows"] == {"ok": False, "count": 1}  # only the one that names a row, of a failing type
+    assert verify.judge_checks(judge_record(rows=[("shifted", "marks moved"), ("other", "fonts differ")]))["rows"]["ok"]
+
+
+def test_the_receipt_entry_is_the_prompts_to_fix_not_the_codes_it_still_fails_rows():
+    # The judge wrote a statement that nothing is wrong under a failing type, with a long detail. The filter does not
+    # read the detail (no text parsing): the judge prompt now forbids such entries, and this documents that the
+    # code alone still counts it.
+    report = verify.verify_output(None, None, "en", judge=judge_record(usability=0.72, rows=[RECEIPT_ENTRY]), ocr_error="x")
+    assert report["checks"]["rows"] == {"ok": False, "count": 1}
+    assert "rows" in report["failed_checks"] and report["verdict"] == "rows+score"

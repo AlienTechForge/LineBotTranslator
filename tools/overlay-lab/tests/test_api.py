@@ -135,3 +135,13 @@ def test_job_and_file_lookups_reject_bad_ids_and_traversal(make_client, tmp_path
 def test_mock_image_is_only_served_in_mock_mode(make_client):
     assert make_client().get("/api/mock-image").headers["content-type"] == "image/png"
     assert make_client(LAB_MOCK="0").get("/api/mock-image").status_code == 404
+
+
+def test_the_page_has_the_per_file_language_rows_and_sends_target_langs_in_file_order(make_client):
+    page = make_client().get("/").text
+    assert 'id="file-langs"' in page and 'id="file-lang-list"' in page and "每張圖的目標語言" in page
+    assert "fd.append('target_langs', r.select.value)" in page  # one value per file, appended after `target_lang`
+    assert page.index("fd.append('target_lang',") < page.index("fd.append('target_langs'") < page.index("fd.append('mode_a'")
+    assert "['語言', '']" in page and "r.target_lang" in page  # the summary table has the column
+    assert "'覆蓋補翻'" in page and "補翻 ${cov.added_words} 字" in page  # the coverage line of Mode A
+    assert page.count('<option value="zh-TW"') == 1  # the language list of the page is the one of the config

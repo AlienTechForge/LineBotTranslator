@@ -11,7 +11,7 @@ check                 fails when
 ====================  ====================================================================
 ``numbers``           the judge lists any ``altered_numbers``
 ``rows``              any ``structure_issues`` of type duplicated_row, missing_row or
-                      misaligned_marks
+                      misaligned_marks that has a non-empty ``detail`` (it names the row)
 ``garbled``           any ``legibility_issues`` with ``major: true``
 ``partial``           any ``untranslated`` with ``major: true``
 ``score``             ``usability`` is below USABILITY_MIN (0.80)
@@ -386,7 +386,12 @@ def judge_checks(judge: dict | None) -> dict | None:
     if not judge or judge.get("status") != "ok":
         return None
     altered = _items(judge, "altered_numbers")
-    rows = [i for i in _items(judge, "structure_issues") if i.get("type") in ROW_PROBLEMS]
+    # an entry that names no row is not a finding (round 6): the judge prompt, not this filter, keeps
+    # "nothing is wrong" statements out of the list; the detail text itself is never parsed
+    rows = [
+        i for i in _items(judge, "structure_issues")
+        if i.get("type") in ROW_PROBLEMS and str(i.get("detail") or "").strip()
+    ]  # fmt: skip
     garbled = [i for i in _items(judge, "legibility_issues") if i.get("major")]
     partial = [i for i in _items(judge, "untranslated") if i.get("major")]
     raw = judge.get("usability")

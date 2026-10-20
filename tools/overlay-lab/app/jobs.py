@@ -663,6 +663,11 @@ def start_job(
     return job_id
 
 
+def distinct_languages(langs: list[str]) -> list[str]:
+    """The languages of a batch, each once, in the order they first appear (["en", "zh-TW", "en"] -> ["en", "zh-TW"])."""
+    return list(dict.fromkeys(lang for lang in langs if lang))
+
+
 def start_batch(
     store: JobStore,
     images: list[tuple[LoadedImage, str]],
@@ -676,18 +681,22 @@ def start_batch(
     runs: int = 1,
     judge_on: bool = True,
     mode_a_retry: bool | None = None,
+    langs: list[str] | None = None,
 ) -> tuple[str, list[str]]:
     """One job per (image, name), all with the same options, and one batch that publishes its manifest last.
 
-    Returns (batch_id, job_ids in submission order).
+    `lang` is the batch's language; `langs` (round 6) gives one target language per image in file order,
+    and an image without an entry (a list that is shorter, or None) uses `lang`. Every job keeps its own
+    language. Returns (batch_id, job_ids in submission order).
     """
     settings = get_settings()
+    chosen = [(langs[i] if langs and i < len(langs) and langs[i] else lang) for i in range(len(images))]
     batch_id = uuid.uuid4().hex[:16]
     batch_dir = settings.data_dir / f"batch-{batch_id}"
     batch_dir.mkdir(parents=True, exist_ok=True)
     job_ids = [
         start_job(
-            store, image, lang, run_a, run_b, models, verify_on, verify_details, output_size, runs, judge_on,
+            store, image, chosen[i - 1], run_a, run_b, models, verify_on, verify_details, output_size, runs, judge_on,
             mode_a_retry=mode_a_retry, batch_id=batch_id, index=i, name=name,
         )
         for i, (image, name) in enumerate(images, start=1)
@@ -698,9 +707,11 @@ def start_batch(
         "job_ids": job_ids,
         "created_at": time.time(),
         "finished_at": None,
-        "params": first.get("params") or {},
+        "params": {**(first.get("params") or {}), "target_lang": lang},  # the batch's own language is the default
+        "target_langs": chosen,  # one per image, in file order
+        "target_language": distinct_languages(chosen),
         "images": [
-            {"index": i, "job_id": job_id, "name": name, "width": image.width, "height": image.height}
+            {"index": i, "job_id": job_id, "name": name, "width": image.width, "height": image.height, "target_lang": chosen[i - 1]}
             for i, (job_id, (image, name)) in enumerate(zip(job_ids, images), start=1)
         ],
         "warnings": [],

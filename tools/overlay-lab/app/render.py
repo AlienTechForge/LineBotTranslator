@@ -11,6 +11,10 @@ free lane (up to MAX_GROW x the original length, following the planner's `align`
 `short` alternative the same two ways. "Readable" means a font size of at least MIN_FIT_RATIO of the
 source glyph height. When nothing is readable a minor unit is skipped (left untouched) and a major
 one is shrunk to the minimum size, as before.
+
+Round 6: `target_size` asks for one exact size (the size the rows of a group share, see
+pipeline_a.render_units): the same order of attempts, but only a layout that reaches that size
+counts, and a unit that cannot reach it comes back as None instead of being skipped or shrunk.
 """
 
 from __future__ import annotations
@@ -167,19 +171,23 @@ def render_unit(
     lane: tuple[float, float] = (0.0, 0.0),
     min_fit_ratio: float = MIN_FIT_RATIO,
     max_grow: float = MAX_GROW,
-) -> UnitRender:
+    target_size: int | None = None,
+) -> UnitRender | None:
     """Fit and draw one unit's translation in its frame; no image is touched here.
 
     See the module docstring for the order of the attempts. `lane` is the free room along the
     reading axis either way; the result says which text was used (`text_used`), how far the frame
     grew (`grow`, with `geom` the frame that was drawn for) and whether the size is readable.
     A minor unit that cannot be fitted readably comes back with `skipped = "too small"` and no mask.
+    With `target_size` only a layout of exactly that size is accepted (full text before short, the
+    smallest growth first); when none reaches it the result is None.
     """
-    cap = geom.glyph_h * SIZE_CAP_RATIO
+    cap = float(target_size) if target_size is not None else geom.glyph_h * SIZE_CAP_RATIO
     spec = pick_font(lang, text + short, bold)
     vertical = direction != "horizontal"
     axis = 1 if vertical else 0
-    floor = max(1, math.ceil(min_fit_ratio * geom.glyph_h - 1e-9))
+    own_floor = max(1, math.ceil(min_fit_ratio * geom.glyph_h - 1e-9))
+    floor = target_size if target_size is not None else own_floor
     avoid_orphan = role in ORPHAN_ROLES and not vertical
     if not short.strip() or len(short.strip()) >= len(text.strip()):
         short = ""
@@ -208,16 +216,18 @@ def render_unit(
             continue
         for frame, grown in frames:
             layout = fit(txt, frame, floor)
-            if layout.fitted:
+            if layout.fitted and (target_size is None or layout.size >= target_size):
                 chosen = (used, txt, frame, grown, layout, True)
                 break
         if chosen:
             break
+    if chosen is None and target_size is not None:
+        return None
     if chosen is None:
         if importance == "minor":
             return UnitRender(
                 None, 0.0, 0.0, 0, False, False, False, 0, spec.name, bold, "horizontal",
-                geom=geom, readable=False, min_fit_px=floor, skipped=SKIP_TOO_SMALL,
+                geom=geom, readable=False, min_fit_px=own_floor, skipped=SKIP_TOO_SMALL,
             )  # fmt: skip
         # nothing is readable: the shorter text, in the widest frame, at whatever size it takes (10 px at least)
         used, txt = ("short", short) if short else ("full", text)
@@ -241,7 +251,7 @@ def render_unit(
         ox, oy, count, mode = ((fw - mask.width) if rtl else 0.0), 0.0, len(layout.lines), "vertical_latin"
     return UnitRender(
         mask, ox, oy, layout.size, layout.fitted, layout.overflowed, layout.truncated, count, spec.name, bold, mode,
-        text_used=used, geom=frame, grow=grown, readable=readable, min_fit_px=floor, notes=list(layout.notes),
+        text_used=used, geom=frame, grow=grown, readable=readable, min_fit_px=own_floor, notes=list(layout.notes),
     )  # fmt: skip
 
 
