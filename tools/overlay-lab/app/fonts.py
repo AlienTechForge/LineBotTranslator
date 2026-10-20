@@ -1,4 +1,4 @@
-"""Font discovery. The Docker image ships Noto Sans CJK and DejaVu Sans; other hosts fall back."""
+"""Font discovery. The Docker image ships Noto Sans (Latin), Noto Sans CJK and DejaVu Sans; other hosts fall back."""
 
 from __future__ import annotations
 
@@ -21,8 +21,9 @@ DEFAULT_CJK_FACE = "TC"
 CJK_REGULAR_PATTERNS = ["NotoSansCJK*-Regular.*", "NotoSansCJK-Regular.*"]
 CJK_BOLD_PATTERNS = ["NotoSansCJK*-Bold.*", "NotoSansCJK-Bold.*"]
 CJK_FALLBACKS = ["wqy-zenhei.ttc", "ipag.ttf", "fonts-japanese-gothic.ttf", "DroidSansFallback*.ttf"]
-LATIN_REGULAR = ["DejaVuSans.ttf", "LiberationSans-Regular.ttf", "FreeSans.ttf"]
-LATIN_BOLD = ["DejaVuSans-Bold.ttf", "LiberationSans-Bold.ttf", "FreeSansBold.ttf"]
+# Noto Sans (the fonts-noto-core package) first, then the fallbacks of earlier rounds
+LATIN_REGULAR = ["NotoSans-Regular.ttf", "NotoSans-Regular.otf", "DejaVuSans.ttf", "LiberationSans-Regular.ttf", "FreeSans.ttf"]
+LATIN_BOLD = ["NotoSans-Bold.ttf", "NotoSans-Bold.otf", "DejaVuSans-Bold.ttf", "LiberationSans-Bold.ttf", "FreeSansBold.ttf"]
 
 
 @dataclass(frozen=True)

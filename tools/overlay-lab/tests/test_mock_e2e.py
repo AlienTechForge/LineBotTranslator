@@ -1,6 +1,7 @@
 """LAB_MOCK=1 end to end through the HTTP API: erase + render without any credentials."""
 
 import io
+import json
 import time
 
 import cv2
@@ -90,7 +91,9 @@ def test_mock_end_to_end_both_modes(client):
     a = job["mode_a"]
     assert a["status"] == "done" and a["error"] is None, a.get("error")
     assert a["tokens"] == {"input": 2345, "output": 612}
-    assert a["cost_usd"] == pytest.approx((2345 * 4 + 612 * 20) / 1e6)
+    assert a["cost_usd"] == pytest.approx((2345 * 4 + 612 * 20) / 1e6)  # the planner; the judge comes on top
+    assert a["total_cost_usd"] == pytest.approx(a["cost_usd"] + (3400 * 2 + 420 * 10) / 1e6) == pytest.approx(a["cost_anthropic_usd"])
+    assert a["cost_openrouter_usd"] == 0.0
     assert a["fallback_form"] == "mock"
     assert (a["word_count"], a["unit_count"], a["translated_count"]) == (7, 4, 3)
     for key in ("elapsed_ms", "vision_ms", "claude_ms", "erase_ms", "render_ms"):
@@ -103,12 +106,15 @@ def test_mock_end_to_end_both_modes(client):
     translated = [u for u in a["units"] if u["action"] == "translated"]
     for u in translated:
         assert isinstance(u["font_size"], int) and u["font_size"] >= 10
-        assert u["fitted"] is True and u["overflowed"] is False, u
+        assert u["fitted"] is True and u["overflowed"] is False and u["readable"] is True, u
+        assert u["erase_method"] == "flat" and u["text_used"] in ("full", "short") and u["importance"] == "major"
     assert units["u04"]["angle"] == pytest.approx(15.0, abs=1.0)
     assert units["u03"]["layout"] == "vertical_latin" and units["u03"]["direction"] == "vertical_rl"
 
-    out = fetch_png(client, job_id, "A.png")
-    erased = fetch_png(client, job_id, "A_erased.png")
+    out = fetch_png(client, job_id, a["output"])
+    erased = fetch_png(client, job_id, a["erased"])
+    assert (a["output"], a["erased"], a["selected_attempt"], a["verdict"]) == ("A_a1.png", "A_a1_erased.png", 1, "pass")
+    assert [t["n"] for t in a["attempts"]] == [1] and a["verification"]["judge"]["fallback_form"] == "mock"  # the judge saw it too
     assert out.shape == original.shape == erased.shape  # original size
 
     # ---- erased areas are within 12 RGB of the background
@@ -146,16 +152,19 @@ def test_mock_end_to_end_both_modes(client):
     assert b["status"] == "done" and b["error"] is None, b.get("error")
     assert b["api_used"] == "mock" and b["model"] == "mock/image-model" and b["cost_usd"] == 0.0
     # the mock output is the source image, so the verification passes and no retry happens
-    assert b["verdict"] == "pass" and b["verification"]["digits_ok"] and b["verification"]["leftover_ok"]
-    assert b["verification"]["output_text"].startswith("TONKATSU SET MENU") and isinstance(b["verify_ms"], int)
+    assert b["verdict"] == "pass" and b["verification"]["failed_checks"] == []
+    warnings = b["verification"]["ocr_warnings"]
+    assert warnings["digits_ok"] and warnings["leftover_ok"] and warnings["warnings"] == []
+    assert warnings["output_text"].startswith("TONKATSU SET MENU") and isinstance(b["verify_ms"], int)
     assert len(b["tries"]) == 1 and b["selected_attempt"] == 1
-    # the semantic judge has a canned answer in mock mode: fully offline, nothing wrong, 1800 / 420 tokens
+    # the vision judge has a canned answer in mock mode: fully offline, nothing wrong, 3400 / 420 tokens
     judged = b["verification"]["judge"]
-    assert judged["status"] == "ok" and judged["fallback_form"] == "mock" and judged["coverage"] == 1.0
-    assert (judged["input_tokens"], judged["output_tokens"]) == (1800, 420) and judged["garbled_segments"] == []
-    assert judged["reference_translation"][0].startswith("(mock) TONKATSU SET MENU")
-    assert b["judge_cost_usd"] == pytest.approx((1800 * 2 + 420 * 10) / 1e6) and b["tries"][0]["judge_status"] == "ok"
-    assert b["verification"]["coverage"] == 1.0 and b["output"] == "B1_mock_image-model_r1_a1.png"
+    assert judged["status"] == "ok" and judged["fallback_form"] == "mock" and judged["usability"] == 1.0
+    assert (judged["input_tokens"], judged["output_tokens"]) == (3400, 420) and judged["legibility_issues"] == []
+    assert b["judge_cost_usd"] == pytest.approx((3400 * 2 + 420 * 10) / 1e6) and b["tries"][0]["judge_status"] == "ok"
+    assert b["cost_anthropic_usd"] == b["judge_cost_usd"] and b["cost_openrouter_usd"] == 0.0
+    assert b["verification"]["coverage"] == 1.0 and b["verification"]["usability"] == 1.0
+    assert b["output"] == "B1_mock_image-model_r1_a1.png"
     assert np.array_equal(fetch_png(client, job_id, b["output"]), original)
     assert b["output_size"] == [640, 480] and b["aspect_drift_pct"] == 0.0
 
@@ -265,3 +274,92 @@ def test_exif_rotated_upload_is_normalised_before_ocr(client):
     )
     job = wait_done(client, r.json()["job_id"])
     assert (job["image"]["width"], job["image"]["height"]) == (100, 200)
+
+
+def fixture_uploads(n=4):
+    """n different uploads of the mock fixture (one pixel differs), so every job has its own bytes and the same words."""
+    out = []
+    for i in range(n):
+        image = mock.make_fixture().image
+        image.putpixel((0, 0), (i * 7, 1, 2))
+        out.append(png_of(image))
+    return out
+
+
+def test_mock_four_image_batch_end_to_end_is_offline_publishes_and_logs_nothing_private(client, monkeypatch, caplog):
+    import logging
+
+    import anthropic
+    import httpx2
+
+    from app import publish
+
+    # nothing may leave the box: no Claude client, no HTTP client of any kind
+    monkeypatch.setattr(anthropic, "Anthropic", lambda **kw: pytest.fail("mock mode must not build a Claude client"))
+    monkeypatch.setattr(httpx2, "Client", lambda *a, **k: pytest.fail("mock mode must not open an HTTP connection"))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-0000000000000000")
+    monkeypatch.setenv("LAB_TOKEN", "lab-token-secret-value")
+    publish.mock_client().objects.clear()
+    names = ["receipt-secret-name.png", "menu.png", "poster.png", "card.png"]
+    files = [("files", (name, data, "image/png")) for name, data in zip(names, fixture_uploads())]
+    with caplog.at_level(logging.INFO):
+        r = client.post(
+            "/api/batches?token=lab-token-secret-value", files=files,
+            data={"target_lang": "en", "mode_a": "1", "mode_b": "1", "image_models": ["mock/image-model", "other/mock"], "verify_details": "1"},
+        )  # fmt: skip
+        assert r.status_code == 200, r.text
+        batch_id = r.json()["batch_id"]
+        deadline = time.time() + 120
+        while time.time() < deadline:
+            batch = client.get(f"/api/batches/{batch_id}?token=lab-token-secret-value").json()
+            if batch["status"] == "done" and batch["publish"]["status"] in ("done", "skipped", "error"):
+                break
+            time.sleep(0.1)
+        else:
+            raise AssertionError("the batch did not finish")
+
+    assert batch["status"] == "done" and batch["publish"]["status"] == "done" and len(batch["jobs"]) == 4
+    assert [j["image"]["name"] for j in batch["jobs"]] == names
+    for job in batch["jobs"]:
+        assert job["mode_a"]["status"] == "done" and job["mode_a"]["verdict"] == "pass", job["mode_a"].get("error")
+        assert [x["verdict"] for x in job["mode_b"]["results"]] == ["pass", "pass"] and job["publish"]["status"] == "done"
+    assert len(batch["summary"]) == 12 and all(row["verdict"] == "pass" for row in batch["summary"])
+    assert batch["totals"]["rows_passed"] == 12 and batch["totals"]["cost_openrouter_usd"] == 0.0
+
+    # published to the in-memory fake: every job manifest and one batch manifest, the batch one last
+    keys = publish.mock_client().keys("line-bot")
+    assert f"overlay-lab/batch-{batch_id}/manifest.json" in keys
+    assert all(f"overlay-lab/{job_id}/manifest.json" in keys for job_id in batch["job_ids"])
+    manifest = json.loads(publish.mock_client().objects[("line-bot", f"overlay-lab/batch-{batch_id}/manifest.json")]["data"])
+    assert manifest["schema_version"] == 3 and len(manifest["jobs"]) == 4 and all(j["manifest"] for j in manifest["jobs"])
+
+    # the log: counts and ids only, no OCR text, no translation, no file name, no secret, no image data
+    logged = " ".join(rec.getMessage() for rec in caplog.records if rec.name.startswith("lab."))  # the lab's own loggers
+    assert "stage=judge" in logged and "stage=publish batch=" in logged
+    for private in ("TONKATSU", "NT$120", "紅燒肉飯店", "LUNCH", "SPECIAL", "Pork Cutlet", "Braised", "special lunch",
+                    "receipt-secret-name", "sk-ant-test", "lab-token-secret-value", "X-Amz-Signature", "/9j/", "iVBOR"):  # fmt: skip
+        assert private not in logged, private
+
+
+def test_a_failure_message_that_quotes_image_text_reaches_the_page_but_not_the_log(client, monkeypatch, caplog):
+    import logging
+
+    from app import claude_units
+    from app.models import ModeError
+
+    def boom(*a, **k):
+        raise ModeError("Claude's JSON does not match the unit schema: input_value='紅燒肉飯店 NT$120'")
+
+    monkeypatch.setattr(claude_units, "request_units", boom)
+    fx = mock.make_fixture()
+    with caplog.at_level(logging.INFO):
+        r = client.post(
+            "/api/jobs",
+            files={"file": ("fixture.png", png_of(fx.image), "image/png")},
+            data={"target_lang": "en", "mode_a": "1", "mode_b": "0"},
+        )
+        job = wait_done(client, r.json()["job_id"])
+    assert job["mode_a"]["status"] == "error" and "紅燒肉飯店" in job["mode_a"]["error"]  # the owner sees why
+    logged = " ".join(rec.getMessage() for rec in caplog.records if rec.name.startswith("lab."))
+    assert "mode A failed" in logged and "ModeError" in logged and "紅燒肉飯店" not in logged and "NT$120" not in logged
+    assert not any(rec.exc_info for rec in caplog.records if rec.name.startswith("lab."))  # no traceback with the message in it

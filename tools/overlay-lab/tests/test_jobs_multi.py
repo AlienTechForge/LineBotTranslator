@@ -1,4 +1,4 @@
-"""Mode B through the HTTP API: several models in parallel, verification, the one retry, size option."""
+"""Mode B through the HTTP API: several models in parallel, the judge, the one retry, runs, size option."""
 
 import io
 import threading
@@ -13,17 +13,18 @@ from app.main import create_app
 SOURCE = png_of_size((80, 60))
 SRC_OCR = ocr(("TEL", "en"), ("77446716", "en"), ("営業時間", "ja"), ("メニュー", "ja"), ("ご飯", "ja"), ("定食", "ja"))
 GOOD = ocr(("TEL", "en"), ("77446716", "en"), ("Hours", "en"), ("Menu", "en"), ("Rice", "en"), ("Set", "en"))
+# what Vision reads in outputs the judge condemns (the OCR text is only a warning now)
 DIGITS = ocr(("TEL", "en"), ("09446916", "en"), ("Hours", "en"), ("Menu", "en"), ("Rice", "en"), ("Set", "en"))
-# English words that are not words: the OCR checks see nothing wrong, only the judge does
-GIBBERISH = ocr(("TEL", "en"), ("77446716", "en"), ("Banero", "en"), ("Salaino", "en"), ("Az-infe", "en"), ("Rilchkan", "en"))
-GIBBERISH_JUDGE = judge_record(coverage=0.35, garbled=[("Banero Salaino Az-infe Rilchkan", "営業時間 メニュー ご飯 定食")], cost=0.02)
 PARTIAL = ocr(("TEL", "en"), ("77446716", "en"), ("営業時間", "ja"), ("Menu", "en"), ("Rice", "en"), ("Set", "en"))
-BOTH = ocr(("TEL", "en"), ("09446916", "en"), ("営業時間", "ja"), ("Menu", "en"), ("Rice", "en"), ("Set", "en"))
+
+NUMBERS_JUDGE = judge_record(usability=0.9, altered=[("77446716", "09446916")], cost=0.02)
+PARTIAL_JUDGE = judge_record(usability=0.88, untranslated=["営業時間"], cost=0.02)
+GARBLED_JUDGE = judge_record(usability=0.35, garbled=[("middle column", "Banero Salaino Az-infe", True)], cost=0.02)
 
 
 @pytest.fixture
 def client(monkeypatch, tmp_path):
-    monkeypatch.setenv("LAB_MOCK", "1")  # offline publishing (in-memory fake); the model and OCR calls are scripted
+    monkeypatch.setenv("LAB_MOCK", "1")  # offline publishing (in-memory fake); the model, OCR and judge calls are scripted
     monkeypatch.setenv("LAB_DATA_DIR", str(tmp_path / "data"))
     return TestClient(create_app())
 
@@ -100,8 +101,10 @@ def test_the_source_is_ocr_ed_once_and_shared_by_mode_a_and_every_model(client, 
     job = wait_for(client, r.json()["job_id"])
     assert job["mode_a"]["status"] == "done", job["mode_a"].get("error")
     assert [x["verdict"] for x in job["mode_b"]["results"]] == ["pass", "pass"]
-    assert scenario.source_ocr_calls == 1  # Mode A + two models' verification: one Vision call
-    assert len(scenario.ocr_calls) == 2  # one per output image
+    assert job["mode_a"]["verdict"] == "pass"  # Mode A goes through the same judge
+    assert scenario.source_ocr_calls == 1  # Mode A + two models' checks: one Vision call on the source
+    assert len(scenario.ocr_calls) == 3  # one per output image: two models and the Mode A output
+    assert len(scenario.judge_calls) == 3
 
 
 def test_mode_b_alone_prefetches_the_source_ocr_once_for_all_models(client, monkeypatch):
@@ -111,7 +114,7 @@ def test_mode_b_alone_prefetches_the_source_ocr_once_for_all_models(client, monk
     assert job["mode_a"]["status"] == "skipped"
 
 
-def test_mode_a_is_optional_and_off_by_default(client, monkeypatch):
+def test_mode_a_is_optional_and_off_unless_asked_for_through_the_api(client, monkeypatch):
     Scenario(SOURCE, SRC_OCR, {"m/a": [step(GOOD)]}).install(monkeypatch)
     r = client.post("/api/jobs", files={"file": ("a.png", SOURCE, "image/png")}, data={"mode_b": "1", "image_models": "m/a"})
     job = wait_for(client, r.json()["job_id"])
@@ -119,11 +122,54 @@ def test_mode_a_is_optional_and_off_by_default(client, monkeypatch):
     assert job["params"]["verify"] is True  # verification is on by default
 
 
-# ---------------------------------------------------------------- verification and the one retry
+# ---------------------------------------------------------------- the judge sees the pictures
+
+
+def test_the_judge_gets_the_source_ocr_the_original_and_the_output_picture(client, monkeypatch):
+    scenario, job = run(client, monkeypatch, {"m/a": [step(GOOD, size=(160, 120))]})
+    (call,) = scenario.judge_calls
+    assert call["source"] == "TEL 77446716 営業時間 メニュー ご飯 定食" and call["lang"] == "en"
+    assert call["source_size"] == (80, 60)  # the original, as uploaded
+    (result,) = job["mode_b"]["results"]
+    assert call["output_png"] == client.get(f"/files/{job['job_id']}/{result['output']}").content  # the output, not its OCR
+    assert result["verification"]["judge"]["status"] == "ok"
+
+
+def test_the_judge_works_from_the_pictures_alone_when_vision_cannot_read_the_source(client, monkeypatch):
+    from app import vision
+    from app.models import ModeError
+
+    scenario = Scenario(SOURCE, SRC_OCR, {"m/a": [step(GOOD)]}).install(monkeypatch)
+    real = vision.ocr_words
+
+    def source_fails(image_bytes, width, height):
+        if image_bytes == SOURCE:
+            raise ModeError("Google Vision credentials are not usable")
+        return real(image_bytes, width, height)
+
+    monkeypatch.setattr(vision, "ocr_words", source_fails)
+    job = wait_for(client, post(client, ["m/a"]).json()["job_id"])
+    (res,) = job["mode_b"]["results"]
+    assert res["status"] == "done" and res["verdict"] == "pass"  # the judge looked at the two pictures
+    assert scenario.judge_calls[0]["source"] is None  # no OCR aid for it
+    assert res["verification"]["ocr_warnings"]["status"] == "unavailable"
+
+
+def test_a_vision_failure_costs_only_the_ocr_warnings_the_judge_still_decides(client, monkeypatch):
+    scenario, job = run(client, monkeypatch, {"m/a": [step(RuntimeError("Google Vision credentials are not usable"))]})
+    (r,) = job["mode_b"]["results"]
+    assert r["status"] == "done" and r["verdict"] == "pass" and r["verify_error"] is None
+    assert r["verification"]["ocr_warnings"]["status"] == "unavailable"
+    assert "credentials" in r["verification"]["ocr_warnings"]["error"]
+    assert len(scenario.calls) == 1 and len(scenario.judge_calls) == 1
+    assert client.get(f"/files/{job['job_id']}/{r['output']}").status_code == 200
+
+
+# ---------------------------------------------------------------- verdicts and the one retry
 
 
 def test_a_failed_check_triggers_one_retry_and_the_better_attempt_is_the_result(client, monkeypatch):
-    plan = {"m/a": [step(DIGITS, cost=0.05, ms=2000), step(GOOD, cost=0.06, ms=3000)]}
+    plan = {"m/a": [step(DIGITS, cost=0.05, ms=2000, judge=NUMBERS_JUDGE), step(GOOD, cost=0.06, ms=3000)]}
     scenario, job = run(client, monkeypatch, plan)
     (r,) = job["mode_b"]["results"]
 
@@ -131,12 +177,15 @@ def test_a_failed_check_triggers_one_retry_and_the_better_attempt_is_the_result(
     first, second = scenario.calls
     assert first["prompt"] is None  # the default prompt
     assert second["prompt"].startswith(openrouter.build_prompt("en") + "\n\n")
-    assert "77446716" in second["prompt"] and "Hours" not in second["prompt"]  # names the digits, no leftover words
+    assert '"77446716" (your output has "09446916"' in second["prompt"]  # what the judge found, to be copied exactly
+    assert "digit sequences" not in second["prompt"]  # the OCR checks never write the retry
 
     t1, t2 = r["tries"]
-    assert (t1["n"], t1["verdict"], t1["selected"]) == (1, "digits-changed", False)
+    assert (t1["n"], t1["verdict"], t1["selected"]) == (1, "numbers", False)
     assert (t2["n"], t2["verdict"], t2["selected"]) == (2, "pass", True)
-    assert t1["verification"]["missing_digit_runs"] == ["77446716"]
+    # the OCR digit check saw the same change, but only as a warning
+    assert t1["verification"]["ocr_warnings"]["missing_digit_runs"] == ["77446716"]
+    assert t1["verification"]["failed_checks"] == ["numbers"] and t2["verification"]["ocr_warnings"]["warnings"] == []
     assert r["verdict"] == "pass" and r["selected_attempt"] == 2 and r["output"] == t2["output"]
     assert t1["output"] != t2["output"]
     for t in (t1, t2):  # both attempts' images and verification files stay available
@@ -148,31 +197,42 @@ def test_a_failed_check_triggers_one_retry_and_the_better_attempt_is_the_result(
     assert scenario.source_ocr_calls == 1 and len(scenario.ocr_calls) == 2
 
 
-def test_retry_prompt_names_leftover_words_when_the_translation_is_partial(client, monkeypatch):
-    plan = {"m/a": [step(PARTIAL), step(GOOD)]}
+def test_the_ocr_warnings_never_trigger_a_retry_or_write_the_retry_prompt(client, monkeypatch):
+    # the output OCR shows a changed number and an untranslated title, but the judge looked at the picture and is happy
+    scenario, job = run(client, monkeypatch, {"m/a": [step(PARTIAL)], "m/b": [step(DIGITS)]})
+    for r in job["mode_b"]["results"]:
+        assert r["verdict"] == "pass" and len(r["tries"]) == 1 and r["retry_error"] is None
+    assert len(scenario.calls) == 2  # no second generation anywhere
+    warnings = {r["model"]: r["verification"]["ocr_warnings"]["warnings"] for r in job["mode_b"]["results"]}
+    assert warnings["m/b"] == ["digits-missing"] and "leftover-ratio" in warnings["m/a"]
+
+
+def test_retry_prompt_names_the_major_untranslated_text_the_judge_found(client, monkeypatch):
+    plan = {"m/a": [step(PARTIAL, judge=PARTIAL_JUDGE), step(GOOD)]}
     scenario, job = run(client, monkeypatch, plan)
     prompt = scenario.calls[1]["prompt"]
-    assert "営業時間" in prompt and "digit sequences" not in prompt
+    assert '"営業時間"' in prompt and "still in the source language" in prompt and "digit sequences" not in prompt
     assert job["mode_b"]["results"][0]["tries"][0]["verdict"] == "partial"
 
 
 def test_a_worse_retry_is_not_preferred(client, monkeypatch):
-    # attempt 1 left a title untranslated (partial); attempt 2 translated it but changed digits
-    plan = {"m/a": [step(PARTIAL, cost=0.05), step(DIGITS, cost=0.05)]}
+    # attempt 1 left a title untranslated (partial); attempt 2 translated it but changed a number
+    plan = {"m/a": [step(PARTIAL, cost=0.05, judge=PARTIAL_JUDGE), step(DIGITS, cost=0.05, judge=NUMBERS_JUDGE)]}
     _, job = run(client, monkeypatch, plan)
     (r,) = job["mode_b"]["results"]
-    assert [t["verdict"] for t in r["tries"]] == ["partial", "digits-changed"]
+    assert [t["verdict"] for t in r["tries"]] == ["partial", "numbers"]
     assert r["verdict"] == "partial" and r["selected_attempt"] == 1
     assert [t["selected"] for t in r["tries"]] == [True, False]
     assert r["cost_usd"] == pytest.approx(0.10)  # the discarded attempt still costs money
 
 
-def test_digits_changed_in_both_attempts_still_shows_the_attempt_with_fewer_problems(client, monkeypatch):
-    plan = {"m/a": [step(BOTH), step(DIGITS)]}
+def test_numbers_changed_in_both_attempts_still_shows_the_attempt_with_fewer_problems(client, monkeypatch):
+    both = judge_record(usability=0.9, altered=[("77446716", "09446916")], untranslated=["営業時間"])
+    plan = {"m/a": [step(DIGITS, judge=both), step(DIGITS, judge=NUMBERS_JUDGE)]}
     _, job = run(client, monkeypatch, plan)
     (r,) = job["mode_b"]["results"]
-    assert [t["verdict"] for t in r["tries"]] == ["digits-changed+partial", "digits-changed"]
-    assert r["selected_attempt"] == 2 and r["verdict"] == "digits-changed"
+    assert [t["verdict"] for t in r["tries"]] == ["numbers+partial", "numbers"]
+    assert r["selected_attempt"] == 2 and r["verdict"] == "numbers"
 
 
 def test_a_passing_first_attempt_is_not_retried(client, monkeypatch):
@@ -183,20 +243,74 @@ def test_a_passing_first_attempt_is_not_retried(client, monkeypatch):
 
 
 def test_a_failing_retry_keeps_the_first_attempt(client, monkeypatch):
-    plan = {"m/a": [step(PARTIAL, cost=0.05), step(None, fail=RuntimeError("retry blew up"))]}
+    plan = {"m/a": [step(PARTIAL, cost=0.05, judge=PARTIAL_JUDGE), step(None, fail=RuntimeError("retry blew up"))]}
     _, job = run(client, monkeypatch, plan)
     (r,) = job["mode_b"]["results"]
     assert r["status"] == "done" and r["verdict"] == "partial" and r["selected_attempt"] == 1
     assert "retry blew up" in r["retry_error"] and len(r["tries"]) == 1
 
 
-def test_a_verification_that_cannot_run_leaves_the_picture_unverified_and_does_not_retry(client, monkeypatch):
-    scenario, job = run(client, monkeypatch, {"m/a": [step(RuntimeError("Google Vision credentials are not usable"))]})
-    (r,) = job["mode_b"]["results"]
-    assert r["status"] == "done" and r["verdict"] == "unverified" and r["verification"] is None
-    assert "credentials" in r["verify_error"]
-    assert len(scenario.calls) == 1  # no retry on a check that did not run
-    assert client.get(f"/files/{job['job_id']}/{r['output']}").status_code == 200
+def test_a_garbled_attempt_never_beats_a_clean_one_whichever_comes_first(client, monkeypatch):
+    plan = {"m/a": [step(GOOD, judge=GARBLED_JUDGE), step(GOOD, judge=GARBLED_JUDGE)]}
+    scenario, job = run(client, monkeypatch, plan)
+    (res,) = job["mode_b"]["results"]
+    assert [t["verdict"] for t in res["tries"]] == ["garbled+score", "garbled+score"] and res["selected_attempt"] == 1  # tie: the earlier
+    assert len(scenario.calls) == 2
+    assert 'readable English text: middle column: "Banero Salaino Az-infe"' in scenario.calls[1]["prompt"]
+
+
+def test_an_unavailable_judge_leaves_the_attempt_unverified_and_never_retries_it(client, monkeypatch):
+    unavailable = judge_record(status="unavailable", error="Claude API error 500: upstream down", cost=None)
+    scenario, job = run(client, monkeypatch, {"m/a": [step(DIGITS, cost=0.04, judge=unavailable)]})
+    (res,) = job["mode_b"]["results"]
+    assert res["status"] == "done" and res["verdict"] == "unverified" and len(res["tries"]) == 1 and len(scenario.calls) == 1
+    (t,) = res["tries"]
+    assert t["judge_status"] == "unavailable" and t["verification"]["judge"]["status"] == "unavailable"
+    assert t["verification"]["usability"] is None and t["verify_error"] is None
+    assert t["verification"]["ocr_warnings"]["missing_digit_runs"] == ["77446716"]  # the warnings are still there
+    assert res["judge_cost_usd"] is None and res["total_cost_usd"] == pytest.approx(0.04)
+
+
+def test_the_judge_can_be_switched_off_and_then_there_is_no_verdict_to_trust(client, monkeypatch):
+    scenario, job = run(client, monkeypatch, {"m/a": [step(GOOD)]}, judge="0")
+    (res,) = job["mode_b"]["results"]
+    assert scenario.judge_calls == [] and job["params"]["judge"] is False and res["judge"] is False
+    assert res["verification"]["judge"] is None and res["tries"][0]["judge_status"] is None
+    assert res["verdict"] == "unverified" and len(scenario.calls) == 1 and res["verification"]["ocr_warnings"]["status"] == "ok"
+    scenario, job = run(client, monkeypatch, {"m/a": [step(GOOD)]}, verify="0")
+    assert scenario.judge_calls == [] and job["params"]["judge"] is False  # no check, no judge
+    scenario, job = run(client, monkeypatch, {"m/a": [step(GOOD)]})
+    assert len(scenario.judge_calls) == 1 and job["params"]["judge"] is True and job["params"]["judge_model"] == "claude-sonnet-5-5"
+
+
+def test_a_big_leftover_word_is_only_an_ocr_warning_now(client, monkeypatch):
+    src = ocr(*[("こんにちは", "ja")] * 100, ("TEL", "en"), ("77446716", "en"))
+    big = ocr(*[("Hello", "en")] * 99, ("メニュー", "ja", 0.9, 40), ("TEL", "en"), ("77446716", "en"))
+    scenario = Scenario(SOURCE, src, {"m/a": [step(big)]}).install(monkeypatch)
+    job = wait_for(client, post(client, ["m/a"]).json()["job_id"])
+    (res,) = job["mode_b"]["results"]
+    assert res["verdict"] == "pass" and len(res["tries"]) == 1 and len(scenario.calls) == 1
+    warnings = res["verification"]["ocr_warnings"]
+    assert warnings["warnings"] == ["leftover-big-glyph"] and warnings["big_leftover_words"][0]["word"] == "メニュー"
+
+
+def test_the_ocr_confidence_reaches_the_digit_warning_through_the_job(client, monkeypatch):
+    # the round-3 false alarm: Vision read the handwritten 77446716 as 97446716 (confidence 0.5); the model had it right
+    src = ocr(("TEL", "en", 0.99), ("97446716", "en", 0.5), ("営業時間", "ja"), ("メニュー", "ja"), ("ご飯", "ja"), ("定食", "ja"))
+    scenario = Scenario(SOURCE, src, {"m/a": [step(GOOD)]}).install(monkeypatch)
+    job = wait_for(client, post(client, ["m/a"]).json()["job_id"])
+    (res,) = job["mode_b"]["results"]
+    assert res["verdict"] == "pass" and len(res["tries"]) == 1 and len(scenario.calls) == 1  # no needless retry
+    run_info = res["verification"]["ocr_warnings"]["digit_runs"][0]
+    assert (run_info["soft"], run_info["status"], run_info["matched"]) == (True, "near", "77446716")
+
+
+def test_ocr_text_is_only_kept_when_details_are_asked_for(client, monkeypatch):
+    _, job = run(client, monkeypatch, {"m/a": [step(GOOD)]})
+    assert "output_text" not in job["mode_b"]["results"][0]["verification"]["ocr_warnings"]
+    _, job = run(client, monkeypatch, {"m/a": [step(GOOD)]}, verify_details="1")
+    assert job["mode_b"]["results"][0]["verification"]["ocr_warnings"]["output_text"].startswith("TEL 77446716")
+    assert job["params"]["verify_details"] is True
 
 
 def test_verification_can_be_switched_off_through_the_api(client, monkeypatch):
@@ -206,12 +320,14 @@ def test_verification_can_be_switched_off_through_the_api(client, monkeypatch):
     assert scenario.source_ocr_calls == 0 and scenario.ocr_calls == [] and len(scenario.calls) == 1
 
 
-def test_ocr_text_is_only_kept_when_details_are_asked_for(client, monkeypatch):
-    _, job = run(client, monkeypatch, {"m/a": [step(GOOD)]})
-    assert "output_text" not in job["mode_b"]["results"][0]["verification"]
-    _, job = run(client, monkeypatch, {"m/a": [step(GOOD)]}, verify_details="1")
-    assert job["mode_b"]["results"][0]["verification"]["output_text"].startswith("TEL 77446716")
-    assert job["params"]["verify_details"] is True
+def test_the_cost_of_a_run_is_split_into_openrouter_cash_and_anthropic_credit(client, monkeypatch):
+    plan = {"m/a": [step(DIGITS, cost=0.05, judge=NUMBERS_JUDGE), step(GOOD, cost=0.06)]}
+    _, job = run(client, monkeypatch, plan)
+    (r,) = job["mode_b"]["results"]
+    assert r["cost_openrouter_usd"] == pytest.approx(0.11) == pytest.approx(r["cost_usd"])
+    assert r["cost_anthropic_usd"] == pytest.approx(0.03) == pytest.approx(r["judge_cost_usd"])  # 0.02 + 0.01
+    assert r["total_cost_usd"] == pytest.approx(0.14)
+    assert r["usability"] == 1.0 and r["coverage"] == 1.0  # the selected attempt's scores
 
 
 # ---------------------------------------------------------------- request validation and the size option
@@ -237,12 +353,13 @@ def test_at_most_four_models_and_duplicates_are_merged(client, monkeypatch):
 
 
 def test_the_legacy_single_model_field_still_works_and_empty_means_the_default(client, monkeypatch):
-    scenario = Scenario(SOURCE, SRC_OCR, {"m/legacy": [step(GOOD)], "google/gemini-2.5-flash-image": [step(GOOD)]}).install(monkeypatch)
+    default = "google/gemini-3-pro-image"
+    scenario = Scenario(SOURCE, SRC_OCR, {"m/legacy": [step(GOOD)], default: [step(GOOD)]}).install(monkeypatch)
     r = client.post("/api/jobs", files={"file": ("a.png", SOURCE, "image/png")}, data={"mode_b": "1", "image_model": "m/legacy"})
     assert wait_for(client, r.json()["job_id"])["params"]["image_models"] == ["m/legacy"]
     r = client.post("/api/jobs", files={"file": ("a.png", SOURCE, "image/png")}, data={"mode_b": "1"})
-    assert wait_for(client, r.json()["job_id"])["params"]["image_models"] == ["google/gemini-2.5-flash-image"]
-    assert [c["model"] for c in scenario.calls] == ["m/legacy", "google/gemini-2.5-flash-image"]
+    assert wait_for(client, r.json()["job_id"])["params"]["image_models"] == [default]
+    assert [c["model"] for c in scenario.calls] == ["m/legacy", default]
 
 
 def test_invalid_model_id_in_the_list_is_rejected(client, monkeypatch):
@@ -270,15 +387,17 @@ def test_unknown_output_size_is_rejected(client, monkeypatch):
     assert post(client, ["m/a"], output_size="8K").status_code == 400
 
 
-def test_index_page_offers_the_size_option_and_the_multi_model_picker(client):
+def test_index_page_offers_the_size_option_the_multi_model_picker_and_the_round_5_defaults(client):
     html = client.get("/").text
     for needle in ("預設", ">1K<", ">2K<", ">4K<", "最多 4 個", "顯示驗證細節", "給審閱者的連結", 'id="mode-a"'):
         assert needle in html, needle
-    assert 'id="mode-a" checked' not in html  # Mode A defaults to off
-    assert 'id="mode-b" checked' in html
+    assert 'id="mode-a" checked' in html and 'id="mode-b" checked' in html  # round 5: both modes on
+    assert 'id="mode-a-retry" checked' in html  # the Mode A retry is on by default (MODE_A_RETRY)
+    assert 'data-default-model="google/gemini-3-pro-image"' in html  # Pro is preselected; the multi-select stays
+    assert "multiple" in html and 'id="file"' in html and 'data-max-batch="4"' in html
 
 
-def test_index_page_has_the_batch_and_judge_controls_and_defaults_to_2K(client):
+def test_index_page_has_the_batch_summary_the_judge_controls_and_defaults_to_2K(client):
     html = client.get("/").text
     assert "每個模型連跑 N 次" in html and 'id="runs"' in html
     assert '<option value="1" selected>1</option>' in html and '<option value="3">3</option>' in html
@@ -286,12 +405,19 @@ def test_index_page_has_the_batch_and_judge_controls_and_defaults_to_2K(client):
     assert '<option value="2K" selected>2K</option>' in html and '<option value="1K" selected' not in html
     assert '<option value="default">' in html  # the provider's own size is still selectable
     assert 'id="judge" checked' in html and "claude-sonnet-5-5" in html
-    assert "同時最多 4 個生成" in html and 'id="summary"' in html
-    for needle in ("garbled", "digits-changed+garbled+partial", "judge 的參考翻譯", "各模型彙總", "無法確認的數字", "大字沒翻"):
+    assert "最多 4 個生成" in html and "Claude 呼叫" in html and 'id="summary"' in html and 'id="batch-share"' in html
+    for needle in ("Anthropic（額度）", "OpenRouter（現金）", "批次彙總", "批次 manifest", "OCR 警告", "numbers", "rows", "garbled", "partial", "score"):
         assert needle in html, needle
+    assert html.index('id="summary"') < html.index('id="batch-share"') < html.index('id="jobs"')  # the table comes first
 
 
-# ---------------------------------------------------------------- round 4: batch runs
+def test_models_endpoint_carries_the_route_preference(client):
+    body = client.get("/api/image-models").json()
+    assert body["details"]["mock/image-model"]["preferred_route"] == "chat"
+    assert all("preferred_route" in d for d in body["details"].values())
+
+
+# ---------------------------------------------------------------- batch runs of one model
 
 
 def batch_job(client, monkeypatch, plan, *, runs, models=None, **kw):
@@ -357,13 +483,13 @@ def test_a_single_run_keeps_the_round_3_shape_and_still_has_a_summary(client, mo
 
 
 def test_a_run_with_a_failed_check_retries_on_its_own_and_does_not_touch_the_other_runs(client, monkeypatch):
-    # every call returns the digits-changed output first and the good one for the retry: 2 runs = 4 calls
-    steps = [step(DIGITS, cost=0.05), step(DIGITS, cost=0.05), step(GOOD, cost=0.06), step(GOOD, cost=0.06)]
+    # every first attempt is judged "numbers", every retry is clean: 2 runs = 4 generations
+    steps = [step(DIGITS, cost=0.05, judge=NUMBERS_JUDGE), step(DIGITS, cost=0.05, judge=NUMBERS_JUDGE), step(GOOD, cost=0.06), step(GOOD, cost=0.06)]
     scenario, job = batch_job(client, monkeypatch, {"m/a": steps}, runs=2)
     first_prompts = [c["prompt"] for c in scenario.calls]
     assert first_prompts[:2] == [None, None] and all("77446716" in p for p in first_prompts[2:])
     for r in job["mode_b"]["results"]:
-        assert [t["verdict"] for t in r["tries"]] == ["digits-changed", "pass"] and r["selected_attempt"] == 2
+        assert [t["verdict"] for t in r["tries"]] == ["numbers", "pass"] and r["selected_attempt"] == 2
         assert r["cost_usd"] == pytest.approx(0.11)
     assert job["mode_b"]["summary"][0]["pass_rate"] == 1.0
 
@@ -410,96 +536,3 @@ def test_runs_default_to_one_and_a_non_number_is_rejected(client, monkeypatch):
     assert job["params"]["runs"] == 1 and len(job["mode_b"]["results"]) == 1
     Scenario(SOURCE, SRC_OCR, {}).install(monkeypatch)
     assert post(client, ["m/a"], runs="many").status_code == 422
-
-
-# ---------------------------------------------------------------- round 4: the judge inside the attempt loop
-
-
-def test_a_garbled_output_is_caught_by_the_judge_retried_with_its_findings_and_the_clean_attempt_wins(client, monkeypatch):
-    plan = {"m/a": [step(GIBBERISH, cost=0.05), step(GOOD, cost=0.06)]}
-    judge_plan = {" ".join(w.text for w in GIBBERISH.words): GIBBERISH_JUDGE}
-    scenario = Scenario(SOURCE, SRC_OCR, plan, judge=judge_plan).install(monkeypatch)
-    r = post(client, ["m/a"])
-    job = wait_for(client, r.json()["job_id"])
-    (res,) = job["mode_b"]["results"]
-
-    t1, t2 = res["tries"]
-    assert (t1["verdict"], t2["verdict"]) == ("garbled", "pass")  # the OCR checks alone would have said pass
-    assert t1["verification"]["digits_ok"] and t1["verification"]["leftover_ok"] and t1["verification"]["coverage"] == 0.35
-    assert res["selected_attempt"] == 2 and res["verdict"] == "pass"
-    retry = scenario.calls[1]["prompt"]
-    assert "These parts of your output are not real English text: \"Banero Salaino Az-infe Rilchkan\"" in retry
-    assert "correct translation of: \"営業時間 メニュー ご飯 定食\"" in retry
-    # one judge call per attempt, fed with the OCR of both sides
-    assert len(scenario.judge_calls) == 2 and scenario.judge_calls[0]["output"] == "TEL 77446716 Banero Salaino Az-infe Rilchkan"
-    assert scenario.judge_calls[0]["source"].startswith("TEL 77446716 営業時間") and scenario.judge_calls[0]["lang"] == "en"
-    # the judge's cost and time are kept next to the generation's
-    assert t1["judge_status"] == "ok" and t1["judge_cost_usd"] == pytest.approx(0.02) and t2["judge_cost_usd"] == pytest.approx(0.01)
-    assert res["judge_cost_usd"] == pytest.approx(0.03) and res["cost_usd"] == pytest.approx(0.11)
-    assert res["total_cost_usd"] == pytest.approx(0.14) and res["judge_ms"] == 14  # the scripted judge says 7 ms per call
-    saved = client.get(f"/files/{job['job_id']}/{t1['verification_file']}").json()
-    assert saved["verdict"] == "garbled" and saved["judge"]["garbled_segments"][0]["output_text"].startswith("Banero")
-    assert saved["run"] == 1 and saved["attempt"] == 1
-
-
-def test_a_garbled_attempt_never_beats_a_clean_one_whichever_comes_first(client, monkeypatch):
-    plan = {"m/a": [step(GOOD), step(GOOD)]}
-    judge_plan = {" ".join(w.text for w in GOOD.words): judge_record(coverage=0.5)}  # the judge doubts both
-    scenario = Scenario(SOURCE, SRC_OCR, plan, judge=judge_plan).install(monkeypatch)
-    job = wait_for(client, post(client, ["m/a"]).json()["job_id"])
-    (res,) = job["mode_b"]["results"]
-    assert [t["verdict"] for t in res["tries"]] == ["garbled", "garbled"] and res["selected_attempt"] == 1  # tie: the earlier
-    assert len(scenario.calls) == 2
-
-
-def test_an_unavailable_judge_does_not_fail_or_retry_the_attempt(client, monkeypatch):
-    unavailable = judge_record(status="unavailable", error="Claude API error 500: upstream down", cost=None)
-    judge_plan = {" ".join(w.text for w in GOOD.words): unavailable}
-    scenario = Scenario(SOURCE, SRC_OCR, {"m/a": [step(GOOD, cost=0.04)]}, judge=judge_plan).install(monkeypatch)
-    job = wait_for(client, post(client, ["m/a"]).json()["job_id"])
-    (res,) = job["mode_b"]["results"]
-    assert res["status"] == "done" and res["verdict"] == "pass" and len(res["tries"]) == 1 and len(scenario.calls) == 1
-    (t,) = res["tries"]
-    assert t["judge_status"] == "unavailable" and t["verification"]["judge"]["status"] == "unavailable"
-    assert t["verification"]["coverage"] is None and t["verify_error"] is None
-    assert res["judge_cost_usd"] is None and res["total_cost_usd"] == pytest.approx(0.04)
-
-
-def test_the_judge_can_be_switched_off_and_is_off_without_verification(client, monkeypatch):
-    scenario, job = run(client, monkeypatch, {"m/a": [step(GOOD)]}, judge="0")
-    (res,) = job["mode_b"]["results"]
-    assert scenario.judge_calls == [] and job["params"]["judge"] is False and res["judge"] is False
-    assert res["verification"]["judge"] is None and res["tries"][0]["judge_status"] is None and res["verdict"] == "pass"
-    scenario, job = run(client, monkeypatch, {"m/a": [step(GOOD)]}, verify="0")
-    assert scenario.judge_calls == [] and job["params"]["judge"] is False  # no check, no judge
-    scenario, job = run(client, monkeypatch, {"m/a": [step(GOOD)]})
-    assert len(scenario.judge_calls) == 1 and job["params"]["judge"] is True and job["params"]["judge_model"] == "claude-sonnet-5-5"
-
-
-def test_a_big_leftover_word_triggers_the_retry_even_with_a_tiny_ratio(client, monkeypatch):
-    src = ocr(*[("こんにちは", "ja")] * 100, ("TEL", "en"), ("77446716", "en"))
-    big = ocr(*[("Hello", "en")] * 99, ("メニュー", "ja", 0.9, 40), ("TEL", "en"), ("77446716", "en"))
-    good = ocr(*[("Hello", "en")] * 100, ("TEL", "en"), ("77446716", "en"))
-    scenario = Scenario(SOURCE, src, {"m/a": [step(big), step(good)]}).install(monkeypatch)
-    job = wait_for(client, post(client, ["m/a"]).json()["job_id"])
-    (res,) = job["mode_b"]["results"]
-    assert [t["verdict"] for t in res["tries"]] == ["partial", "pass"]
-    assert res["tries"][0]["verification"]["leftover_ratio"] < 0.08 and res["tries"][0]["verification"]["big_leftover_words"][0]["word"] == "メニュー"
-    assert "メニュー" in scenario.calls[1]["prompt"]
-
-
-def test_the_ocr_confidence_reaches_the_digit_check_through_the_job(client, monkeypatch):
-    # the round-3 false alarm: Vision read the handwritten 77446716 as 97446716 (confidence 0.5); the model had it right
-    src = ocr(("TEL", "en", 0.99), ("97446716", "en", 0.5), ("営業時間", "ja"), ("メニュー", "ja"), ("ご飯", "ja"), ("定食", "ja"))
-    scenario = Scenario(SOURCE, src, {"m/a": [step(GOOD)]}).install(monkeypatch)
-    job = wait_for(client, post(client, ["m/a"]).json()["job_id"])
-    (res,) = job["mode_b"]["results"]
-    assert res["verdict"] == "pass" and len(res["tries"]) == 1 and len(scenario.calls) == 1  # no needless retry
-    run_info = res["verification"]["digit_runs"][0]
-    assert (run_info["soft"], run_info["status"], run_info["matched"]) == (True, "near", "77446716")
-
-
-def test_models_endpoint_carries_the_route_preference(client):
-    body = client.get("/api/image-models").json()
-    assert body["details"]["mock/image-model"]["preferred_route"] == "chat"
-    assert all("preferred_route" in d for d in body["details"].values())

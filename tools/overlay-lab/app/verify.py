@@ -1,34 +1,34 @@
-"""Mode B verification: did the image model keep every digit, translate every line, and write real text?
+"""Mode B / Mode A verification: the judge decides, the OCR checks only warn.
 
-Round 2 showed two defects of whole-image rewrites that a quick look misses: the model re-drew
-handwritten digits (a phone number 77446716 came back as 09446916) and it left one title line
-untranslated. Both are found by running Vision OCR on the SOURCE and on the OUTPUT and comparing
-the two word lists:
+Round 4 judged from OCR text and failed on real images (round 5 brief): Vision misreads tiny
+rendered text and handwriting, so correct pictures were flagged, while errors that need a look at
+both pictures (a duplicated table row, a mistranslated word, a changed phone number) went
+unreported. The verdict now comes from the vision judge (judge.py), which sees the original and the
+output:
 
-* digit integrity - every run of 2+ digits of the source must still be in the output;
-* leftover source language - the share of source-language words that survive in the output
-  must stay at or below LEFTOVER_RATIO_MAX, and no leftover word may be much bigger than the
-  rest of the output (a leftover title is far worse than a leftover footnote).
+====================  ====================================================================
+check                 fails when
+====================  ====================================================================
+``numbers``           the judge lists any ``altered_numbers``
+``rows``              any ``structure_issues`` of type duplicated_row, missing_row or
+                      misaligned_marks
+``garbled``           any ``legibility_issues`` with ``major: true``
+``partial``           any ``untranslated`` with ``major: true``
+``score``             ``usability`` is below USABILITY_MIN (0.80)
+====================  ====================================================================
 
-Round 3 showed what those two cannot see, so round 4 added:
+The verdict is ``pass`` when nothing fails, else the failed checks joined with ``+`` in the order
+above (``numbers+garbled``), and ``unverified`` when the judge is unavailable or skipped (below
+everything else). Attempts are ranked lexicographically on (numbers ok, rows ok, garbled ok,
+partial ok, score ok), then higher usability, then higher coverage, then the earlier attempt.
 
-* the semantic judge (judge.py): Claude reads the OCR text of both sides and reports garbled
-  text (invented words, random characters in the target script) and a coverage score;
-* a handwriting-tolerant digit check: Vision misreads handwritten digits (77446716 read as
-  97446716), so a source run that comes only from low-confidence words is *soft*: it never fails
-  the verdict, and for 5+ digits an output run one digit away counts as a match.
+The round-4 OCR checks stay computed and stored, but only as ``ocr_warnings`` (they no longer touch
+the verdict or the retry prompt):
 
-Thresholds (the same ones the README lists):
-
-* digit run: 2 or more digits, a single `- : / . ,` allowed between two digits, separators
-  stripped (``12:30`` -> ``1230``). The output side is every digit of the output OCR text,
-  concatenated; each distinct HARD source run (confidence >= 0.75, or unknown) must be a
-  substring of it (a run that is printed several times in the source is checked once).
-* soft run (every word it comes from has confidence < 0.75): matched when it is a substring, or
-  (5+ digits) when an output run of the same length differs in at most one digit; otherwise it is
-  reported in `unverified_digit_runs` and never fails.
-* leftover: ratio <= 0.08, and no leftover word taller than 2x the median word height.
-* garbled: the judge lists garbled segments, or its coverage is below 0.90.
+* digit integrity - every run of 2+ digits of the source must still be in the output; a run read
+  only from low-confidence words (handwriting) is *soft* and, for 5+ digits, matches within one digit;
+* leftover source language - the share of source-language words that survive in the output (at most
+  LEFTOVER_RATIO_MAX), and no leftover word much bigger than the rest of the output.
 
 Pure functions, no network: the OCR results and the judge record come in as plain objects.
 """
@@ -48,33 +48,15 @@ MAX_LEFTOVER_LISTED = 20
 SEPARATORS = "-:/.,"
 SOFT_CONFIDENCE_MAX = 0.75  # a word below this is "soft" (handwriting, small print)
 TOLERANT_MIN_DIGITS = 5  # soft runs of at least this many digits match within one digit
-BIG_GLYPH_RATIO = 2.0  # a leftover word taller than this x the median word height forces `partial`
-COVERAGE_MIN = 0.90  # judge coverage below this is `garbled`
+BIG_GLYPH_RATIO = 2.0  # a leftover word taller than this x the median word height is a warning of its own
+USABILITY_MIN = 0.80  # judge usability below this fails the `score` check (0.80 itself passes)
+
+# The checks in order of severity; a verdict is `pass` or the failed ones joined with "+".
+CHECKS = ("numbers", "rows", "garbled", "partial", "score")
+ROW_PROBLEMS = frozenset({"duplicated_row", "missing_row", "misaligned_marks"})  # `shifted` and `other` never fail
 
 VERDICT_PASS = "pass"
-VERDICT_PARTIAL = "partial"
-VERDICT_GARBLED = "garbled"
-VERDICT_GARBLED_PARTIAL = "garbled+partial"
-VERDICT_DIGITS = "digits-changed"
-VERDICT_DIGITS_PARTIAL = "digits-changed+partial"
-VERDICT_DIGITS_GARBLED = "digits-changed+garbled"
-VERDICT_ALL = "digits-changed+garbled+partial"
-VERDICT_UNVERIFIED = "unverified"  # the check itself could not run (no Vision credentials ...)
-
-# Best to worst. The order is lexicographic on (digits kept, no garbled text, no leftover): an
-# attempt that changed digits never beats one that did not, and among attempts with the same digit
-# status one with garbled text never beats one without. "unverified" is below all of them.
-VERDICTS_BEST_TO_WORST = (
-    VERDICT_PASS,
-    VERDICT_PARTIAL,
-    VERDICT_GARBLED,
-    VERDICT_GARBLED_PARTIAL,
-    VERDICT_DIGITS,
-    VERDICT_DIGITS_PARTIAL,
-    VERDICT_DIGITS_GARBLED,
-    VERDICT_ALL,
-)
-VERDICT_RANK = {v: len(VERDICTS_BEST_TO_WORST) - 1 - i for i, v in enumerate(VERDICTS_BEST_TO_WORST)}
+VERDICT_UNVERIFIED = "unverified"  # the judge could not say (no key, API error, no output image, judge off)
 
 _RUN_RE = re.compile(r"[0-9](?:[" + re.escape(SEPARATORS) + r"]?[0-9])*")
 _URLISH_RE = re.compile(
@@ -389,77 +371,141 @@ def check_leftover(
     }
 
 
-def check_garbled(judge: dict | None) -> dict:
-    """What the judge record says about garbled text; a judge that did not answer decides nothing."""
+# ---------------------------------------------------------------- the verdict
+
+
+def _items(judge: dict, key: str) -> list[dict]:
+    return [i for i in judge.get(key) or [] if isinstance(i, dict)]
+
+
+def judge_checks(judge: dict | None) -> dict | None:
+    """The five checks from the judge record; None when the judge gave no answer.
+
+    Each entry is ``{"ok": bool, "count": n}`` (``score`` carries the usability and the threshold).
+    """
     if not judge or judge.get("status") != "ok":
-        return {
-            "garbled_ok": True,
-            "coverage": None,
-            "garbled_count": 0,
-            "judge_status": (judge or {}).get("status"),
-        }
-    garbled = judge.get("garbled_segments") or []
-    coverage = float(judge.get("coverage") if judge.get("coverage") is not None else 1.0)
+        return None
+    altered = _items(judge, "altered_numbers")
+    rows = [i for i in _items(judge, "structure_issues") if i.get("type") in ROW_PROBLEMS]
+    garbled = [i for i in _items(judge, "legibility_issues") if i.get("major")]
+    partial = [i for i in _items(judge, "untranslated") if i.get("major")]
+    raw = judge.get("usability")
+    usability = float(raw) if isinstance(raw, (int, float)) and not isinstance(raw, bool) else 0.0
     return {
-        "garbled_ok": not garbled and coverage >= COVERAGE_MIN,
-        "coverage": round(coverage, 4),
-        "garbled_count": len(garbled),
-        "judge_status": "ok",
+        "numbers": {"ok": not altered, "count": len(altered)},
+        "rows": {"ok": not rows, "count": len(rows)},
+        "garbled": {"ok": not garbled, "count": len(garbled)},
+        "partial": {"ok": not partial, "count": len(partial)},
+        "score": {"ok": usability >= USABILITY_MIN, "usability": round(usability, 4), "min": USABILITY_MIN},
     }
 
 
-def verdict_for(digits_ok: bool, leftover_ok: bool, garbled_ok: bool = True) -> str:
-    """pass, or the problems joined with `+` in the order digits-changed, garbled, partial."""
-    problems = []
-    if not digits_ok:
-        problems.append("digits-changed")
-    if not garbled_ok:
-        problems.append("garbled")
-    if not leftover_ok:
-        problems.append("partial")
+def verdict_for(failed) -> str:
+    """`pass`, or the failed checks joined with `+` in the order numbers, rows, garbled, partial, score."""
+    failed = set(failed)
+    unknown = failed - set(CHECKS)
+    if unknown:
+        raise ValueError(f"unknown check(s): {sorted(unknown)}")
+    problems = [name for name in CHECKS if name in failed]
     return "+".join(problems) if problems else VERDICT_PASS
 
 
-def verify_output(
-    source: OcrResult,
-    output: OcrResult,
-    target_lang: str,
-    include_text: bool = False,
-    judge: dict | None = None,
-) -> dict:
-    """The checks, the verdict, and everything the page and the retry prompt need.
+def verdict_flags(verdict: str | None) -> tuple[bool, ...] | None:
+    """(numbers ok, rows ok, garbled ok, partial ok, score ok) of a verdict; None for `unverified` or junk."""
+    if verdict == VERDICT_PASS:
+        return (True,) * len(CHECKS)
+    if not isinstance(verdict, str) or not verdict:
+        return None
+    failed = verdict.split("+")
+    if any(name not in CHECKS for name in failed):
+        return None
+    return tuple(name not in failed for name in CHECKS)
 
-    `judge` is the record of judge.judge_output for this output (None when the judge is off).
-    """
+
+def is_verified(verdict: str | None) -> bool:
+    return verdict_flags(verdict) is not None
+
+
+def needs_retry(verdict: str | None) -> bool:
+    """A verdict that was actually reached and is not `pass` (an unverified attempt is never retried)."""
+    return is_verified(verdict) and verdict != VERDICT_PASS
+
+
+def _ocr_warnings(source: OcrResult, output: OcrResult, target_lang: str) -> dict:
     output_text = output.text or " ".join(w.text for w in output.words)
     digits = check_digits(source.words, output_text)
     source_lang, method = detect_source_language(source.words)
     leftover = check_leftover(source.words, output.words, target_lang, source_lang)
-    garbled = check_garbled(judge)
-    result = {
-        "verdict": verdict_for(digits["digits_ok"], leftover["leftover_ok"], garbled["garbled_ok"]),
+    codes = []
+    if not digits["digits_ok"]:
+        codes.append("digits-missing")
+    if digits["unverified_digit_runs"]:
+        codes.append("digits-unverified")
+    if not leftover["leftover_ratio_ok"]:
+        codes.append("leftover-ratio")
+    if leftover["big_leftover_words"]:
+        codes.append("leftover-big-glyph")
+    return {
+        "status": "ok",
+        "warnings": codes,
         **digits,
         **leftover,
-        **garbled,
-        "judge": judge,
         "source_language": source_lang,
         "source_language_method": method,
-        "target_language": _target_base(target_lang),
         "source_word_count": len(source.words),
         "output_word_count": len(output.words),
+        "output_text": output_text,
+    }
+
+
+def verify_output(
+    source: OcrResult | None,
+    output: OcrResult | None,
+    target_lang: str,
+    include_text: bool = False,
+    judge: dict | None = None,
+    ocr_error: str | None = None,
+) -> dict:
+    """The verdict from the judge record, plus the OCR checks as warnings.
+
+    `judge` is the record of judge.judge_output (None when the judge is off). `source` / `output`
+    are the Vision results; when Vision failed they are None and `ocr_error` says why: the verdict
+    does not depend on them, so the warnings are just missing.
+    """
+    checks = judge_checks(judge)
+    if checks is None:
+        verdict, failed, usability, coverage = VERDICT_UNVERIFIED, [], None, None
+    else:
+        failed = [name for name in CHECKS if not checks[name]["ok"]]
+        verdict = verdict_for(failed)
+        usability, coverage = checks["score"]["usability"], judge.get("coverage")
+    if source is not None and output is not None:
+        warnings = _ocr_warnings(source, output, target_lang)
+        if not include_text:
+            warnings.pop("output_text", None)
+    else:
+        warnings = {"status": "unavailable", "error": ocr_error or "no OCR result", "warnings": []}
+    result = {
+        "verdict": verdict,
+        "failed_checks": failed,
+        "checks": checks,
+        "usability": usability,
+        "coverage": round(float(coverage), 4) if isinstance(coverage, (int, float)) else None,
+        "judge": judge,
+        "judge_status": (judge or {}).get("status"),
+        "ocr_warnings": warnings,
+        "target_language": _target_base(target_lang),
         "thresholds": {
+            "usability_min": USABILITY_MIN,
             "leftover_ratio_max": LEFTOVER_RATIO_MAX,
             "min_run_digits": MIN_RUN_DIGITS,
             "soft_confidence_max": SOFT_CONFIDENCE_MAX,
             "tolerant_min_digits": TOLERANT_MIN_DIGITS,
             "big_glyph_ratio": BIG_GLYPH_RATIO,
-            "coverage_min": COVERAGE_MIN,
         },
     }
-    if not source.words:
-        result["note"] = "the source OCR found no words, nothing to compare"
-    if include_text:
-        result["output_text"] = output_text
+    if source is not None and not source.words:
+        result["note"] = "the source OCR found no words: the OCR warnings have nothing to compare"
     return result
 
 
@@ -469,19 +515,20 @@ def verify_output(
 def attempt_key(verification: dict | None) -> tuple:
     """Sort key of an attempt, bigger is better.
 
-    First the verdict (VERDICTS_BEST_TO_WORST; an attempt that changed digits never beats one
-    that did not, and with equal digits garbled text never beats clean text), then the judge's
-    coverage (higher; unknown counts as below any known value), fewer missing digit runs and a
-    lower leftover ratio. Attempts that could not be verified rank below every verdict.
+    A verified attempt beats an unverified one. Among verified attempts: lexicographic on
+    (numbers ok, rows ok, garbled ok, partial ok, score ok), then the judge's usability, then its
+    coverage (an unknown value counts as below any known one).
     """
-    if not verification or verification.get("verdict") not in VERDICT_RANK:
-        return (-1, -1.0, 0, 0.0)
-    coverage = verification.get("coverage")
+    flags = verdict_flags((verification or {}).get("verdict"))
+    if flags is None:
+        return (0,)
+    usability = (verification or {}).get("usability")
+    coverage = (verification or {}).get("coverage")
     return (
-        VERDICT_RANK[verification["verdict"]],
+        1,
+        *flags,
+        float(usability) if isinstance(usability, (int, float)) else -1.0,
         float(coverage) if isinstance(coverage, (int, float)) else -1.0,
-        -len(verification.get("missing_digit_runs") or []),
-        -float(verification.get("leftover_ratio") or 0.0),
     )
 
 

@@ -5,9 +5,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Fonts used to draw the translations: Noto Sans CJK (TC / SC / JP / KR faces) and DejaVu Sans.
+# Fonts used to draw the translations: Noto Sans (Latin), Noto Sans CJK (TC / SC / JP / KR faces) and DejaVu Sans as the fallback.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends fonts-noto-cjk fonts-dejavu-core \
+    && apt-get install -y --no-install-recommends fonts-noto-core fonts-noto-cjk fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

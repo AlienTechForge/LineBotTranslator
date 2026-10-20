@@ -42,6 +42,7 @@ from .config import (
 from . import verify
 from .imaging import LoadedImage, to_jpeg_base64
 from .models import ModeError
+from .quoting import flat, quote, unique
 
 log = logging.getLogger("lab.openrouter")
 
@@ -73,35 +74,31 @@ RETRY_TEMPLATE = (
     "from the original and fix exactly the following, the hard rules above still apply:\n"
     "{problems}"
 )
-RETRY_DIGITS_LINE = (
-    "- These digit sequences of the original image were changed or lost in your output. Copy them "
-    "exactly as they are written in the original, character for character: {runs}."
+# What the vision judge (judge.py) found; each line appears only when there is something to name.
+RETRY_NUMBERS_LINE = (
+    "- These numbers differ between the original image and your output. Copy each of them exactly "
+    "as it is written in the original: {items}."
 )
-RETRY_LEFTOVER_LINE = (
-    "- These words are still in the source language in your output. Translate them into "
-    "{language} as well: {words}."
+RETRY_ROWS_LINE = (
+    "- The rows or items of your output do not match the original: {items}. Draw every row exactly "
+    "once, in the original order, with the handwritten marks, prices and quantities next to the "
+    "same item as in the original."
 )
-# what the semantic judge (judge.py) found; each line appears only when there is something to name
 RETRY_GARBLED_LINE = (
-    "- These parts of your output are not real {language} text: {outputs}. Re-render them as the "
-    "correct translation of: {sources}."
-)
-RETRY_GARBLED_BLIND_LINE = (
-    "- These parts of your output are not real {language} text: {outputs}. Re-render them as "
-    "correct {language} text that translates the original text at the same place."
+    "- These parts of your output are not real, readable {language} text: {items}. Re-render each "
+    "of those regions as correct, legible {language} text that translates the original text at "
+    "the same place."
 )
 RETRY_UNTRANSLATED_LINE = (
     "- These parts of your output are still in the source language. Translate them into "
-    "{language} as well: {segments}."
+    "{language} as well: {items}."
 )
-RETRY_NUMBERS_LINE = (
-    "- These numbers differ between the original image and your output. Copy each of them exactly "
-    "as it is written in the original: {pairs}."
-)
-MAX_RETRY_RUNS = 20
-MAX_RETRY_WORDS = 10
-MAX_RETRY_SEGMENTS = 10  # garbled / untranslated segments and altered numbers named in the retry
-MAX_QUOTED_CHARS = 120
+MAX_RETRY_ITEMS = 10  # of each kind named in the retry
+ROW_PHRASES = {
+    "duplicated_row": "drawn twice",
+    "missing_row": "missing",
+    "misaligned_marks": "marks next to the wrong item",
+}
 
 # Image-output models that are served better by the dedicated Image API than by chat/completions
 # (round 2: chat failed once with finish_reason=error for gemini-3-pro-image, /images worked).
@@ -125,74 +122,61 @@ def build_prompt(lang: str) -> str:
     return PROMPT_TEMPLATE.format(language=LANGUAGES.get(lang, lang))
 
 
-def _quote(text: str) -> str:
-    """A fragment of OCR text as a short, single-line, double-quoted string for the prompt."""
-    flat = " ".join(str(text).replace('"', "'").split())
-    return '"' + (flat[: MAX_QUOTED_CHARS - 1] + "\u2026" if len(flat) > MAX_QUOTED_CHARS else flat) + '"'
-
-
-def _unique(items: list[str]) -> list[str]:
-    return list(dict.fromkeys(i for i in items if i))
-
-
 def build_retry_prompt(lang: str, verification: dict) -> str:
-    """The prompt plus a second paragraph naming what the verification and the judge found wrong.
+    """The prompt plus a second paragraph naming what the judge found wrong with the first attempt.
 
-    Missing digit runs are given as they were written in the source (up to 20) and up to 10
-    leftover source-language words must be translated too (the big ones, which make the verdict
-    `partial` by themselves, first). From the judge: up to 10 garbled segments, each with the
-    source text it stands for, up to 10 untranslated segments and up to 10 altered numbers. A
-    number that only differs from a *soft* source run (low-confidence handwriting that Vision
-    may have misread) is not named: telling the model to "copy" a misread number would make it
-    wrong. A check that found nothing is not mentioned, and with nothing to name the plain
-    prompt comes back.
+    Everything comes from the judge record (``verification["judge"]``): the altered numbers (to be
+    copied exactly as in the original; a pair that differs only in formatting is left out), the
+    duplicated / missing / misaligned rows, the major legibility issues (to be re-rendered as
+    correct text) and the major untranslated text, up to 10 of each, quoted as one short line each.
+    Minor issues and mistranslations are never named. The OCR warnings do not take part. A judge
+    that gave no answer, or found nothing to name, gives the plain prompt back.
     """
     language = LANGUAGES.get(lang, lang)
+    judge = (verification or {}).get("judge") or {}
     problems: list[str] = []
-    runs = [d.get("as_written") or d["run"] for d in verification.get("missing_digit_details") or []]
-    runs = runs or list(verification.get("missing_digit_runs") or [])
-    if runs:
-        problems.append(RETRY_DIGITS_LINE.format(runs=", ".join(runs[:MAX_RETRY_RUNS])))
-    big = [b["word"] for b in verification.get("big_leftover_words") or [] if b.get("word")]
-    words = _unique(big + list(verification.get("leftover_words") or []))
-    if words:
-        problems.append(
-            RETRY_LEFTOVER_LINE.format(language=language, words=", ".join(words[:MAX_RETRY_WORDS]))
-        )
-
-    judge = verification.get("judge") or {}
     if judge.get("status") == "ok":
-        garbled = [s for s in judge.get("garbled_segments") or [] if (s.get("output_text") or "").strip()]
-        garbled = garbled[:MAX_RETRY_SEGMENTS]
-        if garbled:
-            outputs = ", ".join(_quote(s["output_text"]) for s in garbled)
-            sources = _unique([(s.get("source_text") or "").strip() for s in garbled])
-            if sources:
-                problems.append(
-                    RETRY_GARBLED_LINE.format(
-                        language=language, outputs=outputs, sources=", ".join(_quote(s) for s in sources)
-                    )
-                )
-            else:
-                problems.append(RETRY_GARBLED_BLIND_LINE.format(language=language, outputs=outputs))
-        untranslated = _unique([(s or "").strip() for s in judge.get("untranslated_segments") or []])
-        if untranslated:
-            problems.append(
-                RETRY_UNTRANSLATED_LINE.format(
-                    language=language,
-                    segments=", ".join(_quote(s) for s in untranslated[:MAX_RETRY_SEGMENTS]),
-                )
-            )
-        soft = {d["run"] for d in verification.get("digit_runs") or [] if d.get("soft")}
         pairs = []
         for item in judge.get("altered_numbers") or []:
-            src, out = str(item.get("source") or ""), str(item.get("output") or "")
+            src, out, where = str(item.get("source") or ""), str(item.get("output") or ""), str(item.get("where") or "")
             digits = verify.digit_string(src)
-            if not digits or digits == verify.digit_string(out) or digits in soft:
-                continue
-            pairs.append(f"{_quote(src)} (your output has {_quote(out)})")
+            if not digits or digits == verify.digit_string(out):
+                continue  # only a difference of formatting
+            at = f"; at {flat(where)}" if where.strip() else ""
+            pairs.append(f"{quote(src)} (your output has {quote(out)}{at})")
         if pairs:
-            problems.append(RETRY_NUMBERS_LINE.format(pairs=", ".join(_unique(pairs)[:MAX_RETRY_SEGMENTS])))
+            problems.append(RETRY_NUMBERS_LINE.format(items=", ".join(unique(pairs)[:MAX_RETRY_ITEMS])))
+
+        rows = []
+        for item in judge.get("structure_issues") or []:
+            phrase = ROW_PHRASES.get(item.get("type"))
+            if phrase:
+                detail = str(item.get("detail") or "").strip()
+                rows.append(f"{quote(detail)} {phrase}" if detail else phrase)
+        if rows:
+            problems.append(RETRY_ROWS_LINE.format(items=", ".join(unique(rows)[:MAX_RETRY_ITEMS])))
+
+        garbled = []
+        for item in judge.get("legibility_issues") or []:
+            if not item.get("major"):
+                continue
+            where, text = flat(str(item.get("where") or "")), str(item.get("output_text") or "").strip()
+            garbled.append(f"{where}: {quote(text)}" if where and text else quote(text) if text else where)
+        garbled = unique(garbled)
+        if garbled:
+            problems.append(RETRY_GARBLED_LINE.format(language=language, items="; ".join(garbled[:MAX_RETRY_ITEMS])))
+
+        untranslated = []
+        for item in judge.get("untranslated") or []:
+            if not item.get("major"):
+                continue
+            text, where = str(item.get("text") or "").strip(), flat(str(item.get("where") or ""))
+            if text:
+                untranslated.append(f"{quote(text)} ({where})" if where else quote(text))
+        if untranslated:
+            problems.append(
+                RETRY_UNTRANSLATED_LINE.format(language=language, items=", ".join(unique(untranslated)[:MAX_RETRY_ITEMS]))
+            )
 
     if not problems:
         return build_prompt(lang)

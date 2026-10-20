@@ -3,12 +3,17 @@
 After a job completes, a background thread uploads
 
 * the original as it was sent,
-* every result image (Mode A, each Mode B model and run, each attempt of a retried run),
-* the Mode A units JSON and one verification JSON (with the judge's record) per Mode B attempt,
+* every result image (each attempt of Mode A, each attempt of each Mode B model and run),
+* the units JSON of every Mode A attempt and one verification JSON (with the judge's record) per
+  attempt of either mode,
 * ``manifest.json``: run metadata plus a presigned GET URL for every object,
 
 under ``<MINIO_PREFIX>/<job-id>/<name>`` in ``MINIO_BUCKET_NAME``. The page shows the
-manifest's presigned URL as the one link to hand to a reviewer.
+manifest's presigned URL as the link to hand to a reviewer.
+
+A batch (up to four images submitted together) adds one more object once every job of it has
+published: ``<MINIO_PREFIX>/batch-<batch-id>/manifest.json`` with the presigned URL of every job
+manifest, the batch options and the summary rows of the page (`publish_batch`).
 
 Everything is optional and must never fail the job: without credentials publishing is skipped
 with a note, and every failure comes back as data for the job's warnings. With LAB_MOCK=1 an
@@ -38,7 +43,8 @@ from .redaction import describe_error
 log = logging.getLogger("lab.publish")
 
 MANIFEST_NAME = "manifest.json"
-SCHEMA_VERSION = 2  # 2: mode_b[] is one entry per model with runs[] and a summary (1: one entry per model run)
+SCHEMA_VERSION = 3  # 3: judge verdicts (numbers, rows, garbled, partial, score), Mode A attempts, cost split, batch manifest
+# (2: mode_b[] is one entry per model with runs[] and a summary; 1: one entry per model run)
 CONTENT_TYPES = {
     ".png": "image/png",
     ".jpg": "image/jpeg",
@@ -186,8 +192,11 @@ def collect_files(job: dict, job_dir: Path) -> list[str]:
     add((job.get("image") or {}).get("url", "").rsplit("/", 1)[-1])
     mode_a = job.get("mode_a") or {}
     if mode_a.get("status") == "done":
-        add(mode_a.get("output"))
-        add(mode_a.get("units_file"))
+        for attempt in mode_a.get("attempts") or []:
+            add(attempt.get("output"))
+            add(attempt.get("erased"))
+            add(attempt.get("units_file"))
+            add(attempt.get("verification_file"))
     for result in (job.get("mode_b") or {}).get("results") or []:
         for attempt in result.get("tries") or []:
             add(attempt.get("output"))
@@ -203,35 +212,52 @@ def object_key(settings: MinioSettings, job_id: str, name: str) -> str:
 # ---------------------------------------------------------------- the manifest
 
 
+def _judge_entry(judged: dict, fallback_status=None) -> dict:
+    return {
+        "status": judged.get("status") or fallback_status,
+        "error": judged.get("error"),
+        "model": judged.get("served_model") or judged.get("model"),
+        "usability": judged.get("usability"),
+        "coverage": judged.get("coverage"),
+        "legibility_issues": judged.get("legibility_issues"),
+        "structure_issues": judged.get("structure_issues"),
+        "altered_numbers": judged.get("altered_numbers"),
+        "untranslated": judged.get("untranslated"),
+        "mistranslated": judged.get("mistranslated"),
+        "summary": judged.get("summary"),
+        "input_tokens": judged.get("input_tokens"),
+        "output_tokens": judged.get("output_tokens"),
+        "cost_usd": judged.get("cost_usd"),
+    }
+
+
+def _warnings_entry(v: dict) -> dict:
+    w = v.get("ocr_warnings") or {}
+    return {
+        "status": w.get("status"),
+        "error": w.get("error"),
+        "warnings": w.get("warnings"),
+        "missing_digit_runs": w.get("missing_digit_runs"),
+        "unverified_digit_runs": w.get("unverified_digit_runs"),
+        "leftover_ratio": w.get("leftover_ratio"),
+        "leftover_words": w.get("leftover_words"),
+        "big_leftover_words": w.get("big_leftover_words"),
+    }
+
+
 def _attempt_entry(t: dict, ref) -> dict:
     v = t.get("verification") or {}
-    judged = v.get("judge") or {}
     return {
         "attempt": t.get("n"),
         "selected": bool(t.get("selected")),
         "image": ref(t.get("output")),
         "verification_file": ref(t.get("verification_file")),
         "verdict": t.get("verdict"),
-        "missing_digit_runs": v.get("missing_digit_runs"),
-        "unverified_digit_runs": v.get("unverified_digit_runs"),
-        "leftover_ratio": v.get("leftover_ratio"),
-        "leftover_words": v.get("leftover_words"),
-        "big_leftover_words": v.get("big_leftover_words"),
+        "failed_checks": v.get("failed_checks"),
+        "usability": v.get("usability"),
         "coverage": v.get("coverage"),
-        "judge": {
-            "status": judged.get("status") or t.get("judge_status"),
-            "error": judged.get("error"),
-            "model": judged.get("served_model") or judged.get("model"),
-            "coverage": judged.get("coverage"),
-            "garbled_segments": judged.get("garbled_segments"),
-            "untranslated_segments": judged.get("untranslated_segments"),
-            "mistranslated_segments": judged.get("mistranslated_segments"),
-            "altered_numbers": judged.get("altered_numbers"),
-            "summary": judged.get("summary"),
-            "input_tokens": judged.get("input_tokens"),
-            "output_tokens": judged.get("output_tokens"),
-            "cost_usd": judged.get("cost_usd"),
-        },
+        "judge": _judge_entry(v.get("judge") or {}, t.get("judge_status")),
+        "ocr_warnings": _warnings_entry(v),
         "verify_error": t.get("verify_error"),
         "prompt": t.get("prompt"),
         "api_used": t.get("api_used"),
@@ -256,7 +282,9 @@ def _run_entry(result: dict, ref) -> dict:
         "api_used": result.get("api_used"),
         "resolution_applied": result.get("resolution_applied"),
         "verdict": result.get("verdict"),
-        "coverage": (result.get("verification") or {}).get("coverage"),
+        "failed_checks": (result.get("verification") or {}).get("failed_checks"),
+        "usability": result.get("usability"),
+        "coverage": result.get("coverage"),
         "selected_attempt": result.get("selected_attempt"),
         "retry_error": result.get("retry_error"),
         "output_size": result.get("output_size"),
@@ -266,9 +294,47 @@ def _run_entry(result: dict, ref) -> dict:
         "usage": result.get("usage"),
         "cost_usd": result.get("cost_usd"),
         "judge_cost_usd": result.get("judge_cost_usd"),
+        "cost_openrouter_usd": result.get("cost_openrouter_usd"),
+        "cost_anthropic_usd": result.get("cost_anthropic_usd"),
         "total_cost_usd": result.get("total_cost_usd"),
         "image": ref(result.get("output")),
         "attempts": [_attempt_entry(t, ref) for t in result.get("tries") or []],
+    }
+
+
+def _mode_a_attempt_entry(t: dict, ref) -> dict:
+    v = t.get("verification") or {}
+    units = t.get("units") or []
+    return {
+        "attempt": t.get("n"),
+        "selected": bool(t.get("selected")),
+        "image": ref(t.get("output")),
+        "erased": ref(t.get("erased")),
+        "units": ref(t.get("units_file")),
+        "verification_file": ref(t.get("verification_file")),
+        "verdict": t.get("verdict"),
+        "failed_checks": v.get("failed_checks"),
+        "usability": v.get("usability"),
+        "coverage": v.get("coverage"),
+        "judge": _judge_entry(v.get("judge") or {}, t.get("judge_status")),
+        "ocr_warnings": _warnings_entry(v),
+        "verify_error": t.get("verify_error"),
+        "retry_feedback": t.get("retry_feedback"),
+        "elapsed_ms": t.get("elapsed_ms"),
+        "claude_ms": t.get("claude_ms"),
+        "erase_ms": t.get("erase_ms"),
+        "render_ms": t.get("render_ms"),
+        "verify_ms": t.get("verify_ms"),
+        "judge_ms": t.get("judge_ms"),
+        "tokens": t.get("tokens"),
+        "cost_usd": t.get("cost_usd"),
+        "judge_cost_usd": t.get("judge_cost_usd"),
+        "unit_count": t.get("unit_count"),
+        "translated_count": t.get("translated_count"),
+        "erase_methods": {m: sum(1 for u in units if u.get("erase_method") == m) for m in ("flat", "inpaint")},
+        "text_used": {m: sum(1 for u in units if u.get("text_used") == m) for m in ("full", "short")},
+        "skipped_too_small": sum(1 for u in units if u.get("skip_reason") == "too small"),
+        "warnings": t.get("warnings") or [],
     }
 
 
@@ -288,6 +354,8 @@ def build_manifest(
     manifest: dict = {
         "schema_version": SCHEMA_VERSION,
         "job_id": job["job_id"],
+        "batch_id": job.get("batch_id"),
+        "image_index": job.get("index"),
         "created_at": _iso(job.get("created_at")),
         "finished_at": _iso(job.get("finished_at")),
         "published_at": _iso(published_at),
@@ -306,6 +374,7 @@ def build_manifest(
             "judge": params.get("judge"),
             "judge_model": params.get("judge_model"),
             "claude_model": params.get("claude_model"),
+            "mode_a_retry": params.get("mode_a_retry"),
         },
         "bucket": settings.bucket,
         "prefix": "/".join(p for p in (settings.prefix, job["job_id"]) if p),
@@ -330,11 +399,23 @@ def build_manifest(
             "claude_ms": mode_a.get("claude_ms"),
             "tokens": mode_a.get("tokens"),
             "cost_usd": mode_a.get("cost_usd"),
+            "judge_cost_usd": mode_a.get("judge_cost_usd"),
+            "total_cost_usd": mode_a.get("total_cost_usd"),
+            "cost_anthropic_usd": mode_a.get("cost_anthropic_usd"),
+            "cost_openrouter_usd": mode_a.get("cost_openrouter_usd"),
             "word_count": mode_a.get("word_count"),
             "unit_count": mode_a.get("unit_count"),
             "translated_count": mode_a.get("translated_count"),
+            "verdict": mode_a.get("verdict"),
+            "failed_checks": (mode_a.get("verification") or {}).get("failed_checks"),
+            "usability": mode_a.get("usability"),
+            "coverage": mode_a.get("coverage"),
+            "retry": mode_a.get("retry"),
+            "retry_error": mode_a.get("retry_error"),
+            "selected_attempt": mode_a.get("selected_attempt"),
             "image": ref(mode_a.get("output")),
             "units": ref(mode_a.get("units_file")),
+            "attempts": [_mode_a_attempt_entry(t, ref) for t in mode_a.get("attempts") or []],
             "warnings": mode_a.get("warnings") or [],
         }
 
@@ -439,4 +520,131 @@ def publish_job(job: dict, job_dir: Path, now: float | None = None) -> dict:
         }
     except Exception as exc:  # noqa: BLE001 - publishing must never fail the job
         log.warning("stage=publish job=%s failed: %s", job_id, type(exc).__name__)
+        return {"status": "error", "error": describe_error(exc)}
+
+
+# ---------------------------------------------------------------- the batch manifest
+
+
+def batch_key(settings: MinioSettings, batch_id: str) -> str:
+    """`<prefix>/batch-<batch-id>/manifest.json`."""
+    return "/".join(p for p in (settings.prefix, f"batch-{batch_id}", MANIFEST_NAME) if p)
+
+
+def build_batch_manifest(batch_doc: dict, settings: MinioSettings, manifest_ref: dict, published_at: float) -> dict:
+    """The batch manifest (schema 3): every job manifest's presigned URL, the options and the summary rows."""
+    params = batch_doc.get("params") or {}
+    warnings: list[str] = list(batch_doc.get("warnings") or [])
+    jobs = []
+    for job in batch_doc.get("jobs") or []:
+        pub = job.get("publish") or {}
+        image = job.get("image") or {}
+        link = None
+        if pub.get("status") == "done" and pub.get("manifest_url"):
+            link = {
+                "name": MANIFEST_NAME,
+                "key": pub.get("manifest_key"),
+                "url": pub.get("manifest_url"),
+                "expires_at": pub.get("expires_at"),
+            }
+        else:
+            reason = pub.get("note") or pub.get("error") or pub.get("status")
+            warnings.append(f"image {job.get('index')}: no job manifest ({reason})")
+        jobs.append(
+            {
+                "index": job.get("index"),
+                "job_id": job.get("job_id"),
+                "image_name": image.get("name") or "",
+                "width": image.get("width"),
+                "height": image.get("height"),
+                "status": job.get("status"),
+                "publish_status": pub.get("status"),
+                "manifest": link,
+            }
+        )
+    summary = batch_doc.get("summary") or batch.summarise_batch(batch_doc.get("jobs") or [])
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "kind": "batch",
+        "batch_id": batch_doc.get("batch_id"),
+        "created_at": _iso(batch_doc.get("created_at")),
+        "finished_at": _iso(batch_doc.get("finished_at")),
+        "published_at": _iso(published_at),
+        "urls_expire_at": _iso(published_at + settings.expiry_hours * 3600),
+        "url_expiry_hours": settings.expiry_hours,
+        "mock": bool(params.get("mock")),
+        "target_language": params.get("target_lang"),
+        "options": {
+            "mode_a": bool(params.get("mode_a")),
+            "mode_b": bool(params.get("mode_b")),
+            "image_models": params.get("image_models") or [],
+            "output_size": params.get("output_size") or "default",
+            "verify": params.get("verify"),
+            "verify_details": params.get("verify_details"),
+            "runs": params.get("runs") or 1,
+            "judge": params.get("judge"),
+            "judge_model": params.get("judge_model"),
+            "claude_model": params.get("claude_model"),
+            "mode_a_retry": params.get("mode_a_retry"),
+        },
+        "bucket": settings.bucket,
+        "prefix": "/".join(p for p in (settings.prefix, f"batch-{batch_doc.get('batch_id')}") if p),
+        "manifest": manifest_ref,
+        "jobs": jobs,
+        "summary": summary,
+        "totals": batch_doc.get("totals") or batch.batch_totals(summary),
+        "warnings": warnings,
+    }
+
+
+def publish_batch(batch_doc: dict, batch_dir: Path | None, now: float | None = None) -> dict:
+    """Upload the batch manifest and return {status: done | skipped | error, manifest_url, ...}.
+
+    Called once every job of the batch has published. Never raises and never fails the batch: the
+    caller turns the outcome into the batch's `publish` block and warnings.
+    """
+    settings = get_minio_settings()
+    mock = get_settings().mock
+    batch_id = batch_doc.get("batch_id")
+    if not mock and not settings.configured:
+        log.info("stage=publish batch=%s skipped: %s not set", batch_id, ", ".join(settings.missing()))
+        return {
+            "status": "skipped",
+            "note": "未發佈批次 manifest 到 MinIO：缺少 " + "、".join(settings.missing()) + "（見 README「給審閱者的連結」）",
+        }
+    try:
+        published_at = now if now is not None else time.time()
+        uploader, signer, notes = make_clients(settings, mock)
+        expires = timedelta(hours=settings.expiry_hours)
+        key = batch_key(settings, str(batch_id))
+        url = signer.presigned_get_object(settings.bucket, key, expires=expires)
+        manifest = build_batch_manifest(
+            batch_doc, settings, {"name": MANIFEST_NAME, "key": key, "url": url}, published_at
+        )
+        body = json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8")
+        uploader.put_object(settings.bucket, key, io.BytesIO(body), len(body), content_type="application/json")
+        if batch_dir is not None:
+            try:
+                (batch_dir / MANIFEST_NAME).write_bytes(body)  # a local copy, served at /api/batches/<id>/manifest
+            except OSError:
+                log.warning("could not keep a local copy of the batch manifest for %s", batch_id)
+        linked = sum(1 for j in manifest["jobs"] if j["manifest"])
+        log.info(  # no URLs here: a presigned link carries the access key id and the signature
+            "stage=publish batch=%s uploaded=1 jobs_linked=%d bucket=%s", batch_id, linked, settings.bucket
+        )
+        return {
+            "status": "done",
+            "manifest_url": url,
+            "manifest_key": key,
+            "bucket": settings.bucket,
+            "expiry_hours": settings.expiry_hours,
+            "expires_at": _iso(published_at + settings.expiry_hours * 3600),
+            "jobs_linked": linked,
+            "warnings": [w for w in manifest["warnings"] if w not in (batch_doc.get("warnings") or [])],
+            "notes": notes,
+            "mock": mock,
+            "note": "LAB_MOCK=1：只寫進記憶體，這個連結打不開" if mock else None,
+        }
+    except Exception as exc:  # noqa: BLE001 - publishing must never fail the batch
+        log.warning("stage=publish batch=%s failed: %s", batch_id, type(exc).__name__)
         return {"status": "error", "error": describe_error(exc)}
