@@ -7,11 +7,15 @@ from dataclasses import dataclass
 from pathlib import Path
 
 DEFAULT_CLAUDE_MODEL = "claude-opus-5-5"
+DEFAULT_JUDGE_MODEL = "claude-sonnet-5-5"  # the semantic judge of Mode B (app/judge.py)
 DEFAULT_IMAGE_MODEL = "google/gemini-2.5-flash-image"
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 MAX_IMAGE_MODELS = 4  # Mode B models compared side by side in one job
+MAX_RUNS = 3  # independent runs of every Mode B model in one job (batch mode)
+MAX_CONCURRENT_GENERATIONS = 4  # image generations in flight at once, whatever models x runs were asked for
 # Output-size tiers of the OpenRouter Image API (`resolution`); "" = leave the provider default
 OUTPUT_SIZES = ("", "1K", "2K", "4K")
+DEFAULT_OUTPUT_SIZE = "2K"  # what the page preselects and the API uses when `output_size` is omitted
 REQUEST_TIMEOUT_S = 600.0  # 10 minutes everywhere (SDK, httpx2, uvicorn keep-alive)
 
 # language code -> English name used in prompts
@@ -34,6 +38,7 @@ class Settings:
     mock: bool
     data_dir: Path
     port: int
+    claude_judge_model: str = DEFAULT_JUDGE_MODEL
 
 
 def _env(name: str, default: str = "") -> str:
@@ -117,4 +122,5 @@ def get_settings() -> Settings:
         mock=_env("LAB_MOCK") == "1",
         data_dir=Path(_env("LAB_DATA_DIR", "./data")),
         port=port,
+        claude_judge_model=_env("CLAUDE_JUDGE_MODEL", DEFAULT_JUDGE_MODEL),
     )

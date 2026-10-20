@@ -7,7 +7,7 @@ import time
 from functools import lru_cache
 
 from .config import REQUEST_TIMEOUT_S, get_settings
-from .models import ModeError, OcrResult, Word, base_language
+from .models import ModeError, OcrResult, Word, base_language, polygon_height
 
 log = logging.getLogger("lab.vision")
 
@@ -67,7 +67,9 @@ def ocr_words(image_bytes: bytes, width: int, height: int) -> OcrResult:
     Every word carries `detected_languages` (what Vision said about the word itself, when it
     said anything) and `lang`, the language the checks use: the best of those or, when Vision
     gave none for the word, the one of its paragraph, block or page (None when there is no
-    information). `OcrResult.text` is Vision's full text. Used for the source image (Mode A and
+    information), its `confidence` (the digit check treats low-confidence handwriting softly) and
+    its box `height` in px (the verification flags a leftover word much bigger than the rest).
+    `OcrResult.text` is Vision's full text. Used for the source image (Mode A and
     the Mode B verification share one call per job) and for each Mode B output.
     """
     if get_settings().mock:
@@ -113,6 +115,7 @@ def ocr_words(image_bytes: bytes, width: int, height: int) -> OcrResult:
                             para=para_index,
                             detected_languages=own,
                             lang=own[0][0] if own else para_lang,
+                            height=round(polygon_height(vertices[:4]), 2),
                         )
                     )
                 para_index += 1

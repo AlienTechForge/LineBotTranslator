@@ -15,12 +15,22 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from . import jobs, mock, openrouter
-from .config import LANGUAGES, MAX_IMAGE_MODELS, MAX_UPLOAD_BYTES, OUTPUT_SIZES, get_settings
+from .config import (
+    DEFAULT_OUTPUT_SIZE,
+    LANGUAGES,
+    MAX_CONCURRENT_GENERATIONS,
+    MAX_IMAGE_MODELS,
+    MAX_RUNS,
+    MAX_UPLOAD_BYTES,
+    OUTPUT_SIZES,
+    get_settings,
+)
 from .imaging import ALLOWED_CONTENT_TYPES, ImageError, load_image
 
 log = logging.getLogger("lab.main")
 
 TEMPLATE_DIR = Path(__file__).parent / "templates"
+PROVIDER_DEFAULT_SIZE = "default"  # output_size value for "send no resolution, use the provider's size"
 FILE_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 MODEL_RE = re.compile(r"^[A-Za-z0-9._:/@+-]{1,120}$")
 SERVED_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".json"}
@@ -82,7 +92,11 @@ def create_app() -> FastAPI:
             mock=settings.mock,
             max_upload_mb=MAX_UPLOAD_BYTES // (1024 * 1024),
             max_models=MAX_IMAGE_MODELS,
+            max_runs=MAX_RUNS,
+            max_generations=MAX_CONCURRENT_GENERATIONS,
+            judge_model=settings.claude_judge_model,
             output_sizes=[s for s in OUTPUT_SIZES if s],
+            default_output_size=DEFAULT_OUTPUT_SIZE,
         )
         return HTMLResponse(html, headers={"Content-Security-Policy": CSP})
 
@@ -107,9 +121,11 @@ def create_app() -> FastAPI:
         mode_b: bool = Form(False),
         image_models: list[str] = Form(default_factory=list),
         image_model: str = Form(""),
-        output_size: str = Form(""),
+        output_size: str = Form(DEFAULT_OUTPUT_SIZE),
         verify: bool = Form(True),
         verify_details: bool = Form(False),
+        runs: int = Form(1),
+        judge: bool = Form(True),
     ) -> JSONResponse:
         settings = get_settings()
         if target_lang not in LANGUAGES:
@@ -123,8 +139,12 @@ def create_app() -> FastAPI:
             raise HTTPException(400, f"select at most {MAX_IMAGE_MODELS} image models")
         if not all(MODEL_RE.match(m) for m in models):
             raise HTTPException(400, "invalid image model id")
+        # FastAPI turns an empty form value into the default (2K), so "the provider's own size" has a name
+        output_size = "" if output_size == PROVIDER_DEFAULT_SIZE else output_size
         if output_size not in OUTPUT_SIZES:
             raise HTTPException(400, f"output_size must be one of: default, {', '.join(s for s in OUTPUT_SIZES if s)}")
+        if not 1 <= runs <= MAX_RUNS:
+            raise HTTPException(400, f"runs must be between 1 and {MAX_RUNS}")
 
         chunks: list[bytes] = []
         size = 0
@@ -144,8 +164,9 @@ def create_app() -> FastAPI:
             raise HTTPException(415, str(exc)) from exc
 
         job_id = jobs.start_job(
-            request.app.state.store, image, target_lang, mode_a, mode_b, models, verify, verify_details, output_size
-        )
+            request.app.state.store, image, target_lang, mode_a, mode_b, models, verify, verify_details, output_size,
+            runs=runs, judge_on=judge,
+        )  # fmt: skip
         return JSONResponse({"job_id": job_id})
 
     @app.get("/api/jobs/{job_id}")

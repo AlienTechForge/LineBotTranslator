@@ -3,8 +3,8 @@
 After a job completes, a background thread uploads
 
 * the original as it was sent,
-* every result image (Mode A, each Mode B model, each attempt of a retried model),
-* the Mode A units JSON and one verification JSON per Mode B attempt,
+* every result image (Mode A, each Mode B model and run, each attempt of a retried run),
+* the Mode A units JSON and one verification JSON (with the judge's record) per Mode B attempt,
 * ``manifest.json``: run metadata plus a presigned GET URL for every object,
 
 under ``<MINIO_PREFIX>/<job-id>/<name>`` in ``MINIO_BUCKET_NAME``. The page shows the
@@ -31,13 +31,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
+from . import batch
 from .config import MinioSettings, get_minio_settings, get_settings
 from .redaction import describe_error
 
 log = logging.getLogger("lab.publish")
 
 MANIFEST_NAME = "manifest.json"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # 2: mode_b[] is one entry per model with runs[] and a summary (1: one entry per model run)
 CONTENT_TYPES = {
     ".png": "image/png",
     ".jpg": "image/jpeg",
@@ -202,6 +203,75 @@ def object_key(settings: MinioSettings, job_id: str, name: str) -> str:
 # ---------------------------------------------------------------- the manifest
 
 
+def _attempt_entry(t: dict, ref) -> dict:
+    v = t.get("verification") or {}
+    judged = v.get("judge") or {}
+    return {
+        "attempt": t.get("n"),
+        "selected": bool(t.get("selected")),
+        "image": ref(t.get("output")),
+        "verification_file": ref(t.get("verification_file")),
+        "verdict": t.get("verdict"),
+        "missing_digit_runs": v.get("missing_digit_runs"),
+        "unverified_digit_runs": v.get("unverified_digit_runs"),
+        "leftover_ratio": v.get("leftover_ratio"),
+        "leftover_words": v.get("leftover_words"),
+        "big_leftover_words": v.get("big_leftover_words"),
+        "coverage": v.get("coverage"),
+        "judge": {
+            "status": judged.get("status") or t.get("judge_status"),
+            "error": judged.get("error"),
+            "model": judged.get("served_model") or judged.get("model"),
+            "coverage": judged.get("coverage"),
+            "garbled_segments": judged.get("garbled_segments"),
+            "untranslated_segments": judged.get("untranslated_segments"),
+            "mistranslated_segments": judged.get("mistranslated_segments"),
+            "altered_numbers": judged.get("altered_numbers"),
+            "summary": judged.get("summary"),
+            "input_tokens": judged.get("input_tokens"),
+            "output_tokens": judged.get("output_tokens"),
+            "cost_usd": judged.get("cost_usd"),
+        },
+        "verify_error": t.get("verify_error"),
+        "prompt": t.get("prompt"),
+        "api_used": t.get("api_used"),
+        "output_size": t.get("output_size"),
+        "aspect_drift_pct": t.get("aspect_drift_pct"),
+        "resolution_applied": t.get("resolution_applied"),
+        "generation_ms": t.get("elapsed_ms"),
+        "verify_ms": t.get("verify_ms"),
+        "judge_ms": t.get("judge_ms"),
+        "usage": t.get("usage"),
+        "cost_usd": t.get("cost_usd"),
+        "judge_cost_usd": t.get("judge_cost_usd"),
+    }
+
+
+def _run_entry(result: dict, ref) -> dict:
+    """One run of one model: its outcome and every attempt (the old per-model entry of schema 1)."""
+    return {
+        "run": result.get("run") or 1,
+        "status": result.get("status"),
+        "error": result.get("error"),
+        "api_used": result.get("api_used"),
+        "resolution_applied": result.get("resolution_applied"),
+        "verdict": result.get("verdict"),
+        "coverage": (result.get("verification") or {}).get("coverage"),
+        "selected_attempt": result.get("selected_attempt"),
+        "retry_error": result.get("retry_error"),
+        "output_size": result.get("output_size"),
+        "aspect_drift_pct": result.get("aspect_drift_pct"),
+        "elapsed_ms": result.get("elapsed_ms"),
+        "judge_ms": result.get("judge_ms"),
+        "usage": result.get("usage"),
+        "cost_usd": result.get("cost_usd"),
+        "judge_cost_usd": result.get("judge_cost_usd"),
+        "total_cost_usd": result.get("total_cost_usd"),
+        "image": ref(result.get("output")),
+        "attempts": [_attempt_entry(t, ref) for t in result.get("tries") or []],
+    }
+
+
 def build_manifest(
     job: dict, files: dict[str, dict], settings: MinioSettings, manifest_ref: dict, published_at: float
 ) -> dict:
@@ -232,6 +302,9 @@ def build_manifest(
             "output_size": params.get("output_size") or "default",
             "verify": params.get("verify"),
             "verify_details": params.get("verify_details"),
+            "runs": params.get("runs") or 1,
+            "judge": params.get("judge"),
+            "judge_model": params.get("judge_model"),
             "claude_model": params.get("claude_model"),
         },
         "bucket": settings.bucket,
@@ -265,51 +338,26 @@ def build_manifest(
             "warnings": mode_a.get("warnings") or [],
         }
 
-    for result in (job.get("mode_b") or {}).get("results") or []:
-        attempts = []
-        for t in result.get("tries") or []:
-            v = t.get("verification") or {}
-            attempts.append(
-                {
-                    "attempt": t.get("n"),
-                    "selected": bool(t.get("selected")),
-                    "image": ref(t.get("output")),
-                    "verification_file": ref(t.get("verification_file")),
-                    "verdict": t.get("verdict"),
-                    "missing_digit_runs": v.get("missing_digit_runs"),
-                    "leftover_ratio": v.get("leftover_ratio"),
-                    "leftover_words": v.get("leftover_words"),
-                    "verify_error": t.get("verify_error"),
-                    "prompt": t.get("prompt"),
-                    "api_used": t.get("api_used"),
-                    "output_size": t.get("output_size"),
-                    "aspect_drift_pct": t.get("aspect_drift_pct"),
-                    "resolution_applied": t.get("resolution_applied"),
-                    "generation_ms": t.get("elapsed_ms"),
-                    "verify_ms": t.get("verify_ms"),
-                    "usage": t.get("usage"),
-                    "cost_usd": t.get("cost_usd"),
-                }
-            )
+    results = (job.get("mode_b") or {}).get("results") or []
+    summaries = (job.get("mode_b") or {}).get("summary") or batch.summarise_runs(results)
+    by_model: dict = {}
+    for result in results:
+        by_model.setdefault(result.get("model_index", result.get("model")), []).append(result)
+    for key, runs in by_model.items():
+        entries = [_run_entry(result, ref) for result in sorted(runs, key=lambda r: r.get("run") or 1)]
+        summary = next(
+            (s for s in summaries if s.get("model_index", s.get("model")) == key), None
+        ) or batch.summarise_runs(runs)[0]
+        summary = {**summary, "best_image": ref(summary.get("best_output"))}
+        first = runs[0]
         manifest["mode_b"].append(
             {
-                "model": result.get("model"),
-                "status": result.get("status"),
-                "error": result.get("error"),
-                "route_preference": result.get("route_preference"),
-                "api_used": result.get("api_used"),
-                "resolution_requested": result.get("resolution_requested") or "default",
-                "resolution_applied": result.get("resolution_applied"),
-                "verdict": result.get("verdict"),
-                "selected_attempt": result.get("selected_attempt"),
-                "retry_error": result.get("retry_error"),
-                "output_size": result.get("output_size"),
-                "aspect_drift_pct": result.get("aspect_drift_pct"),
-                "elapsed_ms": result.get("elapsed_ms"),
-                "usage": result.get("usage"),
-                "cost_usd": result.get("cost_usd"),
-                "image": ref(result.get("output")),
-                "attempts": attempts,
+                "model": first.get("model"),
+                "route_preference": first.get("route_preference"),
+                "resolution_requested": first.get("resolution_requested") or "default",
+                "runs_requested": first.get("runs") or len(runs),
+                "summary": summary,
+                "runs": entries,
             }
         )
 

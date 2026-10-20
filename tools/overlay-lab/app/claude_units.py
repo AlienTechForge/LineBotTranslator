@@ -248,6 +248,31 @@ def _create(client, form: str, kwargs: dict):
     return client.messages.create(**kwargs)
 
 
+def create_message(client, kwargs: dict):
+    """``messages.create`` through the server-side fallback ladder.
+
+    Tries the ``fallbacks="default"`` form, then the array form, then a plain call; a form the SDK
+    or the API rejects (TypeError / HTTP 400) steps down to the next one. Returns
+    ``(response, form used, one line per rejected form)``. Shared by Mode A and the Mode B judge.
+    """
+    import anthropic
+
+    attempts: list[str] = []
+    for form in ("default", "array", "none"):
+        try:
+            return _create(client, form, kwargs), form, attempts
+        except (TypeError, anthropic.BadRequestError) as exc:
+            # The SDK rejected the keyword, or the API rejected the beta / parameter
+            # combination: step down to the next, simpler form and remember why.
+            attempts.append(f"{form}: {type(exc).__name__}: {str(exc)[:300]}")
+            log.warning("stage=claude fallback form %s rejected (%s)", form, type(exc).__name__)
+        except anthropic.APIStatusError as exc:
+            raise ModeError(f"Claude API error {exc.status_code}: {exc.message}") from exc
+        except anthropic.APIConnectionError as exc:
+            raise ModeError(f"Claude API connection error: {exc}") from exc
+    raise ModeError("Claude request was rejected in every form: " + " | ".join(attempts))
+
+
 def request_units(image: LoadedImage, ocr: OcrResult, lang: str) -> ClaudeCall:
     """Call Claude (or the mock) and return validated units plus usage / cost."""
     settings = get_settings()
@@ -289,26 +314,7 @@ def request_units(image: LoadedImage, ocr: OcrResult, lang: str) -> ClaudeCall:
         },
     }
     client = anthropic.Anthropic(timeout=REQUEST_TIMEOUT_S, max_retries=2)
-
-    attempts: list[str] = []
-    response = None
-    used_form = "none"
-    for form in ("default", "array", "none"):
-        try:
-            response = _create(client, form, kwargs)
-            used_form = form
-            break
-        except (TypeError, anthropic.BadRequestError) as exc:
-            # The SDK rejected the keyword, or the API rejected the beta / parameter
-            # combination: step down to the next, simpler form and remember why.
-            attempts.append(f"{form}: {type(exc).__name__}: {str(exc)[:300]}")
-            log.warning("stage=claude fallback form %s rejected (%s)", form, type(exc).__name__)
-        except anthropic.APIStatusError as exc:
-            raise ModeError(f"Claude API error {exc.status_code}: {exc.message}") from exc
-        except anthropic.APIConnectionError as exc:
-            raise ModeError(f"Claude API connection error: {exc}") from exc
-    if response is None:
-        raise ModeError("Claude request was rejected in every form: " + " | ".join(attempts))
+    response, used_form, attempts = create_message(client, kwargs)
 
     stop_reason = getattr(response, "stop_reason", None)
     if stop_reason == "refusal":

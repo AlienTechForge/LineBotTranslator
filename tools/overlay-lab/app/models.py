@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -16,6 +17,25 @@ def base_language(code: str | None) -> str | None:
         return None
     base = code.strip().replace("_", "-").split("-")[0].lower()
     return None if base in ("", "und", "zxx", "mul") else base
+
+
+def polygon_height(polygon: list[tuple[float, float]]) -> float:
+    """Height of a word box, from its polygon: the SHORT side of the (rotated) rectangle.
+
+    Vision orders the vertices in the text's own frame, so the edge lengths do not depend on how
+    the page is turned. The short side is the glyph height of horizontal text and, for a column of
+    upright vertical glyphs (a tall, narrow box), the glyph width: in both cases the size of one
+    character, which is what the "big leftover word" rule compares.
+    """
+    if len(polygon) < 3:
+        return 0.0
+    pts = list(polygon[:4])
+    while len(pts) < 4:
+        pts.append(pts[-1])
+    (x0, y0), (x1, y1), (x2, y2), (x3, y3) = pts
+    across = (math.hypot(x1 - x0, y1 - y0) + math.hypot(x2 - x3, y2 - y3)) / 2.0
+    down = (math.hypot(x3 - x0, y3 - y0) + math.hypot(x2 - x1, y2 - y1)) / 2.0
+    return min(across, down)
 
 
 class ModeError(RuntimeError):
@@ -34,6 +54,13 @@ class Word(BaseModel):
     # the language used by the Mode B checks: the best of `detected_languages`, else the one of the
     # word's paragraph, block or page (base code, e.g. "ja"); None when Vision said nothing at all
     lang: str | None = None
+    # box height in px (see polygon_height); filled by vision.ocr_words, 0.0 = not recorded
+    height: float = 0.0
+
+    @property
+    def box_height(self) -> float:
+        """`height` as recorded by Vision, else computed from the polygon."""
+        return self.height if self.height > 0 else polygon_height(self.polygon)
 
     @property
     def bbox(self) -> tuple[int, int, int, int]:

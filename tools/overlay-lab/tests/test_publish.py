@@ -7,7 +7,7 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 from fastapi.testclient import TestClient
-from scenario import Scenario, ocr, png_of_size, wait_for
+from scenario import Scenario, judge_record, ocr, png_of_size, wait_for
 
 from app import mock, publish
 from app.config import get_minio_settings
@@ -194,40 +194,50 @@ def test_everything_is_uploaded_under_prefix_job_id_name_with_a_manifest_of_pres
         prefix + n
         for n in (
             "original.png",
-            "B1_google_gemini-3-pro-image_a1.png",
-            "B1_google_gemini-3-pro-image_a1_verify.json",
-            "B1_google_gemini-3-pro-image_a2.png",
-            "B1_google_gemini-3-pro-image_a2_verify.json",
-            "B2_m_b_a1.png",
-            "B2_m_b_a1_verify.json",
+            "B1_google_gemini-3-pro-image_r1_a1.png",
+            "B1_google_gemini-3-pro-image_r1_a1_verify.json",
+            "B1_google_gemini-3-pro-image_r1_a2.png",
+            "B1_google_gemini-3-pro-image_r1_a2_verify.json",
+            "B2_m_b_r1_a1.png",
+            "B2_m_b_r1_a1_verify.json",
             "manifest.json",
         )
     )
     assert fake.objects[("line-bot", prefix + "original.png")]["data"] == SOURCE  # the original as it was sent
     assert fake.objects[("line-bot", prefix + "original.png")]["content_type"] == "image/png"
     assert fake.objects[("line-bot", prefix + "manifest.json")]["content_type"] == "application/json"
-    assert fake.objects[("line-bot", prefix + "B2_m_b_a1_verify.json")]["content_type"] == "application/json"
+    assert fake.objects[("line-bot", prefix + "B2_m_b_r1_a1_verify.json")]["content_type"] == "application/json"
 
     m = manifest_of(fake, job)
-    assert m["job_id"] == job_id and m["target_language"] == "en" and m["schema_version"] == 1
+    assert m["job_id"] == job_id and m["target_language"] == "en" and m["schema_version"] == 2
     assert m["bucket"] == "line-bot" and m["prefix"] == f"overlay-lab/{job_id}"
     assert m["url_expiry_hours"] == 168 and m["urls_expire_at"] > m["published_at"] >= m["created_at"]
     assert m["options"]["image_models"] == list(plan) and m["options"]["output_size"] == "2K"
     assert m["options"]["verify"] is True and m["options"]["mode_a"] is False
+    assert m["options"]["runs"] == 1 and m["options"]["judge"] is True and m["options"]["judge_model"] == "claude-sonnet-5-5"
     assert m["original"]["width"] == 80 and m["original"]["file"]["url"].startswith("https://s3.azndev.com/line-bot/")
     assert m["mode_a"] is None
 
+    # mode_b[] is one entry per MODEL; its runs[] hold what schema 1 had per model, and summary folds them
     gem, other = m["mode_b"]
     assert gem["model"] == "google/gemini-3-pro-image" and gem["route_preference"] == "images"
-    assert gem["verdict"] == "pass" and gem["selected_attempt"] == 2
-    assert gem["cost_usd"] == pytest.approx(0.11) and gem["elapsed_ms"] >= 5000
-    assert gem["resolution_requested"] == "2K" and gem["output_size"] == [80, 60] and gem["api_used"] == "images"
-    assert [(a["attempt"], a["selected"], a["verdict"]) for a in gem["attempts"]] == [(1, False, "digits-changed"), (2, True, "pass")]
-    assert gem["attempts"][0]["missing_digit_runs"] == ["77446716"]
-    assert gem["attempts"][0]["image"]["key"] == prefix + "B1_google_gemini-3-pro-image_a1.png"
-    assert gem["attempts"][1]["verification_file"]["key"].endswith("_a2_verify.json")
-    assert gem["image"]["name"] == gem["attempts"][1]["image"]["name"]  # the selected attempt
-    assert other["model"] == "m/b" and other["output_size"] == [160, 120] and other["usage"]["prompt_tokens"] == 100
+    assert gem["resolution_requested"] == "2K" and gem["runs_requested"] == 1
+    assert gem["summary"]["passes"] == 1 and gem["summary"]["pass_rate"] == 1.0 and gem["summary"]["best_run"] == 1
+    assert gem["summary"]["best_image"]["name"] == "B1_google_gemini-3-pro-image_r1_a2.png"
+    (run,) = gem["runs"]
+    assert run["run"] == 1 and run["verdict"] == "pass" and run["selected_attempt"] == 2 and run["status"] == "done"
+    assert run["cost_usd"] == pytest.approx(0.11) and run["judge_cost_usd"] == pytest.approx(0.02)
+    assert run["total_cost_usd"] == pytest.approx(0.13) and run["elapsed_ms"] >= 5000 and run["coverage"] == 1.0
+    assert run["output_size"] == [80, 60] and run["api_used"] == "images" and run["resolution_applied"] is True
+    assert [(a["attempt"], a["selected"], a["verdict"]) for a in run["attempts"]] == [(1, False, "digits-changed"), (2, True, "pass")]
+    assert run["attempts"][0]["missing_digit_runs"] == ["77446716"] and run["attempts"][0]["unverified_digit_runs"] == []
+    assert run["attempts"][0]["image"]["key"] == prefix + "B1_google_gemini-3-pro-image_r1_a1.png"
+    assert run["attempts"][1]["verification_file"]["key"].endswith("_r1_a2_verify.json")
+    assert run["image"]["name"] == run["attempts"][1]["image"]["name"]  # the selected attempt
+    judged = run["attempts"][0]["judge"]
+    assert judged["status"] == "ok" and judged["coverage"] == 1.0 and judged["garbled_segments"] == [] and judged["cost_usd"] == 0.01
+    assert run["attempts"][0]["judge_cost_usd"] == 0.01 and run["attempts"][0]["coverage"] == 1.0
+    assert other["model"] == "m/b" and other["runs"][0]["output_size"] == [160, 120] and other["runs"][0]["usage"]["prompt_tokens"] == 100
 
     # every object has a presigned GET URL, expiring in 168 hours, and so does the manifest itself
     assert {o["name"] for o in m["objects"]} == {k[len(prefix):] for k in keys} - {"manifest.json"}
@@ -240,8 +250,64 @@ def test_everything_is_uploaded_under_prefix_job_id_name_with_a_manifest_of_pres
 
     # a local copy is served too, and the verification JSON is what the page's details show
     assert client.get(f"/files/{job_id}/manifest.json").json()["job_id"] == job_id
-    verify_doc = json.loads(fake.objects[("line-bot", prefix + "B1_google_gemini-3-pro-image_a1_verify.json")]["data"])
+    verify_doc = json.loads(fake.objects[("line-bot", prefix + "B1_google_gemini-3-pro-image_r1_a1_verify.json")]["data"])
     assert verify_doc["verdict"] == "digits-changed" and verify_doc["model"] == "google/gemini-3-pro-image"
+    assert verify_doc["run"] == 1 and verify_doc["attempt"] == 1 and verify_doc["judge"]["status"] == "ok"
+
+
+def test_the_manifest_carries_every_run_of_a_batch_and_the_summary_per_model(monkeypatch, tmp_path, fake):
+    client = make_client(monkeypatch, tmp_path, **MINIO_ENV)
+    plan = {
+        "m/steady": [step(GOOD, cost=0.04, ms=1000) for _ in range(3)],
+        "m/flaky": [step(GOOD, cost=0.06, ms=3000), step(None, fail=RuntimeError("m/flaky exploded")), step(GOOD, cost=0.06, ms=3000)],
+    }
+    Scenario(SOURCE, SRC_OCR, plan).install(monkeypatch)
+    job = submit(client, models=list(plan), runs="3")
+    job_id = job["job_id"]
+    assert job["publish"]["status"] == "done" and job["warnings"] == []
+
+    prefix = f"overlay-lab/{job_id}/"
+    keys = {k[len(prefix):] for k in fake.keys("line-bot")}
+    for run in (1, 2, 3):  # every run of the steady model has its own image and verification file
+        assert f"B1_m_steady_r{run}_a1.png" in keys and f"B1_m_steady_r{run}_a1_verify.json" in keys
+    assert len([k for k in keys if k.startswith("B2_m_flaky_") and k.endswith(".png")]) == 2  # the failed run made no image
+
+    m = manifest_of(fake, job)
+    assert m["options"]["runs"] == 3 and [e["model"] for e in m["mode_b"]] == ["m/steady", "m/flaky"]
+    steady, flaky = m["mode_b"]
+    assert steady["runs_requested"] == 3 and [r["run"] for r in steady["runs"]] == [1, 2, 3]
+    assert [r["verdict"] for r in steady["runs"]] == ["pass"] * 3
+    assert steady["summary"]["pass_rate"] == 1.0 and steady["summary"]["mean_total_cost_usd"] == pytest.approx(0.05)
+    assert steady["summary"]["runs_done"] == 3 and steady["summary"]["best_run"] == 1
+    assert steady["summary"]["best_image"]["name"] == "B1_m_steady_r1_a1.png" and "url" in steady["summary"]["best_image"]
+
+    assert [r["run"] for r in flaky["runs"]] == [1, 2, 3]
+    failed = [r for r in flaky["runs"] if r["status"] == "error"]
+    assert len(failed) == 1 and "exploded" in failed[0]["error"] and failed[0]["attempts"] == [] and failed[0]["image"] is None
+    assert flaky["summary"]["runs_failed"] == 1 and flaky["summary"]["passes"] == 2
+    assert flaky["summary"]["pass_rate"] == pytest.approx(2 / 3, abs=1e-4) and sorted(flaky["summary"]["verdicts"]) == ["error", "pass", "pass"]
+    assert flaky["summary"]["mean_total_cost_usd"] == pytest.approx(0.07)
+    # the objects list has every image and verification file of every run
+    assert {o["name"] for o in m["objects"]} == keys - {"manifest.json"}
+
+
+def test_a_garbled_attempt_shows_up_in_the_manifest_with_the_judge_findings(monkeypatch, tmp_path, fake):
+    client = make_client(monkeypatch, tmp_path, **MINIO_ENV)
+    garbled = ocr(("TEL", "en"), ("77446716", "en"), ("Banero", "en"), ("Salaino", "en"), ("Az-infe", "en"), ("Rilchkan", "en"))
+    judge_plan = {
+        " ".join(w.text for w in garbled.words): judge_record(coverage=0.35, garbled=[("Banero Salaino", "営業時間")], untranslated=["ご飯"], cost=0.02)
+    }
+    Scenario(SOURCE, SRC_OCR, {"m/a": [step(garbled), step(GOOD)]}, judge=judge_plan).install(monkeypatch)
+    job = submit(client)
+    m = manifest_of(fake, job)
+    (run,) = m["mode_b"][0]["runs"]
+    first, second = run["attempts"]
+    assert (first["verdict"], second["verdict"]) == ("garbled", "pass") and run["selected_attempt"] == 2
+    assert first["coverage"] == 0.35
+    assert first["judge"]["garbled_segments"] == [{"output_text": "Banero Salaino", "source_text": "営業時間"}]
+    assert first["judge"]["untranslated_segments"] == ["ご飯"] and first["judge"]["summary"] == "scripted judge"
+    verify_doc = json.loads(fake.objects[("line-bot", f"overlay-lab/{job['job_id']}/B1_m_a_r1_a1_verify.json")]["data"])
+    assert verify_doc["verdict"] == "garbled" and verify_doc["judge"]["reference_translation"] == ["reference line"]
 
 
 def test_bucket_prefix_and_expiry_come_from_the_environment(monkeypatch, tmp_path, fake):
@@ -269,12 +335,14 @@ def test_mock_mode_uses_the_in_memory_fake_and_still_produces_the_manifest(monke
     assert job["publish"]["status"] == "done" and job["publish"]["mock"] is True and "LAB_MOCK" in job["publish"]["note"]
     prefix = f"overlay-lab/{job['job_id']}/"
     keys = publish.mock_client().keys("line-bot")
-    for name in ("original.png", "A.png", "A_units.json", "B1_mock_image-model_a1.png", "B1_mock_image-model_a1_verify.json", "manifest.json"):
+    for name in ("original.png", "A.png", "A_units.json", "B1_mock_image-model_r1_a1.png", "B1_mock_image-model_r1_a1_verify.json", "manifest.json"):
         assert prefix + name in keys, name
     m = json.loads(publish.mock_client().objects[("line-bot", prefix + "manifest.json")]["data"])
     assert m["mock"] is True and m["mode_a"]["translated_count"] == 3 and m["mode_a"]["units"]["name"] == "A_units.json"
     assert m["mode_a"]["tokens"] == {"input": 2345, "output": 612}
-    assert m["mode_b"][0]["verdict"] == "pass" and m["mode_b"][0]["api_used"] == "mock"
+    (mock_run,) = m["mode_b"][0]["runs"]
+    assert mock_run["verdict"] == "pass" and mock_run["api_used"] == "mock"
+    assert mock_run["attempts"][0]["judge"]["status"] == "ok" and mock_run["attempts"][0]["judge"]["input_tokens"] == 1800
     units = json.loads(publish.mock_client().objects[("line-bot", prefix + "A_units.json")]["data"])
     assert len(units["units"]) == 4 and units["job_id"] == job["job_id"]
 
@@ -301,10 +369,10 @@ def test_a_failed_object_upload_is_a_warning_and_the_rest_still_goes_up(monkeypa
     job = submit(client)
     assert job["status"] == "done" and job["mode_b"]["results"][0]["status"] == "done"
     assert job["publish"]["status"] == "done" and job["publish"]["failed_count"] == 1
-    assert any("B1_m_a_a1.png" in w and "MinIO" in w for w in job["warnings"])
+    assert any("B1_m_a_r1_a1.png" in w and "MinIO" in w for w in job["warnings"])
     assert "test-secret-key-0123456789" not in json.dumps(job) and "***" in json.dumps(job["warnings"])
     m = manifest_of(flaky, job)
-    failed = [o for o in m["mode_b"][0]["attempts"] if "error" in o["image"]]
+    failed = [o for o in m["mode_b"][0]["runs"][0]["attempts"] if "error" in o["image"]]
     assert len(failed) == 1 and "url" not in failed[0]["image"]
     assert any("upload failed" in w for w in m["warnings"])
     assert not any(o["name"].endswith("_a1.png") for o in m["objects"] if "url" in o)

@@ -1,8 +1,9 @@
-"""Fixtures for LAB_MOCK=1: a synthetic image, canned Vision words and a canned Claude answer.
+"""Fixtures for LAB_MOCK=1: a synthetic image, canned Vision words and canned Claude answers.
 
 With LAB_MOCK=1 no network call is made: Vision returns the canned words (scaled to whatever
-image was uploaded), Claude returns the canned units, and Mode B returns the input image
-unchanged. `make_fixture()` draws the matching image (also served at /api/mock-image).
+image was uploaded), Claude returns the canned units (Mode A) and the canned judge answer
+(Mode B), and Mode B returns the input image unchanged. `make_fixture()` draws the matching
+image (also served at /api/mock-image).
 """
 
 from __future__ import annotations
@@ -119,6 +120,24 @@ def vision_words(width: int, height: int) -> OcrResult:
     for w in _build().words:
         words.append(w.model_copy(update={"polygon": [(x * sx, y * sy) for x, y in w.polygon]}))
     return OcrResult(width=width, height=height, words=words, text=" ".join(w.text for w in words))
+
+
+def judge_response(source_lines: list[str]) -> tuple[str, int, int]:
+    """Canned judge answer: (json text, input tokens, output tokens).
+
+    The mock Mode B returns the input image, so the 'output' is the source itself: a judge that
+    reads it finds nothing wrong. The reference translation just marks each source line.
+    """
+    answer = {
+        "reference_translation": [f"(mock) {line}" for line in source_lines],
+        "coverage": 1.0,
+        "garbled_segments": [],
+        "untranslated_segments": [],
+        "mistranslated_segments": [],
+        "altered_numbers": [],
+        "summary": "Mock judge: a canned answer, nothing was actually checked.",
+    }
+    return json.dumps(answer, ensure_ascii=False), 1800, 420
 
 
 def claude_response(ocr: OcrResult) -> tuple[str, int, int]:
