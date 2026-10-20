@@ -135,10 +135,10 @@ miss something they need (a dish name, a price label, a heading), false for deco
 footnotes and logo lettering. Do not list brand names, names of people or places, URLs, e-mail \
 addresses or numbers here.
 
-5. structure_issues: type duplicated_row (a row or item appears twice), missing_row (one is \
-missing), shifted (items moved so that the layout no longer matches), misaligned_marks \
-(handwritten marks, prices or quantities now sit next to a different item than in Image 1) or \
-other; detail names the item in a few words.
+5. structure_issues: one entry for each row or item that is wrong. type duplicated_row (a row or \
+item appears twice), missing_row (one is missing), shifted (items moved so that the layout no \
+longer matches), misaligned_marks (handwritten marks, prices or quantities now sit next to a \
+different item than in Image 1) or other; detail names the wrong row or item in a few words.
 
 6. altered_numbers: prices, dates, times, phone numbers, quantities and years that differ between \
 Image 1 and Image 2: source and output as written, and where. Read them from the images; the OCR \
@@ -150,13 +150,16 @@ that is not the target language) although it should have been translated: text, 
 Brand names, URLs, e-mail addresses and text that was already in the target language are not \
 issues. A title or a column of body text is major, a footnote is not.
 
-8. mistranslated: text in Image 2 that is real target-language text but whose meaning differs \
-from the source: output_text, source_text and problem (a few words).
+8. mistranslated: text in Image 2 that is real target-language text but whose meaning would \
+mislead a reader of the output, for example a wrong dish, a wrong service, a wrong price label \
+or a reversed meaning: output_text, source_text and problem (a few words). Acceptable \
+paraphrases, shorter wordings and omitted adjectives are not problems: do not list them.
 
 9. summary: one sentence in English on the overall result.
 
-Use empty arrays when there is nothing to report. Return only the JSON object that matches the \
-schema."""
+Every array lists problems and nothing else: when nothing is wrong in a category its array is \
+empty. Never add an entry to say that something is fine, present, correct or acceptable. Return \
+only the JSON object that matches the schema."""
 
 ORIGINAL_LABEL = "Image 1 is the ORIGINAL image."
 OUTPUT_LABEL = "Image 2 is the model's OUTPUT image."

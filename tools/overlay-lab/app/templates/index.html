@@ -51,6 +51,11 @@
   .mrow.off { opacity: .5; }
   .mtag { font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 99px; padding: 0 6px; white-space: nowrap; }
   #model-count { font-size: 12px; color: var(--muted); margin-top: 4px; overflow-wrap: anywhere; }
+  .filelangs { grid-column: 1 / -1; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin: 0; min-width: 0; }
+  .filelangs legend { font-weight: 600; font-size: 13px; padding: 0 6px; }
+  .flrow { display: grid; grid-template-columns: minmax(120px, 300px) minmax(230px, 360px); justify-content: start; gap: 8px 16px; align-items: center; padding: 3px 0; font-size: 13px; }
+  .flrow .fname { overflow-wrap: anywhere; }
+  @media (max-width: 640px) { .flrow { grid-template-columns: minmax(0, 1fr); } }
   #results { margin-top: 18px; }
   .share { padding: 10px 14px; margin-bottom: 14px; display: grid; gap: 6px; }
   .share .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
@@ -133,7 +138,12 @@
       <select id="lang">
         {% for code, name in languages.items() %}<option value="{{ code }}"{% if code == 'en' %} selected{% endif %}>{{ code }} — {{ name }}</option>{% endfor %}
       </select>
+      <span class="hint">選了圖片之後，每張圖會多一列語言選單，預設是這一格的語言，可以逐張改。</span>
     </label>
+    <fieldset class="filelangs" id="file-langs" hidden>
+      <legend>每張圖的目標語言</legend>
+      <div id="file-lang-list" role="group" aria-label="每張圖的目標語言"></div>
+    </fieldset>
     <div>
       <label class="check"><input type="checkbox" id="mode-a" checked> Mode A（hybrid，{{ claude_model }}）</label>
       <label class="check"><input type="checkbox" id="mode-a-retry"{% if mode_a_retry %} checked{% endif %}> Mode A 重試一次（帶著 judge 的發現再請 Claude 規劃一次）</label>
@@ -233,6 +243,27 @@
     } catch (e) { /* the default model from the page stays */ }
   }
   $('model-filter').addEventListener('input', renderPicker);
+
+  // ------------------------------------------------------------ one target language per file
+  const langRows = [];  // one { select, touched } per chosen file, in file order
+  function renderFileLangs() {
+    const files = Array.from($('file').files).slice(0, MAX_BATCH);
+    const list = $('file-lang-list');
+    list.replaceChildren();
+    langRows.length = 0;
+    $('file-langs').hidden = !files.length;
+    const options = Array.from($('lang').options).map((o) => [o.value, o.textContent]);
+    files.forEach((f, i) => {
+      const sel = el('select', { 'aria-label': '圖片 ' + (i + 1) + ' 的目標語言' }, options.map(([v, t]) => el('option', { value: v }, t)));
+      sel.value = $('lang').value;
+      const row = { select: sel, touched: false };
+      sel.addEventListener('change', () => { row.touched = true; });
+      langRows.push(row);
+      list.append(el('div', { class: 'flrow' }, el('span', { class: 'fname' }, '圖片 ' + (i + 1) + ' · ' + f.name), sel));
+    });
+  }
+  $('file').addEventListener('change', renderFileLangs);
+  $('lang').addEventListener('change', () => { for (const r of langRows) if (!r.touched) r.select.value = $('lang').value; });
 
   // ------------------------------------------------------------ small DOM helpers
   function row(dl, k, v) { if (v === undefined || v === null || v === '') return; dl.append(el('dt', {}, k), el('dd', {}, v)); }
@@ -398,12 +429,13 @@
   }
 
   function unitsTable(units) {
-    const head = ['id', '動作', '角色', '重要性', '擦除', '用字', '字級（比例）', '長出'].map((h) => el('th', {}, h));
+    const head = ['id', '動作', '角色', '重要性', '群組（字級 / 粗細）', '擦除（原因）', '用字', '字級（比例）', '長出'].map((h) => el('th', {}, h));
     const body = units.map((u) => {
       const action = u.action === 'skipped' ? 'skipped: ' + (u.skip_reason || '') : u.action;
       return el('tr', {},
         el('td', {}, u.id), el('td', {}, action), el('td', {}, u.role), el('td', {}, u.importance || ''),
-        el('td', {}, u.erase_method || '—'), el('td', {}, u.text_used || '—'),
+        el('td', {}, u.group ? u.group + '：' + (u.group_size ? u.group_size + ' px' : '—') + ' · ' + (u.group_weight || '—') + (u.group_size_broken ? '　⚠ 達不到共同字級' : '') : '—'),
+        el('td', {}, u.erase_method ? u.erase_method + (u.erase_reason ? '（' + u.erase_reason + '）' : '') : '—'), el('td', {}, u.text_used || '—'),
         el('td', {}, u.font_size ? u.font_size + ' px（' + (u.fit_ratio != null ? u.fit_ratio : '—') + (u.readable === false ? '，低於可讀門檻' : '') + '）' : '—'),
         el('td', {}, u.grow && (u.grow[0] || u.grow[1]) ? u.grow.join(' / ') + ' px' : '—'));
     });
@@ -441,7 +473,15 @@
       row(dl, 'tokens (in / out)', a.tokens.input + ' / ' + a.tokens.output + (attempts.length > 1 ? '（兩次規劃合計）' : ''));
       row(dl, '費用（Anthropic 額度）', a.total_cost_usd == null ? '（未知模型，只顯示 tokens）' : fmtUsd(a.total_cost_usd) + '（規劃 ' + fmtUsd(a.cost_usd) + ' + judge ' + fmtUsd(a.judge_cost_usd) + '）');
       row(dl, 'units', `${a.translated_count} 翻譯 / ${a.unit_count} 共 / ${a.word_count} 字`);
+      const cov = a.planner_coverage;
+      if (a.coverage_pass && cov) {
+        row(dl, '覆蓋補翻', cov.error
+          ? '補翻失敗，沿用第一次的結果：' + cov.error
+          : `補翻 ${cov.added_words} 字（第一次有 ${cov.unlisted_before} / ${cov.words} 字沒進任何 unit，補翻新增 ${cov.added_units} 個 unit，之後還剩 ${cov.unlisted_after} 字）`);
+      }
       row(dl, '擦除方法', `flat ${countBy(units, 'erase_method', 'flat')} 個 / inpaint ${countBy(units, 'erase_method', 'inpaint')} 個`);
+      const grouped = new Set(units.filter((u) => u.group).map((u) => u.group));
+      if (grouped.size) row(dl, '群組', `${grouped.size} 組（同組同字級、同粗細）` + (units.some((u) => u.group_size_broken) ? '；有 unit 達不到共同字級' : ''));
       row(dl, '用 short 的 unit', countBy(units, 'text_used', 'short') + ' 個');
       const tooSmall = units.filter((u) => u.skip_reason === 'too small').length;
       if (tooSmall) row(dl, '太小而略過', tooSmall + ' 個次要 unit（保持原樣）');
@@ -526,7 +566,7 @@
     box.hidden = false;
     box.append(el('strong', {}, '批次彙總（' + batch.job_ids.length + ' 張圖；每張圖 × Mode / 模型一列）'));
     const nameOf = (r) => '圖片 ' + r.image_index + (r.image_name ? ' · ' + r.image_name : '');
-    const head = [['圖片', ''], ['Mode / 模型', ''], ['判定', ''], ['可用度', 'num'], ['Anthropic（額度）', 'num'], ['OpenRouter（現金）', 'num'], ['時間', 'num']];
+    const head = [['圖片', ''], ['語言', ''], ['Mode / 模型', ''], ['判定', ''], ['可用度', 'num'], ['Anthropic（額度）', 'num'], ['OpenRouter（現金）', 'num'], ['時間', 'num']];
     const table = el('table', { class: 'summary-table' });
     table.append(el('thead', {}, el('tr', {}, head.map(([h, cls]) => el('th', { class: cls }, h)))));
     const body = el('tbody');
@@ -538,6 +578,7 @@
       const runs = r.runs > 1 && !live ? el('span', { class: 'hint' }, `　${r.passes} / ${r.runs_done + r.runs_failed} 次 pass（最佳 run）`) : null;
       body.append(el('tr', {},
         el('td', {}, first ? el('a', { href: '#job-' + r.image_index }, nameOf(r)) : null),
+        el('td', { 'data-label': '語言' }, r.target_lang || '—'),
         el('td', {}, el('span', { class: 'mname' }, r.label)),
         el('td', {}, verdict, runs),
         el('td', { class: 'num', 'data-label': '可用度' }, r.status === 'done' ? fmtScore(r.usability) : '—'),
@@ -546,7 +587,7 @@
         el('td', { class: 'num', 'data-label': '時間' }, fmtMs(r.elapsed_ms))));
     }
     const t = batch.totals || {};
-    body.append(el('tr', { class: 'total' }, el('td', {}, '合計'), el('td', {}, `${t.rows_passed || 0} / ${t.rows || 0} 列 pass`), el('td', {}), el('td', {}),
+    body.append(el('tr', { class: 'total' }, el('td', {}, '合計'), el('td', {}), el('td', {}, `${t.rows_passed || 0} / ${t.rows || 0} 列 pass`), el('td', {}), el('td', {}),
       el('td', { class: 'num', 'data-label': 'Anthropic（額度）' }, fmtUsd(t.cost_anthropic_usd)), el('td', { class: 'num', 'data-label': 'OpenRouter（現金）' }, fmtUsd(t.cost_openrouter_usd)), el('td', {})));
     table.append(body);
     box.append(el('div', { class: 'tablewrap' }, table));  // scrolls inside the box on a phone, never the page
@@ -712,6 +753,8 @@
     const fd = new FormData();
     for (const f of files) fd.append('files', f);
     fd.append('target_lang', $('lang').value);
+    if (langRows.length !== files.length) renderFileLangs();  // a file list the browser restored without a change event
+    for (const r of langRows) fd.append('target_langs', r.select.value);
     fd.append('mode_a', useA ? '1' : '0');
     fd.append('mode_b', useB ? '1' : '0');
     fd.append('mode_a_retry', $('mode-a-retry').checked ? '1' : '0');
@@ -734,6 +777,7 @@
     } catch (e) { setBusy(false, '送出失敗：' + e.message); }
   });
 
+  renderFileLangs();
   loadModels();
 })();
 </script>

@@ -11,12 +11,23 @@ Round 5 changes, in the order the pixels are touched:
 * the output goes through the vision judge like a Mode B attempt, and when the verdict is not
   `pass` the planner is called once more with what the judge found (`MODE_A_RETRY`); both attempts
   are kept and verify.choose_attempt picks the one that is shown.
+
+Round 6 changes:
+
+* the background of a unit is judged on its box and on a ring around it; a flat fill paints the
+  ring's colour, a lane extension has to pass the same test, anything the ring does not vouch for
+  is inpainted (erase.py, `_flat_run`);
+* the units of a planner `group` are drawn at one weight and one font size (`_group_weights`,
+  `_settle_group_size`); the planner call itself may take a second look at the words it left out
+  (claude_units.request_units, recorded as `coverage_pass` / `planner_coverage`).
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import math
+import statistics
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -35,10 +46,12 @@ from .erase import (
     build_unit_mask,
     erase_units,
     measure_background,
+    occupied_map,
+    region_agrees,
 )
 from .geometry import UnitGeometry, compute_geometry, extension_polygons, free_lane, glyph_height
 from .imaging import LoadedImage
-from .layout import MAX_GROW
+from .layout import MAX_GROW, MIN_FIT_RATIO
 from .models import ClaudeUnit, OcrResult, Word
 from .render import SKIP_TOO_SMALL, UnitRender, growth_limits, paste_unit, render_unit
 
@@ -86,6 +99,8 @@ class _Prepared:
     colors: ColorChoice | None = None
     render: UnitRender | None = None
     extension: UnitMask | None = None
+    bold: bool = False  # the weight the unit is drawn in (one value for a whole group)
+    lane: tuple[float, float] = (0.0, 0.0)
 
 
 def _base_report(uid: str, unit: ClaudeUnit, words: list[Word], geom: UnitGeometry, action, reason):
@@ -101,6 +116,10 @@ def _base_report(uid: str, unit: ClaudeUnit, words: list[Word], geom: UnitGeomet
         "align": unit.align,
         "weight": unit.weight,
         "importance": unit.importance,
+        "group": unit.group,
+        "group_size": None,
+        "group_weight": None,
+        "group_size_broken": False,
         "keep": unit.keep,
         "notes": unit.notes,
         "paragraphs": sorted({w.para for w in words if w.para is not None}),
@@ -115,11 +134,18 @@ def _base_report(uid: str, unit: ClaudeUnit, words: list[Word], geom: UnitGeomet
     return report
 
 
+LANE_TEST_STEPS = 8  # a lane that fails the ring's test is shortened in this many steps before it is given up
+
+
 def _flat_run(rgb: np.ndarray, geom: UnitGeometry, axis: int, along: bool, limit: float, info: BackgroundInfo) -> float:
     """How far beyond the frame edge (up to `limit` px) the image keeps the unit's background colour.
 
     Columns of samples across the frame are checked outward in 2 px steps; the run ends at the first
-    column in which fewer than 97% of the samples are within the unit's colour tolerance.
+    column in which fewer than 97% of the samples are within the unit's colour tolerance. Round 6: the
+    run must also pass the rule of the ring (erase.region_agrees): its pixels flat, their median within
+    RING_MATCH_MAX of the colour the unit is filled with. A run that fails is shortened until it
+    passes, down to nothing (the unit then falls back to `short` or a smaller size instead of growing
+    into a gradient or a slightly different paper).
     """
     if limit <= 1.0:
         return 0.0
@@ -138,11 +164,39 @@ def _flat_run(rgb: np.ndarray, geom: UnitGeometry, axis: int, along: bool, limit
     h, w = rgb.shape[:2]
     xs = np.clip(np.round(pts[..., 0]).astype(int), 0, w - 1)
     ys = np.clip(np.round(pts[..., 1]).astype(int), 0, h - 1)
-    dist = np.linalg.norm(rgb[ys, xs].astype(np.float32) - np.asarray(info.color, np.float32), axis=2)
+    colors = rgb[ys, xs].astype(np.float32)
+    fill = np.asarray(info.fill_color, np.float32)
+    dist = np.linalg.norm(colors - fill, axis=2)
     ok = (dist <= info.tolerance).mean(axis=1) >= FLAT_COLUMN_SHARE
     bad = np.flatnonzero(~ok)
-    first_bad = int(bad[0]) if bad.size else len(offsets)
-    return float(offsets[first_bad - 1]) if first_bad > 0 else 0.0
+    n = int(bad[0]) if bad.size else len(offsets)
+    step = max(1, -(-n // LANE_TEST_STEPS))
+    while n > 0:
+        if region_agrees(colors[:n].reshape(-1, 3), fill)[0]:
+            break
+        n -= step
+    return float(offsets[n - 1]) if n > 0 else 0.0
+
+
+def _group_weights(translated: list[_Prepared]) -> dict[str, bool]:
+    """group id -> bold, one value for every unit of the group (round 6).
+
+    The planner's `weight` wins when all the units of the group agree; otherwise the majority of
+    (planner says bold OR the stroke estimate says bold) decides, and a tie is regular.
+    """
+    members: dict[str, list[_Prepared]] = {}
+    for p in translated:
+        if p.unit.group:
+            members.setdefault(p.unit.group, []).append(p)
+    out: dict[str, bool] = {}
+    for gid, group in members.items():
+        planner = {p.unit.weight for p in group}
+        if len(planner) == 1:
+            out[gid] = planner == {"bold"}
+        else:
+            votes = sum(1 for p in group if p.unit.weight == "bold" or p.colors.bold)
+            out[gid] = votes * 2 > len(group)
+    return out
 
 
 def render_units(rgb: np.ndarray, ocr: OcrResult, units: list[ClaudeUnit], lang: str) -> RenderResult:
@@ -160,22 +214,28 @@ def render_units(rgb: np.ndarray, ocr: OcrResult, units: list[ClaudeUnit], lang:
             _Prepared(uid, unit, words, geom, action, reason, _base_report(uid, unit, words, geom, action, reason))
         )
 
-    # ---- measure: background of every translated unit on its own box, colours from the original
+    # ---- measure: background of every translated unit on its own box and on the ring around it, colours from the original
     t0 = time.perf_counter()
     translated = [p for p in prepared if p.action == "translated"]
+    occupied = occupied_map((img_h, img_w), [w.polygon for w in ocr.words]) if translated else None
     for p in translated:
         p.mask = build_unit_mask((img_h, img_w), p.words, p.geom.glyph_h)
         if p.mask is None:
             p.action, p.reason = "skipped", "outside the image"
             p.report.update(action="skipped", skip_reason="outside the image")
             continue
-        p.info = measure_background(rgb, p.mask)
+        p.info = measure_background(rgb, p.mask, occupied)
     translated = [p for p in translated if p.action == "translated"]
     proxy = rgb.copy()  # the original with each unit's box painted in its background colour
     for p in translated:
-        p.mask.roi(proxy)[p.mask.raw > 0] = p.info.color
+        p.mask.roi(proxy)[p.mask.raw > 0] = p.info.fill_color
     for p in translated:
         p.colors = pick_colors(rgb, proxy, p.mask, p.geom.corners, p.geom.glyph_h)
+    group_bold = _group_weights(translated)
+    for p in translated:
+        p.bold = group_bold[p.unit.group] if p.unit.group else (p.unit.weight == "bold" or p.colors.bold)
+        if p.unit.group:
+            p.report["group_weight"] = "bold" if p.bold else "regular"
     measure_ms = int((time.perf_counter() - t0) * 1000)
 
     # ---- fit: readable text first, then growth into the free lane, then `short`; decides what is erased
@@ -183,39 +243,66 @@ def render_units(rgb: np.ndarray, ocr: OcrResult, units: list[ClaudeUnit], lang:
     listed = {w.id for p in prepared for w in p.words}
     loose = [np.asarray(w.polygon, dtype=np.float64) for w in ocr.words if w.id not in listed]
     frames = {p.uid: p.geom.corners for p in prepared}  # grows as units grow, so that two never meet
+
+    def fit_unit(p: _Prepared, target_size: int | None = None) -> UnitRender | None:
+        """Lane, then render_unit; with `target_size` None when that exact size cannot be reached."""
+        axis = 0 if p.unit.direction == "horizontal" else 1
+        lane = (0.0, 0.0)
+        if p.info.flat:
+            obstacles = [c for uid, c in frames.items() if uid != p.uid] + loose
+            free = free_lane(p.geom, axis, obstacles, (img_h, img_w))
+            want = growth_limits(p.geom.size[axis], free, p.unit.align)
+            lane = (
+                _flat_run(rgb, p.geom, axis, False, want[0], p.info) if want[0] > 0 else 0.0,
+                _flat_run(rgb, p.geom, axis, True, want[1], p.info) if want[1] > 0 else 0.0,
+            )
+        render = render_unit(
+            p.unit.translation, p.unit.direction, lang, p.unit.role, p.geom, p.bold,
+            short=p.unit.short, align=p.unit.align, importance=p.unit.importance, lane=lane, target_size=target_size,
+        )  # fmt: skip
+        if render is not None:
+            p.lane = lane
+            p.report["lane"] = [round(lane[0], 1), round(lane[1], 1)]
+        return render
+
+    def settle(p: _Prepared, render: UnitRender) -> None:
+        """Adopt a render: its frame is now an obstacle for the others, and a grown frame has an extension to erase."""
+        p.render = render
+        frames[p.uid] = render.geom.corners
+        p.extension = None
+        if sum(render.grow) > 0.5:
+            axis = 0 if p.unit.direction == "horizontal" else 1
+            p.extension = build_polygon_mask(
+                (img_h, img_w), extension_polygons(p.geom, axis, render.grow[0], render.grow[1])
+            )
+
     for p in translated:
         try:
-            axis = 0 if p.unit.direction == "horizontal" else 1
-            lane = (0.0, 0.0)
-            if p.info.flat:
-                obstacles = [c for uid, c in frames.items() if uid != p.uid] + loose
-                free = free_lane(p.geom, axis, obstacles, (img_h, img_w))
-                want = growth_limits(p.geom.size[axis], free, p.unit.align)
-                lane = (
-                    _flat_run(rgb, p.geom, axis, False, want[0], p.info) if want[0] > 0 else 0.0,
-                    _flat_run(rgb, p.geom, axis, True, want[1], p.info) if want[1] > 0 else 0.0,
-                )
-            bold = p.unit.weight == "bold" or p.colors.bold
-            p.render = render_unit(
-                p.unit.translation, p.unit.direction, lang, p.unit.role, p.geom, bold,
-                short=p.unit.short, align=p.unit.align, importance=p.unit.importance, lane=lane,
-            )  # fmt: skip
-            p.report["lane"] = [round(lane[0], 1), round(lane[1], 1)]
-            if p.render.skipped:
-                p.action, p.reason = "skipped", p.render.skipped
-                p.report.update(action="skipped", skip_reason=p.render.skipped, min_fit_px=p.render.min_fit_px)
+            render = fit_unit(p)
+            if render.skipped:
+                p.render = render
+                p.action, p.reason = "skipped", render.skipped
+                p.report.update(action="skipped", skip_reason=render.skipped, min_fit_px=render.min_fit_px)
                 continue
-            frames[p.uid] = p.render.geom.corners
-            if sum(p.render.grow) > 0.5:
-                p.extension = build_polygon_mask(
-                    (img_h, img_w), extension_polygons(p.geom, axis, p.render.grow[0], p.render.grow[1])
-                )
+            settle(p, render)
         except Exception as exc:  # noqa: BLE001 - one bad unit must not sink the others
             log.warning("stage=fit unit %s failed: %s", p.uid, type(exc).__name__)
             p.action, p.reason = "skipped", f"fit failed: {type(exc).__name__}"
             p.report.update(action="skipped", skip_reason=p.reason, error=f"{type(exc).__name__}: {exc}")
             warnings.append(f"{p.uid}: fitting failed ({type(exc).__name__}: {exc}); the area stays untouched")
     translated = [p for p in translated if p.action == "translated"]
+
+    # ---- group typography: one size for the rows of a table column or list (the weight was settled above)
+    members: dict[str, list[_Prepared]] = {}
+    for p in translated:
+        if p.unit.group:
+            members.setdefault(p.unit.group, []).append(p)
+    for gid, group in members.items():
+        try:
+            _settle_group_size(gid, group, fit_unit, settle, warnings)
+        except Exception as exc:  # noqa: BLE001 - the units keep the size they were fitted with
+            log.warning("stage=fit group failed: %s", type(exc).__name__)
+            warnings.append(f"group {gid}: could not unify the font size ({type(exc).__name__}: {exc})")
     fit_ms = int((time.perf_counter() - t1) * 1000)
 
     # ---- erase: flat fill or inpaint per unit, colour-guarded; skipped and unlisted words keep their pixels
@@ -265,7 +352,13 @@ def render_units(rgb: np.ndarray, ocr: OcrResult, units: list[ClaudeUnit], lang:
                     "min_fit_px": ur.min_fit_px,
                     "grow": [round(ur.grow[0], 1), round(ur.grow[1], 1)],
                     "erase_method": erase.methods[p.uid],
+                    "erase_reason": p.info.reason,
                     "erase_bg": hex_color(p.info.color),
+                    "erase_fill": hex_color(p.info.fill_color),
+                    "erase_ring_color": None if p.info.ring_color is None else hex_color(p.info.ring_color),
+                    "erase_ring_spread": None if p.info.ring_spread is None else round(p.info.ring_spread, 1),
+                    "erase_ring_gap": None if p.info.ring_gap is None else round(p.info.ring_gap, 1),
+                    "erase_extension": erase.extension.get(p.uid),
                     "erase_spread": round(p.info.spread, 1),
                     "erase_ink_share": round(p.info.ink_share, 2),
                     "erase_px": erase.mask_px[p.uid],
@@ -292,6 +385,40 @@ def render_units(rgb: np.ndarray, ocr: OcrResult, units: list[ClaudeUnit], lang:
         timings={"erase_ms": erase_ms, "render_ms": render_ms},
         warnings=warnings,
     )
+
+
+def _settle_group_size(gid, group: list[_Prepared], fit_unit, settle, warnings: list[str]) -> None:
+    """One font size for the units of a group: the smallest size that a unit managed with its full text.
+
+    Every unit was fitted on its own first. The group's size is then the minimum size among the units
+    that were drawn readably with the full text (when none was, the minimum among the readable ones),
+    but not below MIN_FIT_RATIO of the median glyph height of the group. Every unit is fitted again at
+    exactly that size: the full text first, `short` when the full text does not fit at it. A unit that
+    cannot reach the size keeps the smaller size it had and is flagged `group_size_broken`.
+    """
+    drawn = [p for p in group if p.render is not None and p.render.mask is not None and p.render.fitted]
+    pool = [p for p in drawn if p.render.text_used == "full" and p.render.readable] or [
+        p for p in drawn if p.render.readable
+    ]
+    if len(group) < 2 or not pool:
+        for p in group:
+            p.report.update(group_size=p.render.font_size if p.render is not None and p.render.mask is not None else None)
+        return
+    median_h = float(statistics.median(p.geom.glyph_h for p in group))
+    floor = max(1, math.ceil(MIN_FIT_RATIO * median_h - 1e-9))
+    target = max(min(p.render.font_size for p in pool), floor)
+    broken = 0
+    for p in group:
+        render = fit_unit(p, target)
+        if render is not None:
+            settle(p, render)
+        elif p.render.font_size != target:
+            p.report["group_size_broken"] = True
+            broken += 1
+    for p in group:
+        p.report["group_size"] = target
+    if broken:
+        warnings.append(f"group {gid}: {broken} unit(s) could not reach the common size of {target} px and keep their own")
 
 
 def _png_bytes(arr: np.ndarray) -> bytes:
@@ -369,6 +496,8 @@ def _attempt(
         "warnings": call.notes + result.warnings + extra,
         "units": result.units,
         "retry_feedback": feedback,
+        "coverage_pass": bool((call.coverage or {}).get("pass")),
+        "planner_coverage": call.coverage,
         "verdict": None,
         "verification": None,
         "verify_error": None,
@@ -378,7 +507,10 @@ def _attempt(
         "judge_status": None,
     }
     try:  # the units as a file of their own, for the published bundle
-        doc = {**meta, "attempt": n, "page": [ocr.width, ocr.height], "units": result.units}
+        doc = {
+            **meta, "attempt": n, "page": [ocr.width, ocr.height],
+            "coverage_pass": attempt["coverage_pass"], "planner_coverage": call.coverage, "units": result.units,
+        }  # fmt: skip
         (out_dir / f"A_a{n}_units.json").write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
         attempt["units_file"] = f"A_a{n}_units.json"
     except OSError:
@@ -489,6 +621,8 @@ def run_mode_a(
         "warnings": list(main["warnings"]),
         "page": [ocr.width, ocr.height],
         "units": main["units"],
+        "coverage_pass": main["coverage_pass"],
+        "planner_coverage": main["planner_coverage"],
         "output": main["output"],
         "erased": main["erased"],
         "units_file": main["units_file"],

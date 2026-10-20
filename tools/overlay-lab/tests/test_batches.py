@@ -295,7 +295,7 @@ def test_the_batch_manifest_is_published_last_with_the_url_of_every_job_manifest
     assert m["manifest"]["key"] == batch_key and m["manifest"]["url"] == batch["publish"]["manifest_url"]
     assert m["manifest"]["url"] == f"https://s3.azndev.com/line-bot/{batch_key}?X-Amz-Expires=604800&X-Amz-Signature=mock"
     assert m["url_expiry_hours"] == 168 and m["urls_expire_at"] > m["published_at"] >= m["created_at"]
-    assert m["target_language"] == "en"
+    assert m["target_language"] == ["en"] and [j["target_language"] for j in m["jobs"]] == ["en"] * 4
     assert m["options"]["image_models"] == ["m/a", "m/b"] and m["options"]["runs"] == 1 and m["options"]["mode_b"] is True
     assert m["options"]["judge_model"] == "claude-sonnet-5-5" and m["options"]["mode_a_retry"] is True and m["options"]["output_size"] == "2K"
 
@@ -396,3 +396,124 @@ def test_the_batch_manifest_key_is_under_the_configured_prefix(monkeypatch, tmp_
     monkeypatch.setenv("MINIO_PREFIX", "/lab/round5/")
     assert publish.batch_key(get_minio_settings(), "0123456789abcdef") == "lab/round5/batch-0123456789abcdef/manifest.json"
     assert Image.open(io.BytesIO(IMAGES[0])).size == (80, 60)
+
+
+# ---------------------------------------------------------------- round 6: a target language per image
+
+
+def langs_of(scenario):
+    """The language each generation call was made for, by the order of the images (one model, one run)."""
+    return [call["lang"] for call in scenario.calls]
+
+
+def test_target_langs_give_every_image_its_own_language_end_to_end(client, monkeypatch):
+    scenario = scenario_for(monkeypatch, plan_for(n=3))
+    r = post_batch(client, IMAGES[:3], NAMES[:3], target_langs=["en", "zh-TW", "ja"])
+    assert r.status_code == 200, r.text
+    batch = wait_batch(client, r.json()["batch_id"])
+    assert [j["params"]["target_lang"] for j in batch["jobs"]] == ["en", "zh-TW", "ja"]  # every job keeps its own language
+    assert sorted(langs_of(scenario)) == ["en", "ja", "zh-TW"]
+    assert batch["target_langs"] == ["en", "zh-TW", "ja"] and batch["target_language"] == ["en", "zh-TW", "ja"]
+    assert [im["target_lang"] for im in batch["images"]] == ["en", "zh-TW", "ja"]
+    assert batch["params"]["target_lang"] == "en"  # the batch's own language is the default of the form
+    assert [row["target_lang"] for row in batch["summary"]] == ["en", "zh-TW", "ja"]
+    for job in batch["jobs"]:  # the judge and the OCR check of each image used that image's language
+        expected = {"en": "en", "zh-TW": "zh", "ja": "ja"}[job["params"]["target_lang"]]
+        assert job["mode_b"]["results"][0]["verification"]["target_language"] == expected
+
+
+def test_distinct_languages_of_the_batch_keep_the_order_of_the_images(client, monkeypatch):
+    scenario_for(monkeypatch, plan_for(n=4))
+    r = post_batch(client, IMAGES, NAMES, target_langs=["zh-TW", "en", "zh-TW", "en"])
+    batch = wait_batch(client, r.json()["batch_id"])
+    assert batch["target_langs"] == ["zh-TW", "en", "zh-TW", "en"] and batch["target_language"] == ["zh-TW", "en"]
+
+
+def test_a_shorter_or_missing_target_langs_falls_back_to_the_batch_language(client, monkeypatch):
+    scenario_for(monkeypatch, plan_for(n=4))
+    short = wait_batch(client, post_batch(client, IMAGES, NAMES, target_lang="ko", target_langs=["ja"]).json()["batch_id"])
+    assert short["target_langs"] == ["ja", "ko", "ko", "ko"] and short["target_language"] == ["ja", "ko"]
+    assert [j["params"]["target_lang"] for j in short["jobs"]] == ["ja", "ko", "ko", "ko"]
+    scenario_for(monkeypatch, plan_for(n=3))
+    absent = wait_batch(client, post_batch(client, IMAGES[:3], NAMES[:3], target_lang="vi").json()["batch_id"])
+    assert absent["target_langs"] == ["vi"] * 3 and absent["target_language"] == ["vi"]
+    scenario_for(monkeypatch, plan_for(n=3))
+    blank = wait_batch(client, post_batch(client, IMAGES[:3], NAMES[:3], target_langs=["", "ja", ""]).json()["batch_id"])
+    assert blank["target_langs"] == ["en", "ja", "en"]  # an empty entry is "the batch's language" too
+
+
+def test_a_bad_or_surplus_target_langs_value_rejects_the_whole_batch(client, monkeypatch, tmp_path):
+    scenario = scenario_for(monkeypatch, plan_for(n=4))
+    assert post_batch(client, IMAGES[:2], NAMES[:2], target_langs=["en", "fr"]).status_code == 400
+    r = post_batch(client, IMAGES[:2], NAMES[:2], target_langs=["en", "ja", "ko"])
+    assert r.status_code == 400 and "at most one per file" in r.json()["detail"]
+    assert scenario.calls == []
+    data_dir = tmp_path / "data"
+    assert not data_dir.exists() or list(data_dir.iterdir()) == []  # nothing was started
+
+
+def test_the_single_image_endpoint_is_unchanged_by_target_langs(client, monkeypatch):
+    scenario = scenario_for(monkeypatch, plan_for(n=1))
+    files = {"file": ("one.png", IMAGES[0], "image/png")}
+    r = client.post("/api/jobs", files=files, data={"mode_b": "1", "image_models": "m/a", "target_lang": "ja"})
+    assert r.status_code == 200
+    deadline = time.time() + 20
+    while time.time() < deadline and client.get(f"/api/jobs/{r.json()['job_id']}").json()["status"] != "done":
+        time.sleep(0.03)
+    assert langs_of(scenario) == ["ja"]
+
+
+def test_the_batch_manifest_lists_the_distinct_languages_and_every_job_its_own(monkeypatch, tmp_path, store):
+    client = make_client(monkeypatch, tmp_path, LAB_MOCK="0", **MINIO_ENV)
+    scenario_for(monkeypatch, plan_for(n=3))
+    r = post_batch(client, IMAGES[:3], NAMES[:3], target_langs=["en", "zh-TW", "en"])
+    batch = wait_batch(client, r.json()["batch_id"])
+    m = manifest_at(store, f"overlay-lab/batch-{batch['batch_id']}/manifest.json")
+    assert m["schema_version"] == 3 and m["target_language"] == ["en", "zh-TW"]
+    assert [j["target_language"] for j in m["jobs"]] == ["en", "zh-TW", "en"]
+    assert [row["target_lang"] for row in m["summary"]] == ["en", "zh-TW", "en"]
+    for entry, job in zip(m["jobs"], batch["jobs"]):  # the job manifests stay single-language
+        assert manifest_at(store, entry["manifest"]["key"])["target_language"] == job["params"]["target_lang"]
+    assert client.get(f"/api/batches/{batch['batch_id']}/manifest").json()["target_language"] == ["en", "zh-TW"]
+
+
+def test_a_batch_from_before_round_6_still_reads_back_with_its_one_language(client, monkeypatch, tmp_path):
+    scenario_for(monkeypatch, plan_for(n=2))
+    batch = wait_batch(client, post_batch(client, IMAGES[:2], NAMES[:2]).json()["batch_id"])
+    path = tmp_path / "data" / f"batch-{batch['batch_id']}" / "batch.json"
+    record = json.loads(path.read_text(encoding="utf-8"))
+    for key in ("target_langs", "target_language"):
+        record.pop(key)
+    for image in record["images"]:
+        image.pop("target_lang")
+    path.write_text(json.dumps(record), encoding="utf-8")
+    again = TestClient(create_app()).get(f"/api/batches/{batch['batch_id']}").json()
+    assert again["status"] == "done" and [row["target_lang"] for row in again["summary"]] == ["en", "en"]
+    assert publish.batch_languages(again) == ["en"]
+
+
+def test_start_batch_itself_gives_a_missing_or_blank_language_the_language_of_the_batch(monkeypatch, tmp_path):
+    from app import jobs
+    from app.imaging import load_image
+
+    monkeypatch.setenv("LAB_MOCK", "1")
+    monkeypatch.setenv("LAB_DATA_DIR", str(tmp_path / "data"))
+    store = jobs.JobStore()
+
+    def images():
+        return [(load_image(png_of_size((80, 60), (i * 9, 5, 5))), f"{i}.png") for i in range(3)]
+
+    def langs_of_batch(langs):
+        batch_id, job_ids = jobs.start_batch(store, images(), "ko", True, False, [], langs=langs)
+        deadline = time.time() + 30
+        while time.time() < deadline and not all((store.snapshot(j) or {}).get("status") == "done" for j in job_ids):
+            time.sleep(0.03)
+        record = store.batch_record(batch_id)
+        assert [store.snapshot(j)["params"]["target_lang"] for j in job_ids] == record["target_langs"]
+        assert record["params"]["target_lang"] == "ko"
+        return record["target_langs"], record["target_language"]
+
+    assert langs_of_batch(None) == (["ko", "ko", "ko"], ["ko"])  # the argument is optional
+    assert langs_of_batch(["ja"]) == (["ja", "ko", "ko"], ["ja", "ko"])  # a shorter list
+    assert langs_of_batch(["", "vi", "vi"]) == (["ko", "vi", "vi"], ["ko", "vi"])  # a blank entry
+    assert jobs.distinct_languages(["en", "zh-TW", "en", ""]) == ["en", "zh-TW"]

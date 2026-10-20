@@ -363,3 +363,35 @@ def test_a_failure_message_that_quotes_image_text_reaches_the_page_but_not_the_l
     logged = " ".join(rec.getMessage() for rec in caplog.records if rec.name.startswith("lab."))
     assert "mode A failed" in logged and "ModeError" in logged and "紅燒肉飯店" not in logged and "NT$120" not in logged
     assert not any(rec.exc_info for rec in caplog.records if rec.name.startswith("lab."))  # no traceback with the message in it
+
+
+def test_mock_batch_with_a_language_per_image_draws_each_image_for_its_own_language(client):
+    base = mock.make_fixture().image
+    uploads = []
+    for i in range(3):
+        image = base.copy()
+        image.putpixel((0, 0), (i * 7, 1, 2))
+        uploads.append(("files", (f"menu-{i}.png", png_of(image), "image/png")))
+    r = client.post(
+        "/api/batches",
+        files=uploads,
+        data={"target_lang": "ja", "mode_a": "1", "mode_b": "1", "image_models": "mock/image-model", "target_langs": ["en", "zh-TW", "en"]},
+    )
+    assert r.status_code == 200, r.text
+    batch_id = r.json()["batch_id"]
+    deadline = time.time() + 60
+    while time.time() < deadline:
+        batch = client.get(f"/api/batches/{batch_id}").json()
+        if batch["status"] == "done" and batch["publish"]["status"] in ("done", "skipped", "error"):
+            break
+        time.sleep(0.05)
+    else:
+        raise AssertionError("batch did not finish")
+    assert batch["target_langs"] == ["en", "zh-TW", "en"] and batch["target_language"] == ["en", "zh-TW"]
+    assert batch["params"]["target_lang"] == "ja"  # the form's own language was only the default
+    assert [row["target_lang"] for row in batch["summary"]] == ["en", "en", "zh-TW", "zh-TW", "en", "en"]
+    assert all(row["verdict"] == "pass" for row in batch["summary"])
+    layouts = [next(u for u in job["mode_a"]["units"] if u["direction"] == "vertical_rl")["layout"] for job in batch["jobs"]]
+    assert layouts == ["vertical_latin", "vertical_cjk", "vertical_latin"]  # the column is turned for English, kept upright for Chinese
+    manifest = client.get(f"/api/batches/{batch_id}/manifest").json()
+    assert manifest["target_language"] == ["en", "zh-TW"] and [j["target_language"] for j in manifest["jobs"]] == ["en", "zh-TW", "en"]

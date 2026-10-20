@@ -2,6 +2,7 @@
 
 import io
 import json
+import math
 
 import numpy as np
 import pytest
@@ -344,3 +345,208 @@ def test_no_units_means_no_erase_and_an_unchanged_image():
     assert result.units == [] and np.array_equal(result.output, img) and np.array_equal(result.erased, img)
     listed_but_kept = pipeline_a.render_units(img, ocr_, [unit(["w0001"], translation="x", keep=True)], "en")
     assert np.array_equal(listed_but_kept.output, img) and by_id(listed_but_kept)["u01"]["action"] == "kept"
+
+
+# ---------------------------------------------------------------- round 6: one size and one weight for the rows of a group
+
+
+def hairlines(img, y0, y1, x0, x1):
+    for y in range(y0 + 3, y1 - 2, 6):
+        img[y : y + 1, x0:x1] = BLACK
+
+
+def thick_strokes(img, y0, y1, x0, x1):
+    for x in range(x0 + 2, x1 - 10, 14):
+        img[y0 + 3 : y1 - 3, x : x + 9] = BLACK
+
+
+def rows_scene(texts, *, shorts=None, weights=None, groups=None, heights=None, widths=None, ink=hairlines):
+    """A white page with one row of ink per text: a word box each, 240 px wide and 34 px tall unless told otherwise."""
+    n = len(texts)
+    heights = heights or [34] * n
+    widths = widths or [240] * n
+    img = np.full((70 + sum(heights) + 18 * n, 500, 3), WHITE, np.uint8)
+    words, units, y = [], [], 30
+    for i, text in enumerate(texts):
+        ink(img, y, y + heights[i], 42, 40 + widths[i] - 2)
+        words.append(word(i + 1, f"w{i}", rect(40, y, 40 + widths[i], y + heights[i])))
+        units.append(
+            ClaudeUnit(
+                word_ids=[f"w{i + 1:04d}"], source_text=f"s{i}", translation=text, role="label",
+                short=(shorts or [""] * n)[i], weight=(weights or ["regular"] * n)[i], group=(groups or [""] * n)[i],
+            )  # fmt: skip
+        )
+        y += heights[i] + 18
+    return img, OcrResult(width=500, height=img.shape[0], words=words), units
+
+
+def render_rows(*args, **kw):
+    img, ocr_, units = rows_scene(*args, **kw)
+    return pipeline_a.render_units(img, ocr_, units, "en").units
+
+
+MENU = ["Tea", "Braised pork rice with ginger", "Beef noodle soup"]
+
+
+def test_three_rows_of_one_group_come_out_at_one_size_and_one_weight():
+    alone = render_rows(MENU)
+    assert len({u["font_size"] for u in alone}) == 3  # without a group every row is fitted on its own
+    rows = render_rows(MENU, groups=["menu-names"] * 3)
+    assert len({u["font_size"] for u in rows}) == 1 and len({u["bold"] for u in rows}) == 1
+    size = rows[0]["font_size"]
+    assert size == min(u["font_size"] for u in alone)  # the smallest size a row managed with its full text
+    assert all(u["group"] == "menu-names" and u["group_size"] == size and u["group_weight"] == "regular" for u in rows)
+    assert all(u["text_used"] == "full" and u["group_size_broken"] is False for u in rows)
+    assert all(u["readable"] for u in rows)
+
+
+def test_a_unit_outside_the_group_is_not_touched_by_it():
+    alone = render_rows(["Tea"])[0]
+    mixed = render_rows([*MENU, "Tea"], groups=["menu-names"] * 3 + [""])
+    outsider = mixed[3]
+    assert outsider["font_size"] == alone["font_size"] > mixed[0]["font_size"]  # the group is smaller, the stranger keeps its own size
+    assert outsider["group"] == "" and outsider["group_size"] is None and outsider["group_weight"] is None
+    assert outsider["group_size_broken"] is False
+    assert len({u["font_size"] for u in mixed[:3]}) == 1
+
+
+def test_two_groups_are_settled_independently():
+    rows = render_rows(["Tea", "Braised pork rice with ginger", "Soup", "Rice"], groups=["a", "a", "b", "b"])
+    assert rows[0]["font_size"] == rows[1]["font_size"] and rows[2]["font_size"] == rows[3]["font_size"]
+    assert rows[2]["font_size"] > rows[0]["font_size"] and rows[0]["group_size"] != rows[2]["group_size"]
+
+
+def test_a_group_of_one_keeps_its_size_and_records_it():
+    alone = render_rows(["Tea"])[0]
+    single = render_rows(["Tea"], groups=["lonely"])[0]
+    assert single["font_size"] == alone["font_size"] and single["group"] == "lonely" and single["group_size"] == alone["font_size"]
+
+
+def test_weight_the_planner_wins_when_the_units_of_a_group_agree():
+    rows = render_rows(["Tea", "Pork rice", "Beef noodle"], weights=["bold"] * 3, groups=["g"] * 3)  # hairlines: the strokes say regular
+    assert [u["bold"] for u in rows] == [True] * 3 and {u["group_weight"] for u in rows} == {"bold"}
+    rows = render_rows(["Tea", "Pork rice", "Beef noodle"], weights=["regular"] * 3, groups=["g"] * 3, ink=thick_strokes)
+    assert [u["bold"] for u in rows] == [False] * 3 and {u["group_weight"] for u in rows} == {"regular"}  # strokes say bold, planner wins
+
+
+def test_weight_a_group_that_disagrees_goes_by_the_majority_of_planner_or_stroke_bold():
+    names = ["Tea", "Pork rice", "Beef noodle"]
+    two_bold = render_rows(names, weights=["bold", "bold", "regular"], groups=["g"] * 3)
+    assert [u["bold"] for u in two_bold] == [True] * 3 and {u["group_weight"] for u in two_bold} == {"bold"}
+    one_bold = render_rows(names, weights=["regular", "bold", "regular"], groups=["g"] * 3)
+    assert [u["bold"] for u in one_bold] == [False] * 3 and {u["group_weight"] for u in one_bold} == {"regular"}
+    by_strokes = render_rows(names, weights=["regular", "regular", "bold"], groups=["g"] * 3, ink=thick_strokes)
+    assert [u["bold"] for u in by_strokes] == [True] * 3  # the planner disagrees with itself; the strokes of all three look bold
+    tie = render_rows(names[:2], weights=["bold", "regular"], groups=["g"] * 2)
+    assert [u["bold"] for u in tie] == [False, False]  # a tie is regular
+
+
+def test_a_row_whose_full_text_does_not_fit_at_the_group_size_uses_its_short_text():
+    texts = ["Tea", "Braised pork rice with ginger and a very long extra description", "Beef noodle soup"]
+    rows = render_rows(texts, shorts=["", "Pork rice", ""], groups=["menu"] * 3)
+    assert [u["text_used"] for u in rows] == ["full", "short", "full"]
+    assert len({u["font_size"] for u in rows}) == 1 and all(u["group_size"] == rows[0]["font_size"] for u in rows)
+    assert all(u["group_size_broken"] is False for u in rows)
+
+
+def test_a_row_that_cannot_reach_the_group_size_keeps_its_own_and_is_flagged():
+    texts = ["Tea", "Braised pork rice with ginger and a very long extra description that goes on and on and on", "Beef noodle soup"]
+    rows = render_rows(texts, groups=["menu"] * 3)
+    broken = rows[1]
+    assert broken["group_size_broken"] is True and broken["font_size"] < broken["group_size"]
+    assert rows[0]["font_size"] == rows[2]["font_size"] == broken["group_size"] and broken["readable"] is False
+    assert [u["group_size_broken"] for u in (rows[0], rows[2])] == [False, False]
+
+
+def test_the_group_size_is_not_below_a_readable_share_of_the_median_glyph_height():
+    # three rows of 34 px glyphs and one of 20 px in a box too narrow for more than 15 px: the group does not shrink to 15
+    texts = ["Tea", "Pork rice with ginger", "Beef noodle soup", "Beef noodle soup"]
+    rows = render_rows(texts, groups=["menu"] * 4, heights=[34, 34, 34, 20], widths=[240, 240, 240, 150])
+    floor = math.ceil(0.7 * 34 - 1e-9)  # MIN_FIT_RATIO of the median glyph height
+    assert rows[0]["group_size"] >= floor and rows[0]["font_size"] == rows[1]["font_size"] == rows[2]["font_size"] >= floor
+    assert rows[3]["group_size_broken"] is True and rows[3]["font_size"] < rows[3]["group_size"]
+
+
+def test_the_group_fields_reach_the_units_file_of_a_mode_a_run(monkeypatch, tmp_path):
+    ocr_ = mock.vision_words(640, 480)
+    ids = [w.id for w in ocr_.words]
+    units = [
+        ClaudeUnit(word_ids=ids[0:3], source_text="TONKATSU SET MENU", translation="Pork Cutlet Set Menu", role="title", group="titles"),
+        ClaudeUnit(word_ids=[ids[3]], source_text="NT$120", translation="NT$120", keep=True, role="price"),
+        ClaudeUnit(word_ids=ids[5:7], source_text="LUNCH SPECIAL", translation="Today's special lunch", rotated=True, group="titles"),
+    ]  # fmt: skip
+    h = Harness(monkeypatch, [judge_record(usability=0.95)], calls=[planner_call(units)])
+    result = h.run(tmp_path)
+    doc = json.loads((tmp_path / "A_a1_units.json").read_text(encoding="utf-8"))
+    assert [u["group"] for u in doc["units"]] == ["titles", "", "titles"] == [u["group"] for u in result["units"]]
+    assert all(set(u) >= {"group", "group_size", "group_weight", "group_size_broken"} for u in doc["units"])
+    titles = [u for u in doc["units"] if u["group"]]
+    assert titles[0]["group_size"] == titles[1]["group_size"] and titles[0]["group_weight"] == titles[1]["group_weight"]
+
+
+# ---------------------------------------------------------------- round 6: the report of the ring decision, the lane test, the coverage fields
+
+
+def test_the_unit_report_records_the_ring_the_fill_and_the_reason():
+    img = np.full((200, 400, 3), WHITE, np.uint8)
+    img[:, 280:] = BLACK
+    speckle(img, (60, 90, 40, 200), BLACK)
+    u = by_id(pipeline_a.render_units(img, ocr_of((38, 58, 202, 92)), [unit(["w0001"], translation="Braised pork")], "en"))["u01"]
+    assert u["erase_method"] == "flat" and u["erase_reason"] == "ring agrees with the box"
+    assert u["erase_ring_color"] == "#ffffff" and u["erase_fill"] == "#ffffff" and u["erase_ring_spread"] == 0.0
+    assert u["erase_ring_gap"] == 0.0 and u["erase_extension"] in (None, "filled")
+    rng = np.random.default_rng(2)
+    ramp = np.linspace(40, 230, 400)[None, :, None] + rng.normal(0, 22, (200, 400, 1))
+    textured = np.clip(np.repeat(ramp, 200, axis=0).repeat(3, axis=2), 0, 255).astype(np.uint8)
+    speckle(textured, (60, 90, 40, 140), (5, 5, 5))
+    t = by_id(pipeline_a.render_units(textured, ocr_of((38, 58, 142, 92)), [unit(["w0001"], translation="Tea")], "en"))["u01"]
+    assert t["erase_method"] == "inpaint" and t["erase_reason"] in ("box not flat", "ring not flat")
+    assert t["erase_fill"] == t["erase_bg"]  # nothing is filled: the colour reported is the box's
+
+
+def test_the_fill_in_the_report_is_the_paper_not_the_box_colour():
+    img = np.full((120, 300, 3), (240, 240, 240), np.uint8)
+    img[40:80, 40:200] = (236, 236, 236)  # the box is a little darker than the paper
+    speckle(img, (44, 76, 44, 196), (10, 10, 10), seed=3)
+    u = by_id(pipeline_a.render_units(img, ocr_of((40, 40, 200, 80), size=(120, 300)), [unit(["w0001"], translation="Tea")], "en"))["u01"]
+    assert u["erase_bg"] == "#ececec" and u["erase_ring_color"] == "#f0f0f0" and u["erase_fill"] == "#f0f0f0"
+
+
+def test_a_lane_is_cut_where_the_paper_stops_being_the_fill_colour_instead_of_running_to_the_limit():
+    def grown(step_color):
+        img = np.full((200, 600, 3), WHITE, np.uint8)
+        speckle(img, (60, 90, 40, 140), BLACK)
+        img[:, 170:] = step_color  # paper that changes 28 px right of the word
+        ocr_ = ocr_of((38, 58, 142, 92), size=(200, 600))
+        text = "Complimentary hot beverage"
+        return by_id(pipeline_a.render_units(img, ocr_, [unit(["w0001"], translation=text, align="left")], "en"))["u01"]
+
+    cut = grown((216, 216, 216))  # inside the colour guard, but not the fill colour
+    same = grown((252, 252, 252))  # three levels off: the same paper as far as the ring rule is concerned
+    assert cut["erase_method"] == "flat" and 0 < cut["lane"][1] <= 45
+    assert same["lane"][1] > cut["lane"][1] + 20  # the lane of the same paper runs on to the growth limit
+
+
+def test_the_coverage_fields_of_the_planner_reach_the_attempt_the_result_and_the_units_file(monkeypatch, tmp_path):
+    info = {"pass": True, "words": 7, "unlisted_before": 3, "unlisted_after": 0, "added_units": 1, "added_words": 3, "error": None}
+    call = planner_call(canned_units())
+    call.coverage = info
+    result = Harness(monkeypatch, [judge_record(usability=0.95)], calls=[call]).run(tmp_path)
+    assert result["coverage_pass"] is True and result["planner_coverage"] == info
+    assert result["attempts"][0]["coverage_pass"] is True and result["attempts"][0]["planner_coverage"] == info
+    assert result["coverage"] == 0.95  # `coverage` is still the judge's number
+    doc = json.loads((tmp_path / "A_a1_units.json").read_text(encoding="utf-8"))
+    assert doc["coverage_pass"] is True and doc["planner_coverage"] == info
+    plain = Harness(monkeypatch, [judge_record(usability=0.95)]).run(tmp_path)
+    assert plain["coverage_pass"] is False and plain["planner_coverage"] is None
+
+
+def test_a_retry_that_runs_into_max_tokens_keeps_the_first_attempt_and_shows_the_reason(monkeypatch, tmp_path):
+    from app.models import ModeError
+
+    spent = ModeError("Claude hit max_tokens=32000 before finishing the JSON (the call produced 32000 output tokens); the image has too many units for one call")
+    h = Harness(monkeypatch, [judge_record(usability=0.4)], calls=[planner_call(canned_units()), spent])
+    result = h.run(tmp_path)
+    assert len(result["attempts"]) == 1 and result["selected_attempt"] == 1 and result["verdict"] == "score"
+    assert "max_tokens=32000" in result["retry_error"] and "32000 output tokens" in result["retry_error"]
+    assert (tmp_path / "A_a1.png").is_file() and not (tmp_path / "A_a2.png").exists()

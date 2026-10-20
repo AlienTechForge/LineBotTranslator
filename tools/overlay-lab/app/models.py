@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 Direction = Literal["horizontal", "vertical_rl", "vertical_lr"]
 Role = Literal["title", "heading", "body", "label", "price", "number", "other"]
@@ -85,8 +85,8 @@ class OcrResult(BaseModel):
 class ClaudeUnit(BaseModel):
     """One translation unit as the planner returns it (it never gives coordinates).
 
-    Unknown fields are rejected (the JSON schema forbids them too), enums are checked. The four
-    fields added in round 5 have defaults only so that a hand-built unit stays short in code.
+    Unknown fields are rejected (the JSON schema forbids them too), enums are checked. The fields
+    added in rounds 5 and 6 have defaults only so that a hand-built unit stays short in code.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -103,6 +103,14 @@ class ClaudeUnit(BaseModel):
     align: Align = "left"  # how the source text is set
     weight: Weight = "regular"  # how heavy the source text looks
     importance: Importance = "major"  # minor: decoration, footnotes, logo lettering
+    # round 6: a short id shared by the units of one table column, list or run of labels ("" = stands alone);
+    # the renderer gives every unit of a group one font size and one weight
+    group: str = ""
+
+    @field_validator("group", mode="after")
+    @classmethod
+    def _tidy_group(cls, value: str) -> str:
+        return " ".join(value.split())[:40]
 
 
 class ClaudeUnits(BaseModel):

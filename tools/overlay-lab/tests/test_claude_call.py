@@ -12,7 +12,7 @@ from PIL import Image
 
 from app import claude_units
 from app.imaging import load_image
-from app.models import ModeError, OcrResult
+from app.models import ClaudeUnit, ModeError, OcrResult
 
 CANNED = {
     "units": [
@@ -38,6 +38,24 @@ CANNED = {
         },
     ]
 }
+
+
+COVERING = json.dumps(
+    {
+        "units": [
+            {
+                "word_ids": ["w0001", "w0002"],
+                "source_text": "價格表",
+                "translation": "Price list",
+                "direction": "horizontal",
+                "rotated": False,
+                "role": "heading",
+                "keep": False,
+                "notes": "",
+            }
+        ]
+    }
+)  # both words of the `setup` fixture are in this one unit: no coverage pass
 
 
 class Usage:
@@ -129,7 +147,7 @@ def test_default_form_uses_the_beta_endpoint_with_fallbacks_default_and_json_sch
     assert kw["betas"] == ["server-side-fallback-2026-07-01"]
     assert kw["fallbacks"] == "default"
     assert kw["model"] == "claude-opus-5-5"
-    assert kw["max_tokens"] == 16000
+    assert kw["max_tokens"] == 32000
     assert "thinking" not in kw
     assert kw["output_config"]["effort"] == "high"
     fmt = kw["output_config"]["format"]
@@ -266,10 +284,14 @@ def _install_real_sdk(monkeypatch, handler):
         return handler(request, seen[-1][2])
 
     def factory(**kw):
+        # the timeout of the production client is passed on: a client left at the SDK default would refuse a
+        # non-streaming request of 32000 tokens ("Streaming is required ..."), one with an explicit timeout does not
+        extra = {"timeout": kw["timeout"]} if "timeout" in kw else {}
         return real(
             api_key="test-anthropic-key-0000000000",
             max_retries=0,
             http_client=anthropic.DefaultHttpxClient(transport=httpx2.MockTransport(transport)),
+            **extra,
         )
 
     monkeypatch.setattr(anthropic, "Anthropic", factory)
@@ -278,15 +300,14 @@ def _install_real_sdk(monkeypatch, handler):
 
 def test_installed_sdk_serialises_the_default_fallback_form_on_the_wire(setup, monkeypatch):
     image, ocr, _ = setup
-    empty = json.dumps({"units": []})
-    seen = _install_real_sdk(monkeypatch, lambda req, body: httpx2.Response(200, json=_message_json(empty)))
+    seen = _install_real_sdk(monkeypatch, lambda req, body: httpx2.Response(200, json=_message_json(COVERING)))
     call = claude_units.request_units(image, ocr, "en")
     assert call.fallback_form == "default" and call.attempts == []
     path, headers, body = seen[0]
     assert path == "/v1/messages"
     assert "server-side-fallback-2026-07-01" in headers["anthropic-beta"]
     assert body["fallbacks"] == "default"
-    assert body["model"] == "claude-opus-5-5" and body["max_tokens"] == 16000
+    assert body["model"] == "claude-opus-5-5" and body["max_tokens"] == 32000
     assert body["output_config"]["effort"] == "high"
     assert body["output_config"]["format"]["type"] == "json_schema"
     assert body["output_config"]["format"]["schema"]["additionalProperties"] is False
@@ -296,14 +317,13 @@ def test_installed_sdk_serialises_the_default_fallback_form_on_the_wire(setup, m
 
 def test_installed_sdk_steps_down_to_the_array_form_then_plain_on_http_400(setup, monkeypatch):
     image, ocr, _ = setup
-    empty = json.dumps({"units": []})
 
     def handler(req, body):
         beta = req.headers.get("anthropic-beta", "")
         if "server-side-fallback-2026-07-01" in beta or "server-side-fallback-2026-06-01" in beta:
             error = {"type": "invalid_request_error", "message": "fallbacks: not supported"}
             return httpx2.Response(400, json={"type": "error", "error": error})
-        return httpx2.Response(200, json=_message_json(empty))
+        return httpx2.Response(200, json=_message_json(COVERING))
 
     seen = _install_real_sdk(monkeypatch, handler)
     call = claude_units.request_units(image, ocr, "en")
@@ -418,7 +438,7 @@ def test_at_most_four_claude_calls_are_in_flight_planner_and_judge_together(setu
                     with lock:
                         state["active"] -= 1
                     is_judge = "quality judge" in kw["system"]
-                    return Response(text=judge_answer if is_judge else json.dumps({"units": []}), model=kw["model"])
+                    return Response(text=judge_answer if is_judge else COVERING, model=kw["model"])
 
     monkeypatch.setattr(anthropic, "Anthropic", lambda **kw: SlowClient())
     source = Image.new("RGB", (200, 100))
@@ -443,3 +463,243 @@ def test_at_most_four_claude_calls_are_in_flight_planner_and_judge_together(setu
         t.join(timeout=30)
     assert state["calls"] == 12 and results == ["ok"] * 12
     assert state["peak"] == 4  # twelve calls, never more than four at once, and four really do run together
+
+
+# ------------------------------------------------------------------ round 6: the token budget, the coverage pass, the group field
+
+
+class SeqClient:
+    """Answers the planner's calls one after the other (a Response, or an exception to raise) and records them."""
+
+    def __init__(self, answers):
+        self.answers = list(answers)
+        self.requests = []
+        client = self
+
+        class Beta:
+            class messages:  # noqa: N801
+                @staticmethod
+                def create(**kw):
+                    client.requests.append(kw)
+                    out = client.answers.pop(0)
+                    if isinstance(out, Exception):
+                        raise out
+                    return out
+
+        self.beta = Beta
+
+    def texts(self):
+        return [kw["messages"][0]["content"][1]["text"] for kw in self.requests]
+
+
+def planner_unit(ids, text="x", translation="y", **extra):
+    unit = {
+        "word_ids": ids, "source_text": text, "translation": translation, "direction": "horizontal",
+        "rotated": False, "role": "label", "keep": False, "notes": "", "short": "", "align": "left",
+        "weight": "regular", "importance": "major", "group": "",
+    }  # fmt: skip
+    return {**unit, **extra}
+
+
+def answer(*units, tokens=None, model="claude-opus-5-5"):
+    resp = Response(text=json.dumps({"units": list(units)}), model=model)
+    if tokens:
+        resp.usage = type("U", (), {"input_tokens": tokens[0], "output_tokens": tokens[1]})
+    return resp
+
+
+@pytest.fixture
+def ten_words(monkeypatch):
+    """Ten OCR words w0001..w0010 (nine of them with text, plus the `install` helper for a scripted client)."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key-0000000000")
+    image = load_image(_png(800, 600))
+    words = [word(i, f"字{i}", rect(10, 10 + 30 * i, 60, 30 + 30 * i)) for i in range(1, 11)]
+    ocr = OcrResult(width=800, height=600, words=words)
+
+    def install(answers):
+        fake = SeqClient(answers)
+        monkeypatch.setattr(anthropic, "Anthropic", lambda **kw: fake)
+        return fake
+
+    return image, ocr, install
+
+
+def _png(w, h):
+    buf = io.BytesIO()
+    Image.new("RGB", (w, h), (240, 240, 240)).save(buf, "PNG")
+    return buf.getvalue()
+
+
+def ids(*numbers):
+    return [f"w{n:04d}" for n in numbers]
+
+
+def test_the_planner_token_budget_is_32000():
+    assert claude_units.MAX_TOKENS == 32000
+
+
+def test_max_tokens_error_names_the_budget_and_the_tokens_the_failed_call_spent(setup):
+    image, ocr, install = setup
+    resp = Response(text='{"units": [', stop_reason="max_tokens")
+    resp.usage = type("U", (), {"input_tokens": 9000, "output_tokens": 32000})
+    install({"default": resp})
+    with pytest.raises(ModeError) as err:
+        claude_units.request_units(image, ocr, "en")
+    message = str(err.value)
+    assert "max_tokens=32000" in message and "32000 output tokens" in message and "before finishing the JSON" in message
+
+
+def test_max_tokens_error_without_usage_numbers_still_reads_well(setup):
+    image, ocr, install = setup
+    resp = Response(text="{", stop_reason="max_tokens")
+    resp.usage = None
+    install({"default": resp})
+    with pytest.raises(ModeError, match=r"max_tokens=32000 before finishing the JSON; "):
+        claude_units.request_units(image, ocr, "en")
+
+
+def test_coverage_is_judged_on_words_with_text_and_ten_percent_is_the_limit():
+    assert claude_units.COVERAGE_MIN_SHARE == 0.90
+    short = claude_units.coverage_short
+    assert not short(10, 0) and not short(10, 1)  # 90% listed is enough: "more than 10% left out" is the trigger
+    assert short(10, 2) and short(100, 11) and not short(100, 10) and not short(277, 27) and short(277, 28)
+    assert not short(0, 0)
+
+
+def test_a_first_answer_that_leaves_out_most_words_gets_one_coverage_pass_with_only_those_words(ten_words):
+    image, ocr, install = ten_words
+    fake = install([
+        answer(planner_unit(ids(1, 2, 3), "A", "a"), planner_unit(ids(4, 5), "B", "b"), tokens=(1000, 300)),
+        answer(planner_unit(ids(6, 7, 8), "C", "c"), planner_unit(ids(9), "D", "d"), planner_unit(ids(10), "E", "e", keep=True),
+               tokens=(400, 120)),
+    ])  # fmt: skip
+    call = claude_units.request_units(image, ocr, "en")
+    assert len(fake.requests) == 2  # exactly one more call, not a loop
+    first, second = fake.texts()
+    for n in range(1, 11):
+        assert f"w{n:04d} " in first
+    word_part = second.split("---\n")[1]  # the word list of the second request
+    assert [line.split()[0] for line in word_part.splitlines() if line.startswith("w0")] == ids(6, 7, 8, 9, 10)
+    assert "coverage pass" in second and "5 words" in second and "Vertical columns are one unit per column" in second
+    assert second.endswith("each id in exactly one unit.")
+    assert [u.word_ids for u in call.units] == [ids(1, 2, 3), ids(4, 5), ids(6, 7, 8), ids(9), ids(10)]
+    assert call.coverage == {
+        "pass": True, "words": 10, "unlisted_before": 5, "unlisted_after": 0, "added_units": 3, "added_words": 5, "error": None,
+    }  # fmt: skip
+    assert (call.input_tokens, call.output_tokens) == (1400, 420)  # both calls are counted
+    assert call.cost_usd == pytest.approx(1400 * 4 / 1e6 + 420 * 20 / 1e6)
+    assert any("coverage pass: 5 of 10 words" in n for n in call.notes)
+
+
+def test_the_second_request_sends_the_same_image_and_the_same_system_prompt(ten_words):
+    image, ocr, install = ten_words
+    fake = install([answer(planner_unit(ids(1, 2), "A", "a")), answer(planner_unit(ids(3, 4, 5, 6, 7, 8, 9, 10)))])
+    claude_units.request_units(image, ocr, "en")
+    first, second = fake.requests
+    assert first["messages"][0]["content"][0] == second["messages"][0]["content"][0]  # the picture
+    assert first["system"] == second["system"] == claude_units.SYSTEM_PROMPT
+    assert first["max_tokens"] == second["max_tokens"] == 32000 and first["model"] == second["model"]
+
+
+def test_no_coverage_pass_when_nine_of_ten_words_are_in_a_unit(ten_words):
+    image, ocr, install = ten_words
+    fake = install([answer(planner_unit(ids(1, 2, 3, 4, 5)), planner_unit(ids(6, 7, 8, 9)))])
+    call = claude_units.request_units(image, ocr, "en")
+    assert len(fake.requests) == 1 and call.coverage["pass"] is False and call.coverage["unlisted_before"] == 1
+    assert call.coverage["added_units"] == 0 and call.coverage["error"] is None
+
+
+def test_eight_of_ten_words_is_short_of_the_limit_and_asks_again(ten_words):
+    image, ocr, install = ten_words
+    fake = install([answer(planner_unit(ids(1, 2, 3, 4, 5, 6, 7, 8))), answer(planner_unit(ids(9, 10)))])
+    call = claude_units.request_units(image, ocr, "en")
+    assert len(fake.requests) == 2 and call.coverage["pass"] is True and call.coverage["added_words"] == 2
+    assert [u.word_ids for u in call.units][-1] == ids(9, 10)
+
+
+def test_words_without_text_do_not_count_as_left_out(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key-0000000000")
+    image = load_image(_png(400, 300))
+    words = [word(i, f"字{i}", rect(10, 10 * i, 50, 10 * i + 8)) for i in range(1, 10)] + [word(10, "  ", rect(10, 200, 50, 210))]
+    ocr = OcrResult(width=400, height=300, words=words)
+    fake = SeqClient([answer(planner_unit(ids(1, 2, 3, 4, 5, 6, 7, 8, 9)))])
+    monkeypatch.setattr(anthropic, "Anthropic", lambda **kw: fake)
+    call = claude_units.request_units(image, ocr, "en")
+    assert len(fake.requests) == 1 and call.coverage["words"] == 9 and call.coverage["unlisted_before"] == 0
+
+
+def test_ids_the_second_answer_repeats_are_dropped_by_validation_and_unknown_ids_reject_a_unit(ten_words):
+    image, ocr, install = ten_words
+    install([
+        answer(planner_unit(ids(1, 2, 3), "A", "a"), planner_unit(ids(4), "B", "b")),
+        answer(planner_unit(ids(3, 5, 6), "C", "c"), planner_unit(ids(7, 99), "bad", "bad"), planner_unit(ids(8, 9, 10), "D", "d")),
+    ])  # fmt: skip
+    call = claude_units.request_units(image, ocr, "en")
+    assert [u.word_ids for u in call.units] == [ids(1, 2, 3), ids(4), ids(5, 6), ids(8, 9, 10)]  # w0003 was used already, w0007 stays out
+    assert call.coverage["unlisted_after"] == 1 and call.coverage["added_words"] == 5 and call.coverage["added_units"] == 2
+    assert any("duplicate word id w0003" in n for n in call.notes) and any("unknown word ids" in n for n in call.notes)
+
+
+def test_a_failing_second_call_keeps_the_first_answer_and_says_why(ten_words):
+    image, ocr, install = ten_words
+    spent = Response(text="{", stop_reason="max_tokens")
+    install([answer(planner_unit(ids(1, 2, 3)), tokens=(1000, 300)), spent])
+    call = claude_units.request_units(image, ocr, "en")
+    assert [u.word_ids for u in call.units] == [ids(1, 2, 3)]
+    assert call.coverage["pass"] is True and call.coverage["added_units"] == 0 and "max_tokens" in call.coverage["error"]
+    assert (call.input_tokens, call.output_tokens) == (1000, 300)  # the failed call has no usable usage: nothing is added
+    assert any("coverage pass failed" in n for n in call.notes)
+
+
+def test_the_coverage_pass_counts_toward_the_same_claude_slots(ten_words, monkeypatch):
+    image, ocr, install = ten_words
+    install([answer(planner_unit(ids(1, 2, 3))), answer(planner_unit(ids(4, 5, 6, 7, 8, 9, 10)))])
+    entered = []
+
+    class Counting:
+        def __enter__(self):
+            entered.append(1)
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(claude_units, "CLAUDE_SLOTS", Counting())
+    claude_units.request_units(image, ocr, "en")
+    assert len(entered) == 2  # the planner call and the coverage pass each take a slot
+
+
+def test_the_feedback_of_a_retry_goes_to_the_first_call_only(ten_words):
+    image, ocr, install = ten_words
+    fake = install([answer(planner_unit(ids(1, 2, 3))), answer(planner_unit(ids(4, 5, 6, 7, 8, 9, 10)))])
+    claude_units.request_units(image, ocr, "en", feedback="This is a second attempt. Fix the heading.")
+    first, second = fake.texts()
+    assert first.endswith("Fix the heading.") and "Fix the heading." not in second and "coverage pass" in second
+
+
+def test_the_planner_prompt_demands_every_word_one_unit_per_vertical_column_and_no_filler():
+    prompt = claude_units.SYSTEM_PROMPT
+    for needle in (
+        "assign EVERY word of the list to a unit",
+        "small cards, side notes",
+        "only when it is pure decoration",
+        "each id of the list is in exactly one unit",
+        "every vertical column of CJK characters is always its own unit",
+        "one column, one unit, one translation",
+        "notes: an empty string unless something is really uncertain",
+        "never fill short with a copy of the translation or with filler",
+        "- group: a short id",
+        "one font size and one weight",
+        "Use an empty string for a unit that stands alone",
+    ):
+        assert needle in " ".join(prompt.split()), needle
+
+
+def test_the_schema_requires_group_and_the_model_accepts_it_with_tidy_whitespace():
+    item = claude_units.UNITS_SCHEMA["properties"]["units"]["items"]
+    assert "group" in item["required"] and item["properties"]["group"] == {"type": "string"}
+    assert set(item["required"]) == set(item["properties"])  # every property is required
+    unit = ClaudeUnit(word_ids=["w1"], group="  menu   names ")
+    assert unit.group == "menu names" and ClaudeUnit(word_ids=["w1"]).group == ""
+    assert len(ClaudeUnit(word_ids=["w1"], group="g" * 100).group) == 40
+    with pytest.raises(Exception):
+        ClaudeUnit(word_ids=["w1"], groups="x")  # unknown fields stay forbidden

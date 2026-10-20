@@ -88,6 +88,7 @@ def _row(job: dict, mode: str, label: str, model: str | None) -> dict:
         "image_index": job.get("index"),
         "job_id": job.get("job_id"),
         "image_name": image.get("name") or "",
+        "target_lang": (job.get("params") or {}).get("target_lang"),
         "mode": mode,
         "model": model,
         "label": label,

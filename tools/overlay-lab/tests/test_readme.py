@@ -108,3 +108,45 @@ def test_the_env_example_and_compose_default_to_the_round_5_model_and_retry():
     assert "OPENROUTER_IMAGE_MODEL=google/gemini-3-pro-image" in env
     assert "google/gemini-3-pro-image" in compose and "gemini-2.5-flash-image" not in compose + env
     assert 'MODE_A_RETRY: "${MODE_A_RETRY:-1}"' in compose and "MODE_A_RETRY=1" in env
+
+
+def test_the_readme_documents_round_6_with_the_constants_of_the_code():
+    text = read("README.md")
+    for needle in (
+        "### 第 6 輪的發現，以及這一輪改了什麼",
+        f"`claude_units.MAX_TOKENS` = {claude_units.MAX_TOKENS}",
+        f"`COVERAGE_MIN_SHARE` = {claude_units.COVERAGE_MIN_SHARE:.2f}",
+        "覆蓋補翻",
+        "補翻 N 字",
+        "`coverage_pass`",
+        "`planner_coverage`",
+        f"`RING_PX`（{erase.RING_PX} px）",
+        f"`RING_MATCH_MAX`（{erase.RING_MATCH_MAX:.0f}）",
+        f"`FEATHER_SIGMA`（{erase.FEATHER_SIGMA}",
+        f"`BOX_SPREAD_WITH_RING_MAX` = {erase.BOX_SPREAD_WITH_RING_MAX:.0f}",
+        "`erase_reason`",
+        "`erase_ring_color`",
+        "`erase_ring_spread`",
+        "`group_size_broken`",
+        "`group_weight`",
+        "同組同字級、同粗細",
+        "`target_langs`",
+        "每張圖各自的目標語言",
+        "第 6 輪的變更（與第 5 輪不相容之處）",
+        "不是靠程式去讀 `detail` 的文字",
+    ):
+        assert needle in text, needle
+    assert "`group`" in text and "- group: a short id" in text  # the field and its line of the planner prompt
+
+
+def test_the_readme_and_env_example_say_which_planner_model_is_the_default_and_which_the_owner_runs():
+    for name in ("README.md", ".env.example"):
+        text = read(name)
+        assert "claude-opus-5-5" in text and "擁有者目前的" in text and "claude-sonnet-5-5" in text, name
+    assert "CLAUDE_MODEL=claude-opus-5-5" in read(".env.example")  # the default itself did not change
+
+
+def test_the_readme_lists_the_new_checks_of_the_rows_rule_and_the_judge_rule():
+    text = read("README.md")
+    assert "而且它的 `detail` 不是空的" in text
+    assert "**每個陣列只列問題**" in text and "會誤導讀者" in text

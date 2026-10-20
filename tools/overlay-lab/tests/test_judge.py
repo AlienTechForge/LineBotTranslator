@@ -469,3 +469,49 @@ def test_parse_answer_rejects_what_the_schema_does_not_allow():
     with pytest.raises(ModeError, match="schema"):
         judge.parse_answer(json.dumps({"coverage": 0.9}))
     assert judge.parse_answer(json.dumps(ANSWER)).usability == 0.42
+
+
+# ---------------------------------------------------------------- round 6: every array lists problems and nothing else
+
+
+def _flat(text: str) -> str:
+    return " ".join(text.split())
+
+
+def test_the_judge_prompt_says_every_array_lists_problems_and_never_that_something_is_fine():
+    prompt = _flat(judge.SYSTEM_PROMPT)
+    assert prompt.endswith(
+        "Every array lists problems and nothing else: when nothing is wrong in a category its array is empty. "
+        "Never add an entry to say that something is fine, present, correct or acceptable. "
+        "Return only the JSON object that matches the schema."
+    )
+    assert "Use empty arrays when there is nothing to report" not in prompt  # replaced by the stricter rule above
+
+
+def test_the_judge_prompt_asks_structure_issues_to_name_the_wrong_row_and_mistranslations_to_be_misleading():
+    prompt = _flat(judge.SYSTEM_PROMPT)
+    assert "5. structure_issues: one entry for each row or item that is wrong." in prompt
+    assert "detail names the wrong row or item in a few words." in prompt
+    assert "whose meaning would mislead a reader of the output" in prompt
+    for example in ("a wrong dish", "a wrong service", "a wrong price label", "a reversed meaning"):
+        assert example in prompt
+    assert "Acceptable paraphrases, shorter wordings and omitted adjectives are not problems: do not list them." in prompt
+    assert "whose meaning differs from the source" not in prompt
+
+
+def test_the_rest_of_the_judge_prompt_is_as_it_was():
+    prompt = _flat(judge.SYSTEM_PROMPT)
+    for kept in (
+        "You are the quality judge of an image-translation experiment.",
+        "Never report something you cannot point to in Image 2.",
+        "1. Compare the two images region by region.",
+        "2. usability: a number from 0 to 1.",
+        "3. coverage: a number from 0 to 1, the share of the source text that is present in Image 2",
+        "4. legibility_issues: text in Image 2 that is not real target-language text or cannot be read",
+        "6. altered_numbers: prices, dates, times, phone numbers, quantities and years that differ",
+        "7. untranslated: text in Image 2 that is still in the source language",
+        "9. summary: one sentence in English on the overall result.",
+    ):
+        assert kept in prompt, kept
+    assert "5. structure_issues:" in prompt and "8. mistranslated:" in prompt
+    assert judge.SYSTEM_PROMPT.count("\n\n") == 12  # the same twelve paragraph breaks as in round 5: nothing was added or dropped
