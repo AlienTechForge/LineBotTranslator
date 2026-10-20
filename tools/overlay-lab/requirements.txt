@@ -9,4 +9,5 @@ numpy==2.5.4
 Pillow==12.3.0
 pydantic==2.14.1
 httpx2==2.13.1
+minio==7.2.20
 pytest==9.1.1

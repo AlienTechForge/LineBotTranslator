@@ -105,11 +105,8 @@ def test_chat_route_request_shape_and_image_extraction(router):
     assert body["image_config"] == {"aspect_ratio": "4:3"}
     parts = body["messages"][0]["content"]
     assert parts[0]["type"] == "text"
-    assert parts[0]["text"] == (
-        "Replace every piece of text in this image with its translation into English. Keep the layout, "
-        "positions, sizes, fonts, colours, background and all graphics exactly as they are. Do not add, "
-        "remove or move any element. Output the edited image only."
-    )
+    assert parts[0]["text"] == openrouter.build_prompt("en")
+    assert "English" in parts[0]["text"] and "{language}" not in parts[0]["text"]
     assert parts[1]["type"] == "image_url" and parts[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
 
     assert res["api_used"] == "chat" and res["size"] == [100, 75]
@@ -242,3 +239,213 @@ def test_extractors_accept_https_urls_and_inline_content_parts():
         openrouter.extract_chat_image({"choices": []})
     with pytest.raises(ModeError, match="credits"):
         openrouter.extract_chat_image({"error": {"message": "out of credits"}})
+
+
+# ---------------------------------------------------------------- round 3: prompt v2, routes, size, retry
+
+
+def test_prompt_v2_has_the_hard_rules():
+    prompt = openrouter.build_prompt("ja")
+    assert "{language}" not in prompt and prompt.count("Japanese") >= 3
+    for rule in (
+        "Translate EVERY piece of text",
+        "every line of multi-line titles, headings, table cells, labels, captions, footers and small print",
+        "brand name, a URL, an e-mail address or already in Japanese",
+        "NEVER change",
+        "digits, numbers, prices, dates, times, phone numbers or handwritten marks",
+        "pixel-for-pixel",
+        "layout, positions, sizes, fonts, colours, background, illustrations and photos",
+        "dimensions and aspect ratio",
+        "Output the edited image only",
+    ):
+        assert rule in prompt, rule
+
+
+def test_readme_shows_the_prompt_that_the_code_uses():
+    from pathlib import Path
+
+    readme = Path(__file__).resolve().parents[1] / "README.md"
+    if not readme.exists():  # the container image does not carry the README
+        pytest.skip("README.md not available")
+    text = readme.read_text(encoding="utf-8")
+    assert openrouter.PROMPT_TEMPLATE in text
+    assert openrouter.RETRY_TEMPLATE in text
+
+
+@pytest.mark.parametrize(
+    "model, expected",
+    [
+        ("google/gemini-3-pro-image", "images"),
+        ("google/gemini-3-pro-image-preview", "images"),
+        ("google/gemini-3.1-flash-image-preview", "images"),
+        ("some-vendor/nano-banana-pro", "images"),
+        ("google/gemini-2.5-flash-image", "chat"),
+        ("openai/gpt-5-image", "chat"),
+        ("bytedance-seed/seedream-4.5", "chat"),
+    ],
+)
+def test_preferred_route_per_model(model, expected):
+    assert openrouter.preferred_route(model) == expected
+
+
+def test_route_order_per_model_and_the_forcing_setting():
+    assert openrouter.route_order("google/gemini-3-pro-image") == ["images", "chat"]
+    assert openrouter.route_order("google/gemini-2.5-flash-image") == ["chat", "images"]
+    assert openrouter.route_order("google/gemini-3-pro-image", "chat") == ["chat"]
+    assert openrouter.route_order("google/gemini-2.5-flash-image", "images") == ["images"]
+
+
+def test_model_list_carries_the_preferred_route_per_model(router):
+    _, state = router
+    state["handler"] = lambda req, body: httpx2.Response(200, json={"data": [
+        {"id": "google/gemini-3-pro-image-preview", "architecture": {"input_modalities": ["image"], "output_modalities": ["image"]}},
+        {"id": "a/plain", "architecture": {"input_modalities": ["image"], "output_modalities": ["image"]}},
+    ]})  # fmt: skip
+    details = openrouter.list_image_models()["details"]
+    assert details["google/gemini-3-pro-image-preview"]["preferred_route"] == "images"
+    assert details["a/plain"]["preferred_route"] == "chat"
+    assert details["google/gemini-2.5-flash-image"]["preferred_route"] == "chat"  # the default, not in the list
+
+
+def images_body(out_png):
+    return {"created": 1, "data": [{"b64_json": base64.b64encode(out_png).decode(), "media_type": "image/png"}],
+            "usage": {"cost": 0.12}}  # fmt: skip
+
+
+def test_gemini_3_goes_to_the_images_route_first_and_falls_back_to_chat(router):
+    seen, state = router
+    out_png = png_bytes((50, 50))
+
+    def handler(req, body):
+        if req.url.path.endswith("/images"):
+            return httpx2.Response(502, json={"error": {"message": "generation failed"}})
+        return httpx2.Response(200, json={"choices": [{"message": {"images": [{"image_url": {"url": data_url(out_png)}}]}}]})
+
+    state["handler"] = handler
+    res = openrouter.run_image_model(load_image(png_bytes((400, 300))), "en", "google/gemini-3-pro-image-preview")
+    assert [s[1] for s in seen] == ["/api/v1/images", "/api/v1/chat/completions"]
+    assert res["api_used"] == "chat" and res["route_preference"] == "images"
+    assert "HTTP 502" in res["attempts"][0]
+
+
+def test_other_models_keep_the_chat_first_order(router):
+    seen, state = router
+    out_png = png_bytes((50, 50))
+    state["handler"] = lambda req, body: (
+        httpx2.Response(404, json={"error": {"message": "no"}}) if req.url.path.endswith("/chat/completions")
+        else httpx2.Response(200, json=images_body(out_png))
+    )
+    openrouter.run_image_model(load_image(png_bytes()), "en", "google/gemini-2.5-flash-image")
+    assert [s[1] for s in seen][:2] == ["/api/v1/chat/completions", "/api/v1/chat/completions"]
+    assert seen[-1][1] == "/api/v1/images"
+
+
+def test_the_forcing_setting_beats_the_per_model_route(router, monkeypatch):
+    seen, state = router
+    monkeypatch.setenv("OPENROUTER_IMAGE_API", "chat")
+    state["handler"] = lambda req, body: httpx2.Response(404, json={"error": {"message": "nope"}})
+    with pytest.raises(ModeError):
+        openrouter.run_image_model(load_image(png_bytes()), "en", "google/gemini-3-pro-image")
+    assert {s[1] for s in seen} == {"/api/v1/chat/completions"}
+
+
+def test_resolution_is_sent_on_the_images_route_only(router):
+    seen, state = router
+    out_png = png_bytes((64, 48))
+    state["handler"] = lambda req, body: httpx2.Response(200, json=images_body(out_png))
+    res = openrouter.run_image_model(load_image(png_bytes((400, 300))), "en", "google/gemini-3-pro-image", resolution="2K")
+    body = seen[0][4]
+    assert seen[0][1] == "/api/v1/images"
+    assert body["resolution"] == "2K" and body["aspect_ratio"] == "4:3"
+    assert "size" not in body
+    assert res["resolution_requested"] == "2K" and res["resolution_applied"] is True and res["api_used"] == "images"
+
+
+def test_default_size_sends_no_resolution_parameter(router):
+    seen, state = router
+    state["handler"] = lambda req, body: httpx2.Response(200, json=images_body(png_bytes()))
+    res = openrouter.run_image_model(load_image(png_bytes()), "en", "google/gemini-3-pro-image")
+    assert "resolution" not in seen[0][4] and res["resolution_applied"] is False
+
+
+def test_chat_route_never_carries_the_size_option_and_says_so(router):
+    seen, state = router
+    out_png = png_bytes((10, 10))
+    state["handler"] = lambda req, body: httpx2.Response(200, json={"choices": [{"message": {"images": [{"image_url": {"url": data_url(out_png)}}]}}]})
+    res = openrouter.run_image_model(load_image(png_bytes()), "en", "google/gemini-2.5-flash-image", resolution="4K")
+    assert seen[0][1] == "/api/v1/chat/completions"
+    assert "resolution" not in json.dumps(seen[0][4]) and "4K" not in json.dumps(seen[0][4])
+    assert res["resolution_requested"] == "4K" and res["resolution_applied"] is False
+
+
+def test_a_provider_that_rejects_resolution_gets_the_request_again_without_it(router):
+    seen, state = router
+    out_png = png_bytes((10, 10))
+
+    def handler(req, body):
+        if "resolution" in body:
+            return httpx2.Response(400, json={"error": {"message": "unsupported parameter: resolution"}})
+        return httpx2.Response(200, json=images_body(out_png))
+
+    state["handler"] = handler
+    res = openrouter.run_image_model(load_image(png_bytes()), "en", "google/gemini-3-pro-image", resolution="2K")
+    assert [("resolution" in s[4], "aspect_ratio" in s[4]) for s in seen] == [(True, True), (False, True)]
+    assert res["api_used"] == "images (no resolution)" and res["resolution_applied"] is False
+    assert "unsupported parameter" in res["attempts"][0]
+
+
+def test_aspect_ratio_and_resolution_are_both_dropped_in_turn(router):
+    seen, state = router
+    out_png = png_bytes((10, 10))
+    state["handler"] = lambda req, body: (
+        httpx2.Response(422, json={"error": {"message": "bad"}}) if len(body) > 3
+        else httpx2.Response(200, json=images_body(out_png))
+    )  # model, prompt, input_references only -> accepted
+    res = openrouter.run_image_model(load_image(png_bytes()), "en", "google/gemini-3-pro-image", resolution="1K")
+    assert len(seen) == 3 and res["api_used"] == "images (no resolution, no aspect ratio)"
+
+
+def test_a_custom_prompt_replaces_the_default_one(router):
+    seen, state = router
+    state["handler"] = lambda req, body: httpx2.Response(200, json=images_body(png_bytes()))
+    res = openrouter.run_image_model(load_image(png_bytes()), "en", "google/gemini-3-pro-image", prompt="custom prompt")
+    assert seen[0][4]["prompt"] == "custom prompt" and res["prompt"] == "custom prompt"
+
+
+def test_retry_prompt_is_the_prompt_plus_a_paragraph_naming_what_went_wrong():
+    verification = {
+        "missing_digit_runs": ["77446716", "1230"],
+        "missing_digit_details": [
+            {"run": "77446716", "as_written": "7744-6716"},
+            {"run": "1230", "as_written": "12:30"},
+        ],
+        "leftover_ok": False,
+        "leftover_words": [f"word{i}" for i in range(15)],
+    }
+    prompt = openrouter.build_retry_prompt("en", verification)
+    base = openrouter.build_prompt("en")
+    assert prompt.startswith(base + "\n\n")
+    extra = prompt[len(base) + 2:]
+    assert extra.startswith("Your previous attempt")
+    assert "7744-6716, 12:30" in extra  # the digits as they are written in the source
+    assert "word0, word1, word2, word3, word4, word5, word6, word7, word8, word9" in extra
+    assert "word10" not in extra  # at most 10 leftover words
+    assert "English" in extra
+
+
+def test_retry_prompt_names_what_the_checks_found_and_nothing_else():
+    digits_only = openrouter.build_retry_prompt("ja", {"missing_digit_runs": ["1234"], "leftover_words": []})
+    assert "1234" in digits_only and "still in the source language" not in digits_only
+    words_only = openrouter.build_retry_prompt("ja", {"missing_digit_runs": [], "leftover_ok": False, "leftover_words": ["こんにちは"]})
+    assert "こんにちは" in words_only and "digit sequences" not in words_only and "Japanese" in words_only
+    # a digits failure that also left a few words behind (under the threshold) names them as well
+    both = openrouter.build_retry_prompt("ja", {"missing_digit_runs": ["1234"], "leftover_ok": True, "leftover_words": ["x1"]})
+    assert "1234" in both and "x1" in both
+    # nothing to name: the plain prompt
+    assert openrouter.build_retry_prompt("ja", {"missing_digit_runs": [], "leftover_ok": True}) == openrouter.build_prompt("ja")
+
+
+def test_retry_prompt_caps_the_digit_runs_at_twenty():
+    runs = [f"{i:04d}" for i in range(1000, 1030)]
+    prompt = openrouter.build_retry_prompt("en", {"missing_digit_runs": runs, "leftover_ok": True})
+    assert "1019" in prompt and "1020" not in prompt

@@ -173,13 +173,21 @@ def _save_png(arr: np.ndarray, path: Path) -> None:
     Image.fromarray(arr).save(path, "PNG")
 
 
-def run_mode_a(image: LoadedImage, lang: str, out_dir: Path) -> dict:
-    """Full Mode A. Raises on failure (the caller shows the message in Mode A's error box)."""
+def run_mode_a(image: LoadedImage, lang: str, out_dir: Path, source_ocr=None) -> dict:
+    """Full Mode A. Raises on failure (the caller shows the message in Mode A's error box).
+
+    `source_ocr` (jobs.SourceOcr) is the per-job cache of the Vision call on the source image,
+    shared with the Mode B verification; without it Vision is called here.
+    """
     t_all = time.perf_counter()
 
-    t0 = time.perf_counter()
-    ocr = vision.ocr_words(image.data, image.width, image.height)
-    vision_ms = int((time.perf_counter() - t0) * 1000)
+    if source_ocr is not None:
+        ocr = source_ocr.get()
+        vision_ms = source_ocr.ms or 0
+    else:
+        t0 = time.perf_counter()
+        ocr = vision.ocr_words(image.data, image.width, image.height)
+        vision_ms = int((time.perf_counter() - t0) * 1000)
     if not ocr.words:
         raise RuntimeError("Vision found no text in the image")
 

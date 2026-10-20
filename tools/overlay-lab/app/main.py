@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from . import jobs, mock, openrouter
-from .config import LANGUAGES, MAX_UPLOAD_BYTES, get_settings
+from .config import LANGUAGES, MAX_IMAGE_MODELS, MAX_UPLOAD_BYTES, OUTPUT_SIZES, get_settings
 from .imaging import ALLOWED_CONTENT_TYPES, ImageError, load_image
 
 log = logging.getLogger("lab.main")
@@ -28,6 +28,17 @@ CSP = (
     "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; "
     "script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'"
 )
+
+
+def parse_models(values: list[str], single: str = "") -> list[str]:
+    """Model ids from repeated `image_models` fields and/or comma separated lists, de-duplicated in order."""
+    out: list[str] = []
+    for raw in [*values, single]:
+        for part in raw.split(","):
+            part = part.strip()
+            if part and part not in out:
+                out.append(part)
+    return out
 
 
 async def require_token(request: Request) -> None:
@@ -70,6 +81,8 @@ def create_app() -> FastAPI:
             claude_model=settings.claude_model,
             mock=settings.mock,
             max_upload_mb=MAX_UPLOAD_BYTES // (1024 * 1024),
+            max_models=MAX_IMAGE_MODELS,
+            output_sizes=[s for s in OUTPUT_SIZES if s],
         )
         return HTMLResponse(html, headers={"Content-Security-Policy": CSP})
 
@@ -92,8 +105,11 @@ def create_app() -> FastAPI:
         target_lang: str = Form("en"),
         mode_a: bool = Form(False),
         mode_b: bool = Form(False),
+        image_models: list[str] = Form(default_factory=list),
         image_model: str = Form(""),
-        verify: bool = Form(False),
+        output_size: str = Form(""),
+        verify: bool = Form(True),
+        verify_details: bool = Form(False),
     ) -> JSONResponse:
         settings = get_settings()
         if target_lang not in LANGUAGES:
@@ -102,9 +118,13 @@ def create_app() -> FastAPI:
             raise HTTPException(400, "select at least one of Mode A and Mode B")
         if (file.content_type or "").lower() not in ALLOWED_CONTENT_TYPES:
             raise HTTPException(415, "only image/jpeg, image/png and image/webp uploads are accepted")
-        model = image_model.strip() or settings.openrouter_image_model
-        if not MODEL_RE.match(model):
+        models = parse_models(image_models, image_model) or [settings.openrouter_image_model]
+        if len(models) > MAX_IMAGE_MODELS:
+            raise HTTPException(400, f"select at most {MAX_IMAGE_MODELS} image models")
+        if not all(MODEL_RE.match(m) for m in models):
             raise HTTPException(400, "invalid image model id")
+        if output_size not in OUTPUT_SIZES:
+            raise HTTPException(400, f"output_size must be one of: default, {', '.join(s for s in OUTPUT_SIZES if s)}")
 
         chunks: list[bytes] = []
         size = 0
@@ -123,7 +143,9 @@ def create_app() -> FastAPI:
         except ImageError as exc:
             raise HTTPException(415, str(exc)) from exc
 
-        job_id = jobs.start_job(request.app.state.store, image, target_lang, mode_a, mode_b, model, verify)
+        job_id = jobs.start_job(
+            request.app.state.store, image, target_lang, mode_a, mode_b, models, verify, verify_details, output_size
+        )
         return JSONResponse({"job_id": job_id})
 
     @app.get("/api/jobs/{job_id}")

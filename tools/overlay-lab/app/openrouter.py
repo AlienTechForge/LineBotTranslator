@@ -8,7 +8,11 @@ Request shapes follow the current OpenRouter docs (fetched when this was written
   Reference: https://openrouter.ai/docs/api/api-reference/chat/create-a-chat-completion
 * images route - POST /api/v1/images with ``prompt`` and ``input_references`` (the dedicated
   Image API described on https://openrouter.ai/docs/features/multimodal/image-generation).
-  The result image is in ``data[0].b64_json`` (+ ``media_type``).
+  The result image is in ``data[0].b64_json`` (+ ``media_type``). The same page documents the
+  output-size parameter: ``resolution`` (tiers 512 / 768 / 1K / 1.5K / 2K / 4K; ``size`` is a
+  shorthand for it), so that is what the page's 1K / 2K / 4K option sends - on this route only.
+  The chat route has no documented size parameter (``image_config`` keys are provider specific),
+  so the option is not sent there and the result says so.
 * model list - GET /api/v1/models?output_modalities=all (the default of that endpoint is
   text-only models), filtered client side on ``architecture.output_modalities``.
   Reference: https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties
@@ -44,11 +48,44 @@ BASE_URL = "https://openrouter.ai/api/v1"
 MODELS_TTL_S = 600.0
 MAX_SIDE_SENT = 2048
 
+# The one place the prompt lives (README.md shows it; a test keeps the two in sync).
 PROMPT_TEMPLATE = (
-    "Replace every piece of text in this image with its translation into {language}. "
-    "Keep the layout, positions, sizes, fonts, colours, background and all graphics exactly as "
-    "they are. Do not add, remove or move any element. Output the edited image only."
+    "Translate all the text in this image into {language} and output the edited image only.\n"
+    "\n"
+    "Hard rules:\n"
+    "1. Translate EVERY piece of text into {language}: every line of multi-line titles, headings, "
+    "table cells, labels, captions, footers and small print. Do not leave any line in the source "
+    "language, unless it is a brand name, a URL, an e-mail address or already in {language}.\n"
+    "2. NEVER change, \"correct\", reformat or re-draw digits, numbers, prices, dates, times, phone "
+    "numbers or handwritten marks: reproduce them pixel-for-pixel where they are.\n"
+    "3. Keep the layout, positions, sizes, fonts, colours, background, illustrations and photos "
+    "exactly as they are.\n"
+    "4. Keep the image's dimensions and aspect ratio.\n"
+    "5. Output the edited image only, no text reply."
 )
+
+# Appended (after a blank line) to the prompt of the one automatic retry; {problems} is one
+# line per failed check (see build_retry_prompt).
+RETRY_TEMPLATE = (
+    "Your previous attempt at this same image failed an automatic check. Redo the whole image "
+    "from the original and fix exactly the following, the hard rules above still apply:\n"
+    "{problems}"
+)
+RETRY_DIGITS_LINE = (
+    "- These digit sequences of the original image were changed or lost in your output. Copy them "
+    "exactly as they are written in the original, character for character: {runs}."
+)
+RETRY_LEFTOVER_LINE = (
+    "- These words are still in the source language in your output. Translate them into "
+    "{language} as well: {words}."
+)
+MAX_RETRY_RUNS = 20
+MAX_RETRY_WORDS = 10
+
+# Image-output models that are served better by the dedicated Image API than by chat/completions
+# (round 2: chat failed once with finish_reason=error for gemini-3-pro-image, /images worked).
+IMAGES_ROUTE_FIRST_PREFIXES = ("google/gemini-3",)
+IMAGES_ROUTE_FIRST_MARKERS = ("nano-banana",)
 
 # aspect ratios accepted by the common image endpoints (OpenRouter ImageGenerationRequest enum)
 ASPECT_RATIOS = [
@@ -65,6 +102,45 @@ class OpenRouterHTTPError(ModeError):
 
 def build_prompt(lang: str) -> str:
     return PROMPT_TEMPLATE.format(language=LANGUAGES.get(lang, lang))
+
+
+def build_retry_prompt(lang: str, verification: dict) -> str:
+    """The prompt plus a second paragraph naming what the verification found wrong.
+
+    Missing digit runs are given as they were written in the source (up to 20) and up to 10
+    leftover source-language words must be translated too; a check that found nothing is not
+    mentioned, and with nothing to name the plain prompt comes back.
+    """
+    language = LANGUAGES.get(lang, lang)
+    problems: list[str] = []
+    runs = [d.get("as_written") or d["run"] for d in verification.get("missing_digit_details") or []]
+    runs = runs or list(verification.get("missing_digit_runs") or [])
+    if runs:
+        problems.append(RETRY_DIGITS_LINE.format(runs=", ".join(runs[:MAX_RETRY_RUNS])))
+    words = list(verification.get("leftover_words") or [])
+    if words:
+        problems.append(
+            RETRY_LEFTOVER_LINE.format(language=language, words=", ".join(words[:MAX_RETRY_WORDS]))
+        )
+    if not problems:
+        return build_prompt(lang)
+    return build_prompt(lang) + "\n\n" + RETRY_TEMPLATE.format(problems="\n".join(problems))
+
+
+def preferred_route(model: str) -> str:
+    """'images' for the Gemini 3 / nano-banana image models, 'chat' for everything else."""
+    lowered = model.lower()
+    if lowered.startswith(IMAGES_ROUTE_FIRST_PREFIXES) or any(m in lowered for m in IMAGES_ROUTE_FIRST_MARKERS):
+        return "images"
+    return "chat"
+
+
+def route_order(model: str, setting: str = "auto") -> list[str]:
+    """Routes to try, in order. OPENROUTER_IMAGE_API=chat|images forces one, auto picks per model."""
+    if setting in ("chat", "images"):
+        return [setting]
+    first = preferred_route(model)
+    return [first, "images" if first == "chat" else "chat"]
 
 
 def nearest_aspect_ratio(width: int, height: int) -> str:
@@ -126,6 +202,7 @@ def _fetch_models() -> dict:
             models[item["id"]] = {
                 "name": item.get("name", item["id"]),
                 "input_image": "image" in (arch.get("input_modalities") or []),
+                "preferred_route": preferred_route(item["id"]),
             }
     return models
 
@@ -135,7 +212,9 @@ def list_image_models(force: bool = False) -> dict:
     settings = get_settings()
     default = settings.openrouter_image_model or DEFAULT_IMAGE_MODEL
     if settings.mock:
-        return {"default": default, "models": [default, "mock/image-model"], "details": {}, "cached": False, "error": None}
+        models = [default, "mock/image-model"]
+        details = {m: {"name": m, "input_image": True, "preferred_route": preferred_route(m)} for m in models}
+        return {"default": default, "models": models, "details": details, "cached": False, "error": None}
 
     error = None
     cached = False
@@ -153,7 +232,10 @@ def list_image_models(force: bool = False) -> dict:
                 data = _models_cache["data"] or {}
     ids = sorted(data)
     ordered = [default] + [i for i in ids if i != default]
-    return {"default": default, "models": ordered, "details": data, "cached": cached, "error": error}
+    details = {
+        i: data.get(i) or {"name": i, "input_image": None, "preferred_route": preferred_route(i)} for i in ordered
+    }
+    return {"default": default, "models": ordered, "details": details, "cached": cached, "error": error}
 
 
 # ---------------------------------------------------------------- helpers to read results
@@ -227,7 +309,7 @@ def extract_images_api_image(body: dict, client: httpx2.Client | None = None) ->
 # ---------------------------------------------------------------- the two routes
 
 
-def _call_chat(model: str, prompt: str, data_url: str, aspect: str | None, with_config: bool) -> tuple[bytes, dict, str]:
+def _call_chat(model: str, prompt: str, data_url: str, params: dict) -> tuple[bytes, dict, str]:
     payload: dict = {
         "model": model,
         "modalities": ["image", "text"],
@@ -241,8 +323,9 @@ def _call_chat(model: str, prompt: str, data_url: str, aspect: str | None, with_
             }
         ],
     }
-    if with_config and aspect:
-        payload["image_config"] = {"aspect_ratio": aspect}
+    if params.get("aspect_ratio"):
+        payload["image_config"] = {"aspect_ratio": params["aspect_ratio"]}
+    # no output-size parameter here: the docs do not define one for the chat route
     with _client() as client:
         response = client.post(f"{BASE_URL}/chat/completions", headers=_headers(), json=payload)
         if response.status_code >= 400:
@@ -252,14 +335,16 @@ def _call_chat(model: str, prompt: str, data_url: str, aspect: str | None, with_
     return image, body.get("usage") or {}, said
 
 
-def _call_images(model: str, prompt: str, data_url: str, aspect: str | None, with_config: bool) -> tuple[bytes, dict, str]:
+def _call_images(model: str, prompt: str, data_url: str, params: dict) -> tuple[bytes, dict, str]:
     payload: dict = {
         "model": model,
         "prompt": prompt,
         "input_references": [{"type": "image_url", "image_url": {"url": data_url}}],
     }
-    if with_config and aspect:
-        payload["aspect_ratio"] = aspect
+    if params.get("aspect_ratio"):
+        payload["aspect_ratio"] = params["aspect_ratio"]
+    if params.get("resolution"):
+        payload["resolution"] = params["resolution"]  # documented tier: 1K / 2K / 4K ...
     with _client() as client:
         response = client.post(f"{BASE_URL}/images", headers=_headers(), json=payload)
         if response.status_code >= 400:
@@ -282,10 +367,38 @@ def _png_bytes(data: bytes) -> tuple[bytes, tuple[int, int]]:
     return buf.getvalue(), im.size
 
 
-def run_image_model(image: LoadedImage, lang: str, model: str) -> dict:
-    """Send the picture to the image model and return {png, usage, api_used, ...}."""
+def _param_variants(aspect: str | None, resolution: str, api: str) -> list[tuple[dict, list[str]]]:
+    """[(params to send, names of the optional params left out)], richest first.
+
+    A provider that rejects the request (400 / 404 / 422) gets it again without the output
+    size first, then without the aspect ratio as well.
+    """
+    params = {"aspect_ratio": aspect or "", "resolution": resolution if api == "images" else ""}
+    variants = [(dict(params), [])]
+    dropped: list[str] = []
+    for name, key in (("resolution", "resolution"), ("aspect ratio", "aspect_ratio")):
+        if params.get(key):
+            params[key] = ""
+            dropped = dropped + [name]
+            variants.append((dict(params), list(dropped)))
+    return variants
+
+
+def _label(api: str, dropped: list[str]) -> str:
+    return api + (f" (no {', no '.join(dropped)})" if dropped else "")
+
+
+def run_image_model(
+    image: LoadedImage, lang: str, model: str, *, prompt: str | None = None, resolution: str = ""
+) -> dict:
+    """Send the picture to the image model and return {png, usage, api_used, ...}.
+
+    `prompt` replaces the default prompt (the retry sends the prompt plus what went wrong);
+    `resolution` is the output-size tier (1K / 2K / 4K), sent on the images route only.
+    """
     settings = get_settings()
     t0 = time.perf_counter()
+    route_pref = preferred_route(model)
     if settings.mock:
         png, size = _png_bytes(image.data)
         return {
@@ -296,30 +409,36 @@ def run_image_model(image: LoadedImage, lang: str, model: str) -> dict:
             "attempts": [],
             "model_text": "",
             "elapsed_ms": int((time.perf_counter() - t0) * 1000),
+            "route_preference": route_pref,
+            "resolution_requested": resolution,
+            "resolution_applied": False,
+            "prompt": prompt or build_prompt(lang),
         }
 
     _headers()  # fail fast (and clearly) when the key is missing
     b64, _ = to_jpeg_base64(image.pil, MAX_SIDE_SENT, quality=90)
     data_url = f"data:image/jpeg;base64,{b64}"
-    prompt = build_prompt(lang)
+    prompt = prompt or build_prompt(lang)
     aspect = nearest_aspect_ratio(image.width, image.height)
-    order = {"auto": ["chat", "images"], "chat": ["chat"], "images": ["images"]}[settings.openrouter_image_api]
+    order = route_order(model, settings.openrouter_image_api)
     attempts: list[str] = []
     result = None
     api_used = ""
+    resolution_applied = False
     for api in order:
         call = _call_chat if api == "chat" else _call_images
-        for with_config in (True, False):
+        for params, dropped in _param_variants(aspect, resolution, api):
             try:
-                result = call(model, prompt, data_url, aspect, with_config)
-                api_used = api + ("" if with_config else " (no aspect ratio)")
+                result = call(model, prompt, data_url, params)
+                api_used = _label(api, dropped)
+                resolution_applied = bool(params.get("resolution"))
                 break
             except OpenRouterHTTPError as exc:
-                attempts.append(f"{api}{'' if with_config else ' without aspect ratio'}: HTTP {exc.status}: {exc.message[:200]}")
-                if exc.status in (400, 404, 422) and with_config:
-                    continue  # retry once without the optional aspect ratio
-                if exc.status in (400, 404, 405, 422):
-                    break  # this route does not suit the model: try the next one
+                attempts.append(f"{_label(api, dropped)}: HTTP {exc.status}: {exc.message[:200]}")
+                if exc.status in (400, 404, 422) and any(params.values()):
+                    continue  # retry once more without the next optional parameter
+                if exc.status in (400, 404, 405, 422) or (api == "images" and exc.status == 502):
+                    break  # this route does not suit the model (or failed the generation): try the next
                 raise
             except ModeError as exc:
                 attempts.append(f"{api}: {exc}"[:300])
@@ -333,8 +452,8 @@ def run_image_model(image: LoadedImage, lang: str, model: str) -> dict:
     png, size = _png_bytes(raw)
     elapsed = int((time.perf_counter() - t0) * 1000)
     log.info(
-        "stage=mode-b ms=%d model=%s api=%s out=%dx%d bytes=%d cost=%s",
-        elapsed, model, api_used, size[0], size[1], len(png), usage.get("cost"),
+        "stage=mode-b ms=%d model=%s api=%s resolution=%s out=%dx%d bytes=%d cost=%s",
+        elapsed, model, api_used, resolution if resolution_applied else "-", size[0], size[1], len(png), usage.get("cost"),
     )  # fmt: skip
     return {
         "png": png,
@@ -344,4 +463,8 @@ def run_image_model(image: LoadedImage, lang: str, model: str) -> dict:
         "attempts": attempts,
         "model_text": said[:500],
         "elapsed_ms": elapsed,
+        "route_preference": route_pref,
+        "resolution_requested": resolution,
+        "resolution_applied": resolution_applied,
+        "prompt": prompt,
     }

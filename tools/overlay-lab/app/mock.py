@@ -57,8 +57,9 @@ def _build() -> Fixture:
     words: list[Word] = []
 
     def add(text: str, polygon) -> None:
+        lang = "zh" if any(ord(ch) > 0x2E80 for ch in text) else "en"
         words.append(Word(id=f"w{len(words) + 1:04d}", text=text, polygon=[(float(x), float(y)) for x, y in polygon],
-                          confidence=0.98, brk="SPACE", para=len({w.para for w in words})))  # fmt: skip
+                          confidence=0.98, brk="SPACE", para=len({w.para for w in words}), lang=lang))  # fmt: skip
 
     # 1) horizontal title, three words
     font = load_font(spec, 34)
@@ -117,7 +118,7 @@ def vision_words(width: int, height: int) -> OcrResult:
     words = []
     for w in _build().words:
         words.append(w.model_copy(update={"polygon": [(x * sx, y * sy) for x, y in w.polygon]}))
-    return OcrResult(width=width, height=height, words=words)
+    return OcrResult(width=width, height=height, words=words, text=" ".join(w.text for w in words))
 
 
 def claude_response(ocr: OcrResult) -> tuple[str, int, int]:

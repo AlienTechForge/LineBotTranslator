@@ -39,6 +39,15 @@ services:
       OPEN_ROUTE_API_KEY: "${OPEN_ROUTE_API_KEY:-}"
       OPENROUTER_IMAGE_MODEL: "${OPENROUTER_IMAGE_MODEL:-google/gemini-2.5-flash-image}"
       OPENROUTER_IMAGE_API: "${OPENROUTER_IMAGE_API:-auto}"
+      # publishing the results for a reviewer (all optional; same names as the production bot)
+      MINIO_ENDPOINT: "${MINIO_ENDPOINT:-}"
+      MINIO_PUBLIC_ENDPOINT: "${MINIO_PUBLIC_ENDPOINT:-}"
+      MINIO_ACCESS_KEY: "${MINIO_ACCESS_KEY:-}"
+      MINIO_SECRET_KEY: "${MINIO_SECRET_KEY:-}"
+      MINIO_BUCKET_NAME: "${MINIO_BUCKET_NAME:-line-bot}"
+      MINIO_PREFIX: "${MINIO_PREFIX:-overlay-lab}"
+      MINIO_REGION: "${MINIO_REGION:-us-east-1}"
+      MINIO_URL_EXPIRY_HOURS: "${MINIO_URL_EXPIRY_HOURS:-168}"
     volumes:
       # (1) default: the production secrets volume, read-only
       - linebot-translator-secrets:/run/secrets:ro

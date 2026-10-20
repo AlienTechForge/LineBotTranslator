@@ -12,6 +12,7 @@ from PIL import Image, ImageOps
 ALLOWED_FORMATS = {"JPEG": "jpg", "PNG": "png", "WEBP": "webp"}
 ALLOWED_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp"}
 MAX_PIXELS = 64_000_000
+VISION_MAX_BYTES = 15 * 1024 * 1024  # Vision accepts files up to 20 MB (10 MB as a JSON request): stay clear
 
 
 class ImageError(ValueError):
@@ -100,3 +101,16 @@ def to_jpeg_base64(pil: Image.Image, max_side: int, quality: int = 90) -> tuple[
     buf = io.BytesIO()
     small.save(buf, "JPEG", quality=quality)
     return base64.standard_b64encode(buf.getvalue()).decode("ascii"), small.size
+
+
+def bytes_for_vision(data: bytes, limit: int = VISION_MAX_BYTES) -> bytes:
+    """`data` itself, or a JPEG of it when it is too big to send to Vision (a 4K PNG can be 20 MB+).
+
+    Only the recognised text matters for the Mode B checks, so the re-encode costs nothing.
+    """
+    if len(data) <= limit:
+        return data
+    im = Image.open(io.BytesIO(data))
+    buf = io.BytesIO()
+    im.convert("RGB").save(buf, "JPEG", quality=92)
+    return buf.getvalue()

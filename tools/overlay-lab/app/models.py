@@ -10,6 +10,14 @@ Direction = Literal["horizontal", "vertical_rl", "vertical_lr"]
 Role = Literal["title", "heading", "body", "label", "price", "number", "other"]
 
 
+def base_language(code: str | None) -> str | None:
+    """'zh-Hant' -> 'zh', 'JA' -> 'ja', 'und' / '' / None -> None."""
+    if not code:
+        return None
+    base = code.strip().replace("_", "-").split("-")[0].lower()
+    return None if base in ("", "und", "zxx", "mul") else base
+
+
 class ModeError(RuntimeError):
     """A failure inside one mode; shown in that mode's error box, never fatal for the other mode."""
 
@@ -21,6 +29,11 @@ class Word(BaseModel):
     confidence: float = 0.0
     brk: str | None = None  # detected break after the word (SPACE, LINE_BREAK, ...)
     para: int | None = None  # provider paragraph index (JSON panel only)
+    # Vision's own guesses for this word, (base code, confidence), best first; empty when it gave none
+    detected_languages: list[tuple[str, float]] = Field(default_factory=list)
+    # the language used by the Mode B checks: the best of `detected_languages`, else the one of the
+    # word's paragraph, block or page (base code, e.g. "ja"); None when Vision said nothing at all
+    lang: str | None = None
 
     @property
     def bbox(self) -> tuple[int, int, int, int]:
@@ -36,6 +49,7 @@ class OcrResult(BaseModel):
     width: int
     height: int
     words: list[Word]
+    text: str = ""  # Vision's full text (line breaks kept); only filled by vision.ocr_document
 
 
 class ClaudeUnit(BaseModel):
