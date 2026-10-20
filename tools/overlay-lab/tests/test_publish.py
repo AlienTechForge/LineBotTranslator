@@ -17,6 +17,7 @@ SOURCE = png_of_size((80, 60))
 SRC_OCR = ocr(("TEL", "en"), ("77446716", "en"), ("営業時間", "ja"), ("メニュー", "ja"), ("ご飯", "ja"), ("定食", "ja"))
 GOOD = ocr(("TEL", "en"), ("77446716", "en"), ("Hours", "en"), ("Menu", "en"), ("Rice", "en"), ("Set", "en"))
 DIGITS = ocr(("TEL", "en"), ("09446916", "en"), ("Hours", "en"), ("Menu", "en"), ("Rice", "en"), ("Set", "en"))
+NUMBERS_JUDGE = judge_record(usability=0.9, altered=[("77446716", "09446916")], cost=0.01)
 
 
 def step(out, **kw):
@@ -180,7 +181,7 @@ def test_publishing_is_skipped_with_a_visible_note_when_not_configured(monkeypat
 def test_everything_is_uploaded_under_prefix_job_id_name_with_a_manifest_of_presigned_urls(monkeypatch, tmp_path, fake):
     client = make_client(monkeypatch, tmp_path, **MINIO_ENV)
     plan = {
-        "google/gemini-3-pro-image": [step(DIGITS, cost=0.05, ms=2000), step(GOOD, cost=0.06, ms=3000)],
+        "google/gemini-3-pro-image": [step(DIGITS, cost=0.05, ms=2000, judge=NUMBERS_JUDGE), step(GOOD, cost=0.06, ms=3000)],
         "m/b": [step(GOOD, cost=0.01, ms=500, size=(160, 120))],
     }
     Scenario(SOURCE, SRC_OCR, plan).install(monkeypatch)
@@ -209,12 +210,14 @@ def test_everything_is_uploaded_under_prefix_job_id_name_with_a_manifest_of_pres
     assert fake.objects[("line-bot", prefix + "B2_m_b_r1_a1_verify.json")]["content_type"] == "application/json"
 
     m = manifest_of(fake, job)
-    assert m["job_id"] == job_id and m["target_language"] == "en" and m["schema_version"] == 2
+    assert m["job_id"] == job_id and m["target_language"] == "en" and m["schema_version"] == 3
+    assert m["batch_id"] is None and m["image_index"] == 1  # a job submitted on its own is no batch
     assert m["bucket"] == "line-bot" and m["prefix"] == f"overlay-lab/{job_id}"
     assert m["url_expiry_hours"] == 168 and m["urls_expire_at"] > m["published_at"] >= m["created_at"]
     assert m["options"]["image_models"] == list(plan) and m["options"]["output_size"] == "2K"
     assert m["options"]["verify"] is True and m["options"]["mode_a"] is False
     assert m["options"]["runs"] == 1 and m["options"]["judge"] is True and m["options"]["judge_model"] == "claude-sonnet-5-5"
+    assert m["options"]["mode_a_retry"] is True
     assert m["original"]["width"] == 80 and m["original"]["file"]["url"].startswith("https://s3.azndev.com/line-bot/")
     assert m["mode_a"] is None
 
@@ -227,16 +230,22 @@ def test_everything_is_uploaded_under_prefix_job_id_name_with_a_manifest_of_pres
     (run,) = gem["runs"]
     assert run["run"] == 1 and run["verdict"] == "pass" and run["selected_attempt"] == 2 and run["status"] == "done"
     assert run["cost_usd"] == pytest.approx(0.11) and run["judge_cost_usd"] == pytest.approx(0.02)
+    assert run["cost_openrouter_usd"] == pytest.approx(0.11) and run["cost_anthropic_usd"] == pytest.approx(0.02)  # cash / credit
     assert run["total_cost_usd"] == pytest.approx(0.13) and run["elapsed_ms"] >= 5000 and run["coverage"] == 1.0
+    assert run["usability"] == 1.0 and run["failed_checks"] == []
     assert run["output_size"] == [80, 60] and run["api_used"] == "images" and run["resolution_applied"] is True
-    assert [(a["attempt"], a["selected"], a["verdict"]) for a in run["attempts"]] == [(1, False, "digits-changed"), (2, True, "pass")]
-    assert run["attempts"][0]["missing_digit_runs"] == ["77446716"] and run["attempts"][0]["unverified_digit_runs"] == []
+    assert [(a["attempt"], a["selected"], a["verdict"]) for a in run["attempts"]] == [(1, False, "numbers"), (2, True, "pass")]
+    assert run["attempts"][0]["failed_checks"] == ["numbers"] and run["attempts"][0]["usability"] == 0.9
+    warnings = run["attempts"][0]["ocr_warnings"]  # the OCR digit check saw it too, as a warning
+    assert warnings["warnings"] == ["digits-missing"] and warnings["missing_digit_runs"] == ["77446716"]
+    assert warnings["unverified_digit_runs"] == []
     assert run["attempts"][0]["image"]["key"] == prefix + "B1_google_gemini-3-pro-image_r1_a1.png"
     assert run["attempts"][1]["verification_file"]["key"].endswith("_r1_a2_verify.json")
     assert run["image"]["name"] == run["attempts"][1]["image"]["name"]  # the selected attempt
     judged = run["attempts"][0]["judge"]
-    assert judged["status"] == "ok" and judged["coverage"] == 1.0 and judged["garbled_segments"] == [] and judged["cost_usd"] == 0.01
-    assert run["attempts"][0]["judge_cost_usd"] == 0.01 and run["attempts"][0]["coverage"] == 1.0
+    assert judged["status"] == "ok" and judged["usability"] == 0.9 and judged["legibility_issues"] == [] and judged["cost_usd"] == 0.01
+    assert judged["altered_numbers"] == [{"source": "77446716", "output": "09446916", "where": "somewhere"}]
+    assert run["attempts"][0]["judge_cost_usd"] == 0.01 and run["attempts"][0]["coverage"] == 0.9
     assert other["model"] == "m/b" and other["runs"][0]["output_size"] == [160, 120] and other["runs"][0]["usage"]["prompt_tokens"] == 100
 
     # every object has a presigned GET URL, expiring in 168 hours, and so does the manifest itself
@@ -251,7 +260,7 @@ def test_everything_is_uploaded_under_prefix_job_id_name_with_a_manifest_of_pres
     # a local copy is served too, and the verification JSON is what the page's details show
     assert client.get(f"/files/{job_id}/manifest.json").json()["job_id"] == job_id
     verify_doc = json.loads(fake.objects[("line-bot", prefix + "B1_google_gemini-3-pro-image_r1_a1_verify.json")]["data"])
-    assert verify_doc["verdict"] == "digits-changed" and verify_doc["model"] == "google/gemini-3-pro-image"
+    assert verify_doc["verdict"] == "numbers" and verify_doc["model"] == "google/gemini-3-pro-image"
     assert verify_doc["run"] == 1 and verify_doc["attempt"] == 1 and verify_doc["judge"]["status"] == "ok"
 
 
@@ -291,23 +300,27 @@ def test_the_manifest_carries_every_run_of_a_batch_and_the_summary_per_model(mon
     assert {o["name"] for o in m["objects"]} == keys - {"manifest.json"}
 
 
-def test_a_garbled_attempt_shows_up_in_the_manifest_with_the_judge_findings(monkeypatch, tmp_path, fake):
+def test_a_failed_attempt_shows_up_in_the_manifest_with_the_judge_findings(monkeypatch, tmp_path, fake):
     client = make_client(monkeypatch, tmp_path, **MINIO_ENV)
-    garbled = ocr(("TEL", "en"), ("77446716", "en"), ("Banero", "en"), ("Salaino", "en"), ("Az-infe", "en"), ("Rilchkan", "en"))
-    judge_plan = {
-        " ".join(w.text for w in garbled.words): judge_record(coverage=0.35, garbled=[("Banero Salaino", "営業時間")], untranslated=["ご飯"], cost=0.02)
-    }
-    Scenario(SOURCE, SRC_OCR, {"m/a": [step(garbled), step(GOOD)]}, judge=judge_plan).install(monkeypatch)
+    judged = judge_record(
+        usability=0.35, cost=0.02, garbled=[("middle column", "Banero Salaino", True), ("logo", "Sinoe", False)],
+        untranslated=["ご飯"], rows=[("duplicated_row", "scallion rice")], mistranslated=[("Perm", "漂髮")],
+    )  # fmt: skip
+    Scenario(SOURCE, SRC_OCR, {"m/a": [step(GOOD, judge=judged), step(GOOD)]}).install(monkeypatch)
     job = submit(client)
     m = manifest_of(fake, job)
     (run,) = m["mode_b"][0]["runs"]
     first, second = run["attempts"]
-    assert (first["verdict"], second["verdict"]) == ("garbled", "pass") and run["selected_attempt"] == 2
-    assert first["coverage"] == 0.35
-    assert first["judge"]["garbled_segments"] == [{"output_text": "Banero Salaino", "source_text": "営業時間"}]
-    assert first["judge"]["untranslated_segments"] == ["ご飯"] and first["judge"]["summary"] == "scripted judge"
+    assert (first["verdict"], second["verdict"]) == ("rows+garbled+partial+score", "pass") and run["selected_attempt"] == 2
+    assert first["failed_checks"] == ["rows", "garbled", "partial", "score"] and first["usability"] == 0.35
+    assert first["judge"]["legibility_issues"][0] == {"where": "middle column", "output_text": "Banero Salaino", "problem": "not real text", "major": True}
+    assert first["judge"]["legibility_issues"][1]["major"] is False  # minor findings are kept in the manifest, never fail a verdict
+    assert first["judge"]["structure_issues"] == [{"type": "duplicated_row", "detail": "scallion rice"}]
+    assert first["judge"]["untranslated"][0]["text"] == "ご飯" and first["judge"]["mistranslated"][0]["output_text"] == "Perm"
+    assert first["judge"]["summary"] == "scripted judge"
     verify_doc = json.loads(fake.objects[("line-bot", f"overlay-lab/{job['job_id']}/B1_m_a_r1_a1_verify.json")]["data"])
-    assert verify_doc["verdict"] == "garbled" and verify_doc["judge"]["reference_translation"] == ["reference line"]
+    assert verify_doc["verdict"] == "rows+garbled+partial+score" and verify_doc["judge"]["usability"] == 0.35
+    assert verify_doc["ocr_warnings"]["status"] == "ok" and verify_doc["checks"]["rows"] == {"ok": False, "count": 1}
 
 
 def test_bucket_prefix_and_expiry_come_from_the_environment(monkeypatch, tmp_path, fake):
@@ -335,16 +348,27 @@ def test_mock_mode_uses_the_in_memory_fake_and_still_produces_the_manifest(monke
     assert job["publish"]["status"] == "done" and job["publish"]["mock"] is True and "LAB_MOCK" in job["publish"]["note"]
     prefix = f"overlay-lab/{job['job_id']}/"
     keys = publish.mock_client().keys("line-bot")
-    for name in ("original.png", "A.png", "A_units.json", "B1_mock_image-model_r1_a1.png", "B1_mock_image-model_r1_a1_verify.json", "manifest.json"):
+    for name in (
+        "original.png", "A_a1.png", "A_a1_erased.png", "A_a1_units.json", "A_a1_verify.json",
+        "B1_mock_image-model_r1_a1.png", "B1_mock_image-model_r1_a1_verify.json", "manifest.json",
+    ):  # fmt: skip
         assert prefix + name in keys, name
+    assert prefix + "A.png" not in keys  # round 5: every Mode A attempt has its own files
     m = json.loads(publish.mock_client().objects[("line-bot", prefix + "manifest.json")]["data"])
-    assert m["mock"] is True and m["mode_a"]["translated_count"] == 3 and m["mode_a"]["units"]["name"] == "A_units.json"
-    assert m["mode_a"]["tokens"] == {"input": 2345, "output": 612}
+    assert m["schema_version"] == 3 and m["mock"] is True and m["mode_a"]["translated_count"] == 3
+    assert m["mode_a"]["units"]["name"] == "A_a1_units.json" and m["mode_a"]["image"]["name"] == "A_a1.png"
+    assert m["mode_a"]["tokens"] == {"input": 2345, "output": 612} and m["mode_a"]["verdict"] == "pass"
+    assert m["mode_a"]["cost_anthropic_usd"] == pytest.approx((2345 * 4 + 612 * 20) / 1e6 + (3400 * 2 + 420 * 10) / 1e6)
+    assert m["mode_a"]["cost_openrouter_usd"] == 0.0 and m["mode_a"]["selected_attempt"] == 1
+    (attempt,) = m["mode_a"]["attempts"]
+    assert attempt["selected"] and attempt["erased"]["name"] == "A_a1_erased.png" and attempt["verification_file"]["name"] == "A_a1_verify.json"
+    assert attempt["erase_methods"] == {"flat": 3, "inpaint": 0} and attempt["text_used"]["full"] + attempt["text_used"]["short"] == 3
+    assert attempt["judge"]["status"] == "ok" and attempt["judge"]["usability"] == 1.0 and attempt["retry_feedback"] is None
     (mock_run,) = m["mode_b"][0]["runs"]
     assert mock_run["verdict"] == "pass" and mock_run["api_used"] == "mock"
-    assert mock_run["attempts"][0]["judge"]["status"] == "ok" and mock_run["attempts"][0]["judge"]["input_tokens"] == 1800
-    units = json.loads(publish.mock_client().objects[("line-bot", prefix + "A_units.json")]["data"])
-    assert len(units["units"]) == 4 and units["job_id"] == job["job_id"]
+    assert mock_run["attempts"][0]["judge"]["status"] == "ok" and mock_run["attempts"][0]["judge"]["input_tokens"] == 3400
+    units = json.loads(publish.mock_client().objects[("line-bot", prefix + "A_a1_units.json")]["data"])
+    assert len(units["units"]) == 4 and units["job_id"] == job["job_id"] and units["attempt"] == 1
 
 
 # ---------------------------------------------------------------- failures never fail the job

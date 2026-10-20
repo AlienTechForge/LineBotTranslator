@@ -42,33 +42,49 @@ def ocr(*words, text: str | None = None, size=(80, 60)) -> OcrResult:
 
 
 def judge_record(
-    coverage: float = 1.0,
+    usability: float = 1.0,
+    coverage: float | None = None,
+    *,
+    altered=(),
+    rows=(),
     garbled=(),
     untranslated=(),
     mistranslated=(),
-    altered=(),
-    *,
     status: str = "ok",
     error: str | None = None,
     cost: float | None = 0.01,
-    reference=("reference line",),
 ) -> dict:
-    """A judge.judge_output record. garbled items are (output_text, source_text) pairs."""
+    """A judge.judge_output record.
+
+    altered: (source, output) pairs; rows: (type, detail) pairs; garbled: (where, output_text, major) triples
+    (a bare string is a major issue with that output_text); untranslated: (text, major) pairs (a bare string is
+    major); mistranslated: (output_text, source_text) pairs. `coverage` defaults to the usability.
+    """
     if status != "ok":
         return {"status": status, "model": "claude-sonnet-5-5", "error": error, "elapsed_ms": 5}
+
+    def glyph(item):
+        where, text, major = (f"region of {item}", item, True) if isinstance(item, str) else item
+        return {"where": where, "output_text": text, "problem": "not real text", "major": major}
+
+    def untr(item):
+        text, major = (item, True) if isinstance(item, str) else item
+        return {"text": text, "where": f"where {text} is", "major": major}
+
     return {
         "status": "ok",
         "model": "claude-sonnet-5-5",
         "served_model": "claude-sonnet-5-5",
         "error": None,
-        "coverage": coverage,
-        "reference_translation": list(reference),
-        "garbled_segments": [{"output_text": o, "source_text": s} for o, s in garbled],
-        "untranslated_segments": list(untranslated),
-        "mistranslated_segments": [{"output_text": o, "source_text": s, "problem": "wrong"} for o, s in mistranslated],
-        "altered_numbers": [{"source": a, "output": b} for a, b in altered],
+        "usability": usability,
+        "coverage": usability if coverage is None else coverage,
+        "legibility_issues": [glyph(g) for g in garbled],
+        "structure_issues": [{"type": t, "detail": d} for t, d in rows],
+        "altered_numbers": [{"source": a, "output": b, "where": "somewhere"} for a, b in altered],
+        "untranslated": [untr(u) for u in untranslated],
+        "mistranslated": [{"output_text": o, "source_text": s, "problem": "wrong"} for o, s in mistranslated],
         "summary": "scripted judge",
-        "input_tokens": 1000,
+        "input_tokens": 3000,
         "output_tokens": 300,
         "cost_usd": cost,
         "elapsed_ms": 7,
@@ -83,16 +99,19 @@ class Scenario:
     `ocr` (the OcrResult of that output, or an Exception that Vision raises),
     `fail` (an Exception that the generation raises), `cost`, `ms`, `size`, `api_used`,
     `sleep` (seconds the generation really takes, to make concurrency measurable).
-    `judge` maps the joined text of an output OCR to the judge record for it (a record from
-    `judge_record`, or an Exception the judge "raises" - judge_output itself never does, so that
-    is only for the failure-isolation tests); an output without an entry gets a clean judge.
+    A step may carry `judge`: the record the vision judge returns for THAT generation's output (a
+    record from `judge_record`, or an Exception the judge "raises" - judge_output itself never does,
+    so that is only for the failure-isolation tests); an output without one gets a clean judge.
     """
 
-    def __init__(self, source_bytes: bytes, source_ocr: OcrResult, plan: dict[str, list[dict]], barrier=None, judge=None):
+    def __init__(self, source_bytes: bytes, source_ocr: OcrResult, plan: dict, barrier=None):
         self.source_bytes = source_bytes
         self.source_ocr = source_ocr
+        self.sources = {source_bytes: source_ocr}  # more images of a batch: add_source
+        self.source_calls: dict[bytes, int] = {}
+        # keys: a model id, or (model id, source image bytes) for a step that belongs to one image of a batch
         self.plan = {m: list(steps) for m, steps in plan.items()}
-        self.judge_plan = dict(judge or {})
+        self.judge_by_png: dict[bytes, object] = {}
         self.outputs: dict[bytes, object] = {}
         self.calls: list[dict] = []  # one per generation call
         self.ocr_calls: list[bytes] = []
@@ -105,12 +124,17 @@ class Scenario:
         self._counter = 0
         self._started: set[str] = set()
 
+    def add_source(self, source_bytes: bytes, source_ocr: OcrResult) -> "Scenario":
+        self.sources[source_bytes] = source_ocr
+        return self
+
     def run_image_model(self, image, lang, model, *, prompt=None, resolution=""):
         if self.barrier is not None and model not in self._started:
             self._started.add(model)
             self.barrier.wait(timeout=10)  # every model must be in flight at the same time
         with self._lock:
-            step = self.plan[model].pop(0)
+            steps = self.plan.get((model, image.data))
+            step = (steps if steps else self.plan[model]).pop(0)
             self._counter += 1
             n = self._counter
             self.calls.append({"model": model, "prompt": prompt, "resolution": resolution, "lang": lang})
@@ -125,6 +149,8 @@ class Scenario:
             png = png_of_size(size, (n * 7 % 256, n * 13 % 256, n * 29 % 256))  # unique bytes per call
             with self._lock:
                 self.outputs[png] = step["ocr"]
+                if step.get("judge") is not None:
+                    self.judge_by_png[png] = step["judge"]
         finally:
             with self._lock:
                 self.active -= 1
@@ -146,20 +172,27 @@ class Scenario:
 
     def ocr_words(self, image_bytes, width, height):
         with self._lock:
-            if image_bytes == self.source_bytes:
+            if image_bytes in self.sources:
                 self.source_ocr_calls += 1
-                return self.source_ocr
+                self.source_calls[image_bytes] = self.source_calls.get(image_bytes, 0) + 1
+                return self.sources[image_bytes]
             self.ocr_calls.append(image_bytes)
             result = self.outputs[image_bytes]
         if isinstance(result, Exception):
             raise result
         return result
 
-    def judge_output(self, source, output, target_lang):
-        text = " ".join(w.text for w in output.words)
+    def judge_output(self, source_ocr, source_image, output_png, target_lang):
         with self._lock:
-            self.judge_calls.append({"source": " ".join(w.text for w in source.words), "output": text, "lang": target_lang})
-        scripted = self.judge_plan.get(text)
+            self.judge_calls.append(
+                {
+                    "source": " ".join(w.text for w in source_ocr.words) if source_ocr else None,
+                    "source_size": tuple(source_image.size),
+                    "output_png": output_png,
+                    "lang": target_lang,
+                }
+            )
+            scripted = self.judge_by_png.get(output_png)
         if isinstance(scripted, Exception):
             raise scripted
         return dict(scripted) if scripted is not None else judge_record()

@@ -21,6 +21,8 @@ from .models import Direction, Word
 
 PAD_RATIO = 0.10
 SNAP_DEG = 0.75
+LANE_GAP_RATIO = 0.25  # of the glyph height: the gap kept between a grown frame and what blocks it
+EDGE_MARGIN_PX = 2.0  # the grown frame stays this far inside the image
 
 
 @dataclass
@@ -43,6 +45,21 @@ class UnitGeometry:
         return int(math.floor(xs.min())), int(math.floor(ys.min())), int(math.ceil(xs.max())), int(
             math.ceil(ys.max())
         )
+
+    def extended(self, axis: int, start: float, end: float) -> "UnitGeometry":
+        """The same frame grown by `start` px against and `end` px along frame axis `axis` (0 = x, 1 = y)."""
+        start, end = max(0.0, float(start)), max(0.0, float(end))
+        if start == 0.0 and end == 0.0:
+            return self
+        u, v = self.axes
+        direction = u if axis == 0 else v
+        shift = (end - start) / 2.0
+        center = (self.center[0] + shift * float(direction[0]), self.center[1] + shift * float(direction[1]))
+        size = (self.size[0] + start + end, self.size[1]) if axis == 0 else (self.size[0], self.size[1] + start + end)
+        half_w, half_h = size[0] / 2.0, size[1] / 2.0
+        local = np.array([[-half_w, -half_h], [half_w, -half_h], [half_w, half_h], [-half_w, half_h]])
+        corners = np.asarray(center) + local[:, 0:1] * u + local[:, 1:2] * v
+        return UnitGeometry(center=center, size=size, angle=self.angle, glyph_h=self.glyph_h, corners=corners)
 
     def to_dict(self) -> dict:
         return {
@@ -156,3 +173,81 @@ def compute_geometry(
         glyph_h=glyph_h,
         corners=img_corners,
     )
+
+
+# ---------------------------------------------------------------- free lanes (sideways growth)
+
+
+def _frame_coords(geom: UnitGeometry, points: np.ndarray) -> np.ndarray:
+    """Image points as (x along the frame x axis, y along its y axis), relative to the frame centre."""
+    u, v = geom.axes
+    rel = np.asarray(points, dtype=np.float64) - np.asarray(geom.center, dtype=np.float64)
+    return np.stack([rel @ u, rel @ v], axis=1)
+
+
+def free_lane(
+    geom: UnitGeometry,
+    axis: int,
+    obstacles: list[np.ndarray],
+    image_hw: tuple[int, int],
+    gap: float | None = None,
+) -> tuple[float, float]:
+    """(against, along): how far the frame can grow along frame axis `axis` (0 = x, 1 = y) either way.
+
+    The frame is swept outward, against and along the axis, until the box of another unit or of an
+    untouched word (`obstacles`, polygons in image coordinates) or the image edge is reached. An
+    obstacle only blocks when it overlaps the frame across the other axis; one that already
+    overlaps the frame itself blocks the side its centre lies on, at zero. A gap of a quarter of
+    the glyph height is kept in front of an obstacle.
+    """
+    if gap is None:
+        gap = LANE_GAP_RATIO * geom.glyph_h
+    half = (geom.size[0] / 2.0, geom.size[1] / 2.0)
+    along, across = (half[0], half[1]) if axis == 0 else (half[1], half[0])
+    against_free = along_free = float("inf")
+    for poly in obstacles:
+        pts = _frame_coords(geom, poly)
+        a, b = (pts[:, 0], pts[:, 1]) if axis == 0 else (pts[:, 1], pts[:, 0])
+        if min(b.max(), across) - max(b.min(), -across) <= 1.0:
+            continue  # beside the lane, not in it
+        lo, hi = float(a.min()), float(a.max())
+        if lo >= along - 1.0:
+            along_free = min(along_free, max(0.0, lo - along - gap))
+        elif hi <= -along + 1.0:
+            against_free = min(against_free, max(0.0, -along - hi - gap))
+        elif (lo + hi) / 2.0 >= 0.0:
+            along_free = 0.0
+        else:
+            against_free = 0.0
+    # the image edge: the largest shift of the frame along +-direction that keeps every corner inside
+    u, v = geom.axes
+    direction = u if axis == 0 else v
+    height, width = image_hw
+    limits = []
+    for sign in (-1.0, 1.0):
+        room = float("inf")
+        for cx, cy in geom.corners:
+            for coord, bound, d in ((cx, width, sign * direction[0]), (cy, height, sign * direction[1])):
+                if d > 1e-9:
+                    room = min(room, (bound - EDGE_MARGIN_PX - coord) / d)
+                elif d < -1e-9:
+                    room = min(room, (EDGE_MARGIN_PX - coord) / d)
+        limits.append(max(0.0, room))
+    return min(against_free, limits[0]), min(along_free, limits[1])
+
+
+def extension_polygons(geom: UnitGeometry, axis: int, start: float, end: float) -> list[np.ndarray]:
+    """The strips (image-space corner lists) a frame gains when it grows `start` against / `end` along `axis`."""
+    u, v = geom.axes
+    hw, hh = geom.size[0] / 2.0, geom.size[1] / 2.0
+    cx, cy = geom.center
+    polys: list[np.ndarray] = []
+    for lo, hi in ((-hw - start, -hw), (hw, hw + end)) if axis == 0 else ((-hh - start, -hh), (hh, hh + end)):
+        if hi - lo <= 0.5:
+            continue
+        if axis == 0:
+            local = np.array([[lo, -hh], [hi, -hh], [hi, hh], [lo, hh]])
+        else:
+            local = np.array([[-hw, lo], [hw, lo], [hw, hi], [-hw, hi]])
+        polys.append(np.array([cx, cy]) + local[:, 0:1] * u + local[:, 1:2] * v)
+    return polys

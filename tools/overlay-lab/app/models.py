@@ -9,6 +9,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 Direction = Literal["horizontal", "vertical_rl", "vertical_lr"]
 Role = Literal["title", "heading", "body", "label", "price", "number", "other"]
+Align = Literal["left", "center", "right"]
+Weight = Literal["regular", "bold"]
+Importance = Literal["major", "minor"]
 
 
 def base_language(code: str | None) -> str | None:
@@ -80,7 +83,13 @@ class OcrResult(BaseModel):
 
 
 class ClaudeUnit(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+    """One translation unit as the planner returns it (it never gives coordinates).
+
+    Unknown fields are rejected (the JSON schema forbids them too), enums are checked. The four
+    fields added in round 5 have defaults only so that a hand-built unit stays short in code.
+    """
+
+    model_config = ConfigDict(extra="forbid")
 
     word_ids: list[str]
     source_text: str = ""
@@ -90,9 +99,13 @@ class ClaudeUnit(BaseModel):
     role: Role = "other"
     keep: bool = False
     notes: str = ""
+    short: str = ""  # a shorter alternative translation, "" when the translation is short already
+    align: Align = "left"  # how the source text is set
+    weight: Weight = "regular"  # how heavy the source text looks
+    importance: Importance = "major"  # minor: decoration, footnotes, logo lettering
 
 
 class ClaudeUnits(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="forbid")
 
     units: list[ClaudeUnit] = Field(default_factory=list)

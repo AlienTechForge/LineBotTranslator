@@ -2,7 +2,7 @@
 
 With LAB_MOCK=1 no network call is made: Vision returns the canned words (scaled to whatever
 image was uploaded), Claude returns the canned units (Mode A) and the canned judge answer
-(Mode B), and Mode B returns the input image unchanged. `make_fixture()` draws the matching
+(both modes), and Mode B returns the input image unchanged. `make_fixture()` draws the matching
 image (also served at /api/mock-image).
 """
 
@@ -122,22 +122,26 @@ def vision_words(width: int, height: int) -> OcrResult:
     return OcrResult(width=width, height=height, words=words, text=" ".join(w.text for w in words))
 
 
+JUDGE_MOCK_TOKENS = (3400, 420)  # about two pictures of 1.6k tokens each, and a short answer
+
+
 def judge_response(source_lines: list[str]) -> tuple[str, int, int]:
     """Canned judge answer: (json text, input tokens, output tokens).
 
     The mock Mode B returns the input image, so the 'output' is the source itself: a judge that
-    reads it finds nothing wrong. The reference translation just marks each source line.
+    looks at it finds nothing wrong. (Mode A's output differs, but nothing is looked at here.)
     """
     answer = {
-        "reference_translation": [f"(mock) {line}" for line in source_lines],
+        "usability": 1.0,
         "coverage": 1.0,
-        "garbled_segments": [],
-        "untranslated_segments": [],
-        "mistranslated_segments": [],
+        "legibility_issues": [],
+        "structure_issues": [],
         "altered_numbers": [],
-        "summary": "Mock judge: a canned answer, nothing was actually checked.",
+        "untranslated": [],
+        "mistranslated": [],
+        "summary": "Mock judge: a canned answer, nothing was actually looked at.",
     }
-    return json.dumps(answer, ensure_ascii=False), 1800, 420
+    return json.dumps(answer, ensure_ascii=False), *JUDGE_MOCK_TOKENS
 
 
 def claude_response(ocr: OcrResult) -> tuple[str, int, int]:
@@ -147,12 +151,16 @@ def claude_response(ocr: OcrResult) -> tuple[str, int, int]:
         return json.dumps({"units": []}), 100, 10
     units = [
         {"word_ids": ids[0:3], "source_text": "TONKATSU SET MENU", "translation": "Pork Cutlet Set Menu",
-         "direction": "horizontal", "rotated": False, "role": "title", "keep": False, "notes": ""},
+         "direction": "horizontal", "rotated": False, "role": "title", "keep": False, "notes": "",
+         "short": "Cutlet Set", "align": "left", "weight": "regular", "importance": "major"},
         {"word_ids": [ids[3]], "source_text": "NT$120", "translation": "NT$120",
-         "direction": "horizontal", "rotated": False, "role": "price", "keep": True, "notes": "price"},
+         "direction": "horizontal", "rotated": False, "role": "price", "keep": True, "notes": "price",
+         "short": "", "align": "left", "weight": "regular", "importance": "major"},
         {"word_ids": [ids[4]], "source_text": "紅燒肉飯店", "translation": "Braised pork rice shop",
-         "direction": "vertical_rl", "rotated": False, "role": "label", "keep": False, "notes": ""},
+         "direction": "vertical_rl", "rotated": False, "role": "label", "keep": False, "notes": "",
+         "short": "Pork rice", "align": "left", "weight": "regular", "importance": "major"},
         {"word_ids": ids[5:7], "source_text": "LUNCH SPECIAL", "translation": "Today's special lunch",
-         "direction": "horizontal", "rotated": True, "role": "body", "keep": False, "notes": ""},
+         "direction": "horizontal", "rotated": True, "role": "body", "keep": False, "notes": "",
+         "short": "Lunch special", "align": "left", "weight": "regular", "importance": "major"},
     ]  # fmt: skip
     return json.dumps({"units": units}, ensure_ascii=False), 2345, 612

@@ -36,9 +36,10 @@ services:
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
       CLAUDE_MODEL: "${CLAUDE_MODEL:-claude-opus-5-5}"
       CLAUDE_JUDGE_MODEL: "${CLAUDE_JUDGE_MODEL:-claude-sonnet-5-5}"
+      MODE_A_RETRY: "${MODE_A_RETRY:-1}"
       OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
       OPEN_ROUTE_API_KEY: "${OPEN_ROUTE_API_KEY:-}"
-      OPENROUTER_IMAGE_MODEL: "${OPENROUTER_IMAGE_MODEL:-google/gemini-2.5-flash-image}"
+      OPENROUTER_IMAGE_MODEL: "${OPENROUTER_IMAGE_MODEL:-google/gemini-3-pro-image}"
       OPENROUTER_IMAGE_API: "${OPENROUTER_IMAGE_API:-auto}"
       # publishing the results for a reviewer (all optional; same names as the production bot)
       MINIO_ENDPOINT: "${MINIO_ENDPOINT:-}"

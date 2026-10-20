@@ -1,6 +1,4 @@
-"""Mode B verification: digit integrity, leftover source language, verdicts, attempt selection."""
-
-import itertools
+"""Verification: the judge decides the verdict, the OCR digit / leftover checks are warnings only."""
 
 import pytest
 from scenario import judge_record, ocr
@@ -204,80 +202,6 @@ def test_no_source_language_words_means_no_leftover():
     assert result["leftover_ok"] and result["leftover_ratio"] == 0.0 and result["leftover_words"] == []
 
 
-# ---------------------------------------------------------------- verdicts and attempt selection
-
-
-@pytest.mark.parametrize(
-    "digits_ok, leftover_ok, verdict",
-    [(True, True, "pass"), (False, True, "digits-changed"), (True, False, "partial"), (False, False, "digits-changed+partial")],
-)  # fmt: skip
-def test_verdict_precedence(digits_ok, leftover_ok, verdict):
-    assert verify.verdict_for(digits_ok, leftover_ok) == verdict
-
-
-def v(verdict, missing=(), ratio=0.0, coverage=None):
-    return {"verdict": verdict, "missing_digit_runs": list(missing), "leftover_ratio": ratio, "coverage": coverage}
-
-
-def test_attempt_selection_pass_beats_partial_beats_digits_changed():
-    pass_, partial, digits, both = v("pass"), v("partial", ratio=0.2), v("digits-changed", ["1234"]), v("digits-changed+partial", ["1234"], 0.3)
-    assert verify.choose_attempt([partial, pass_]) == 1
-    assert verify.choose_attempt([pass_, partial]) == 0
-    assert verify.choose_attempt([digits, partial]) == 1
-    assert verify.choose_attempt([both, digits]) == 1
-    assert verify.choose_attempt([both, partial]) == 1
-
-
-def test_an_attempt_that_changed_digits_never_beats_one_that_did_not():
-    # even a much worse translation wins over an attempt with altered digits
-    assert verify.choose_attempt([v("partial", ratio=0.9), v("digits-changed", ["1234"], 0.0)]) == 0
-    assert verify.choose_attempt([v("digits-changed", ["1234"]), v("partial", ratio=0.9)]) == 1
-
-
-def test_ties_keep_the_first_attempt_and_inner_ties_prefer_fewer_problems():
-    assert verify.choose_attempt([v("partial", ratio=0.2), v("partial", ratio=0.2)]) == 0
-    assert verify.choose_attempt([v("partial", ratio=0.2), v("partial", ratio=0.1)]) == 1
-    assert verify.choose_attempt([v("digits-changed", ["1111", "2222"]), v("digits-changed", ["1111"])]) == 1
-    assert verify.choose_attempt([v("digits-changed", ["1111"]), v("digits-changed", ["1111", "2222"])]) == 0
-
-
-def test_an_unverified_attempt_never_replaces_a_verified_one():
-    assert verify.choose_attempt([v("digits-changed+partial", ["1"]), None]) == 0
-    assert verify.choose_attempt([None, v("partial", ratio=0.5)]) == 1
-    assert verify.choose_attempt([{"verdict": "unverified"}, v("pass")]) == 1
-    assert verify.choose_attempt([None]) == 0
-
-
-def test_verify_output_end_to_end_on_scripted_ocr():
-    source = ocr(("TEL", "en"), ("77446716", "en"), ("営業時間", "ja"), ("メニュー", "ja"), ("ご飯", "ja"), ("定食", "ja"), size=(100, 100))
-    good = ocr(("TEL", "en"), ("77446716", "en"), ("Hours", "en"), ("Menu", "en"), ("Rice", "en"), ("Set", "en"), size=(100, 100))
-    report = verify.verify_output(source, good, "en", include_text=True)
-    assert report["verdict"] == "pass" and report["digits_ok"] and report["leftover_ok"]
-    assert report["source_language"] == "ja" and report["source_language_method"] == "detected"
-    assert report["target_language"] == "en" and report["output_text"] == "TEL 77446716 Hours Menu Rice Set"
-
-    bad = ocr(("TEL", "en"), ("09446916", "en"), ("営業時間", "ja"), ("Menu", "en"), ("Rice", "en"), ("Set", "en"), size=(100, 100))
-    report = verify.verify_output(source, bad, "en")
-    assert report["verdict"] == "digits-changed+partial"
-    assert report["missing_digit_runs"] == ["77446716"] and report["leftover_words"] == ["営業時間"]
-    assert "output_text" not in report and report["thresholds"]["leftover_ratio_max"] == 0.08
-
-
-def test_the_output_digits_come_from_the_words_when_vision_gave_no_full_text():
-    source = ocr(("TEL", "en"), ("77446716", "en"), size=(100, 100))
-    no_text = ocr(("TEL", "en"), ("09446916", "en"), text="", size=(100, 100))
-    assert verify.verify_output(source, no_text, "en", include_text=True)["missing_digit_runs"] == ["77446716"]
-    kept = ocr(("TEL", "en"), ("77446716", "en"), text="", size=(100, 100))
-    report = verify.verify_output(source, kept, "en", include_text=True)
-    assert report["verdict"] == "pass" and report["output_text"] == "TEL 77446716"
-
-
-def test_an_empty_source_has_nothing_to_compare_and_says_so():
-    report = verify.verify_output(ocr(size=(100, 100)), ocr(("Hello", "en"), size=(100, 100)), "en")
-    assert report["verdict"] == "pass" and "nothing to compare" in report["note"]
-    assert report["source_language"] is None and report["source_digit_runs"] == 0
-
-
 # ---------------------------------------------------------------- round 4: soft (handwriting) and hard digit runs
 
 
@@ -359,16 +283,17 @@ def test_a_run_is_hard_when_any_word_it_comes_from_is_confident():
     assert only_soft["digits_ok"] and only_soft["unverified_digit_runs"] == ["77446716"]
 
 
-def test_a_soft_miss_does_not_change_the_verdict_but_a_hard_miss_does():
+def test_a_soft_miss_is_a_warning_and_a_hard_miss_a_stronger_one_but_neither_touches_the_verdict():
     source = ocr(("TEL", "en", 0.99), ("77446716", "en", 0.5), ("Total", "en", 0.99), ("1,200", "en", 0.95), size=(100, 100))
     soft_gone = ocr(("TEL", "en"), ("09446916", "en"), ("Total", "en"), ("1,200", "en"), size=(100, 100))
-    report = verify.verify_output(source, soft_gone, "en")
-    assert report["verdict"] == "pass" and report["unverified_digit_runs"] == ["77446716"]
+    report = verify.verify_output(source, soft_gone, "en", judge=judge_record())
+    assert report["verdict"] == "pass" and report["ocr_warnings"]["unverified_digit_runs"] == ["77446716"]
+    assert report["ocr_warnings"]["warnings"] == ["digits-unverified"]
     assert report["thresholds"]["soft_confidence_max"] == 0.75 and report["thresholds"]["tolerant_min_digits"] == 5
     hard_gone = ocr(("TEL", "en"), ("77446716", "en"), ("Total", "en"), ("1,300", "en"), size=(100, 100))
-    report = verify.verify_output(source, hard_gone, "en")
-    assert report["verdict"] == "digits-changed" and report["missing_digit_runs"] == ["1200"]
-    assert report["unverified_digit_runs"] == []
+    report = verify.verify_output(source, hard_gone, "en", judge=judge_record())
+    assert report["ocr_warnings"]["missing_digit_runs"] == ["1200"] and report["ocr_warnings"]["warnings"] == ["digits-missing"]
+    assert report["verdict"] == "pass"  # round 5: the OCR digit check is a warning, the judge decides
 
 
 # ---------------------------------------------------------------- round 4: big leftover glyphs
@@ -389,35 +314,42 @@ def title_case(leftover_height, others=299, ratio_words=300):
     return source, out
 
 
-def test_a_leftover_word_more_than_twice_the_median_height_makes_it_partial_whatever_the_ratio():
-    # round 3: the second line of a poster title stayed Vietnamese, 3 words of 260 (0.0115): not `partial`
+def leftover(source, out, lang="en"):
+    return verify.check_leftover(source.words, out.words, lang, verify.detect_source_language(source.words)[0])
+
+
+def test_a_leftover_word_more_than_twice_the_median_height_fails_the_leftover_check_whatever_the_ratio():
+    # round 3: the second line of a poster title stayed Vietnamese, 3 words of 260 (0.0115): the ratio did not see it
     source, out = title_case(26)  # 2.6 x the median 10
-    report = verify.verify_output(source, out, "en")
-    assert report["leftover_ratio"] == pytest.approx(1 / 300, abs=1e-4) and report["leftover_ratio_ok"] is True
-    assert report["leftover_ok"] is False and report["verdict"] == "partial"
-    assert report["big_leftover_words"] == [{"word": "メニュー", "height": 26.0, "median_height": 10.0, "ratio": 2.6}]
-    assert report["median_word_height"] == 10.0 and report["thresholds"]["big_glyph_ratio"] == 2.0
+    result = leftover(source, out)
+    assert result["leftover_ratio"] == pytest.approx(1 / 300, abs=1e-4) and result["leftover_ratio_ok"] is True
+    assert result["leftover_ok"] is False
+    assert result["big_leftover_words"] == [{"word": "メニュー", "height": 26.0, "median_height": 10.0, "ratio": 2.6}]
+    assert result["median_word_height"] == 10.0
+    # round 5: the same finding is only an OCR warning; the verdict comes from the judge
+    report = verify.verify_output(source, out, "en", judge=judge_record())
+    assert report["verdict"] == "pass" and report["ocr_warnings"]["warnings"] == ["leftover-big-glyph"]
+    assert report["thresholds"]["big_glyph_ratio"] == 2.0
 
 
 def test_exactly_twice_the_median_is_not_big_and_a_big_translated_word_is_fine():
     source, out = title_case(20)
-    report = verify.verify_output(source, out, "en")
-    assert report["verdict"] == "pass" and report["big_leftover_words"] == []
+    assert leftover(source, out)["leftover_ok"] is True and leftover(source, out)["big_leftover_words"] == []
     # a big English title (translated) next to small body text is the normal case
     source = ocr(*[("こんにちは", "ja")] * 20, size=(100, 100))
     out = ocr(*[("Hello", "en")] * 19, ("MENU", "en", 0.9, 60), size=(100, 100))
-    assert verify.verify_output(source, out, "en")["verdict"] == "pass"
+    assert leftover(source, out)["leftover_ok"] is True
 
 
 def test_the_median_is_the_median_of_all_output_words_and_the_word_is_listed_once():
     source = ocr(*[("こんにちは", "ja")] * 100, size=(100, 100))
     # most words of this output are tall (25): a 40 px leftover is only 1.6 x the median
     tall = ocr(*[("Hello", "en", 0.9, 25)] * 60, *[("World", "en")] * 39, ("メニュー", "ja", 0.9, 40), size=(100, 100))
-    assert verify.verify_output(source, tall, "en")["big_leftover_words"] == []
+    assert leftover(source, tall)["big_leftover_words"] == []
     # the same big word printed twice is one entry
     out = ocr(*[("Hello", "en")] * 90, ("メニュー", "ja", 0.9, 40), ("メニュー", "ja", 0.9, 40), size=(100, 100))
-    report = verify.verify_output(source, out, "en")
-    assert [b["word"] for b in report["big_leftover_words"]] == ["メニュー"] and report["verdict"] == "partial"
+    result = leftover(source, out)
+    assert [b["word"] for b in result["big_leftover_words"]] == ["メニュー"] and result["leftover_ok"] is False
 
 
 def test_without_recorded_heights_the_polygon_is_used():
@@ -428,115 +360,206 @@ def test_without_recorded_heights_the_polygon_is_used():
     assert recorded.box_height == 12.5
 
 
-# ---------------------------------------------------------------- round 4: the garbled verdict and the precedence table
+# ---------------------------------------------------------------- the verdict comes from the judge
+
+CHECKS = ("numbers", "rows", "garbled", "partial", "score")
 
 
-ALL_CASES = [  # (digits_ok, garbled_ok, leftover_ok, verdict)
-    (True, True, True, "pass"),
-    (True, True, False, "partial"),
-    (True, False, True, "garbled"),
-    (True, False, False, "garbled+partial"),
-    (False, True, True, "digits-changed"),
-    (False, True, False, "digits-changed+partial"),
-    (False, False, True, "digits-changed+garbled"),
-    (False, False, False, "digits-changed+garbled+partial"),
-]
+def test_the_check_table_and_the_threshold():
+    assert verify.CHECKS == CHECKS and verify.USABILITY_MIN == 0.80
+    assert verify.ROW_PROBLEMS == {"duplicated_row", "missing_row", "misaligned_marks"}
 
 
-@pytest.mark.parametrize("digits_ok, garbled_ok, leftover_ok, verdict", ALL_CASES)
-def test_verdict_names_for_every_combination(digits_ok, garbled_ok, leftover_ok, verdict):
-    assert verify.verdict_for(digits_ok, leftover_ok, garbled_ok) == verdict
-    assert verify.verdict_for(digits_ok, leftover_ok) == verify.verdict_for(digits_ok, leftover_ok, True)
+def test_a_clean_judge_is_a_pass_with_all_five_checks_ok():
+    report = verify.verify_output(SRC, GOOD, "en", judge=judge_record(usability=0.97, coverage=0.93))
+    assert report["verdict"] == "pass" and report["failed_checks"] == []
+    assert report["usability"] == 0.97 and report["coverage"] == 0.93
+    assert [(n, report["checks"][n]["ok"]) for n in CHECKS] == [(n, True) for n in CHECKS]
+    assert report["checks"]["score"] == {"ok": True, "usability": 0.97, "min": 0.80}
+    assert report["thresholds"]["usability_min"] == 0.80 and report["target_language"] == "en"
 
 
-def test_the_precedence_table_best_to_worst():
-    assert verify.VERDICTS_BEST_TO_WORST == tuple(c[3] for c in ALL_CASES)
-    ranks = [verify.VERDICT_RANK[v] for v in verify.VERDICTS_BEST_TO_WORST]
-    assert ranks == sorted(ranks, reverse=True) and len(set(ranks)) == 8
-    assert verify.VERDICT_UNVERIFIED not in verify.VERDICT_RANK
-    for better, worse in itertools.combinations(verify.VERDICTS_BEST_TO_WORST, 2):
-        assert verify.choose_attempt([v(worse), v(better)]) == 1, (better, worse)
-        assert verify.choose_attempt([v(better), v(worse)]) == 0, (better, worse)
+def test_numbers_fail_when_the_judge_lists_an_altered_number():
+    report = verify.verify_output(SRC, GOOD, "en", judge=judge_record(altered=[("77446716", "99446916")]))
+    assert report["verdict"] == "numbers" and report["failed_checks"] == ["numbers"]
+    assert report["checks"]["numbers"] == {"ok": False, "count": 1}
 
 
-def test_the_two_invariants_hold_for_every_pair_of_verdicts():
-    changed = lambda verdict: "digits-changed" in verdict  # noqa: E731
-    garbled = lambda verdict: "garbled" in verdict  # noqa: E731
-    for a, b in itertools.permutations(verify.VERDICTS_BEST_TO_WORST, 2):
-        a_wins = verify.choose_attempt([v(b), v(a)]) == 1
-        if changed(a) and not changed(b):
-            assert not a_wins, f"{a} changed digits and must not beat {b}"
-        if changed(a) == changed(b) and garbled(a) and not garbled(b):
-            assert not a_wins, f"{a} has garbled text and must not beat {b}"
+@pytest.mark.parametrize(
+    "kind, fails",
+    [("duplicated_row", True), ("missing_row", True), ("misaligned_marks", True), ("shifted", False), ("other", False)],
+)
+def test_rows_fail_for_duplicated_missing_or_misaligned_rows_only(kind, fails):
+    report = verify.verify_output(SRC, GOOD, "en", judge=judge_record(rows=[(kind, "the third row")]))
+    assert report["verdict"] == ("rows" if fails else "pass")
+    assert report["checks"]["rows"]["count"] == (1 if fails else 0)
 
 
-def test_garbled_text_with_good_digits_beats_changed_digits_with_clean_text():
-    # the one pair where the two invariants pull apart: the digits rule wins (garbled > digits-changed)
-    assert verify.choose_attempt([v("digits-changed", ["1234"]), v("garbled", coverage=0.5)]) == 1
-    assert verify.choose_attempt([v("garbled+partial", coverage=0.5, ratio=0.9), v("digits-changed", ["1234"], coverage=1.0)]) == 0
+def test_garbled_needs_a_major_legibility_issue_and_partial_a_major_untranslated_text():
+    minor = judge_record(garbled=[("logo lettering", "Sinoe 2024", False)], untranslated=[("footnote", False)])
+    assert verify.verify_output(SRC, GOOD, "en", judge=minor)["verdict"] == "pass"  # minor issues never fail a verdict
+    major = judge_record(garbled=[("price pill", "Manbar Price", True)])
+    assert verify.verify_output(SRC, GOOD, "en", judge=major)["verdict"] == "garbled"
+    assert verify.verify_output(SRC, GOOD, "en", judge=judge_record(untranslated=["ご飯"]))["verdict"] == "partial"
+    only_mistranslated = judge_record(mistranslated=[("Perm", "漂髮")])
+    assert verify.verify_output(SRC, GOOD, "en", judge=only_mistranslated)["verdict"] == "pass"
 
 
-def test_ties_prefer_coverage_then_fewer_missing_digits_then_lower_leftover_then_the_earlier_attempt():
-    assert verify.choose_attempt([v("garbled", coverage=0.6), v("garbled", coverage=0.8)]) == 1
-    assert verify.choose_attempt([v("pass", coverage=0.99), v("pass", coverage=0.95)]) == 0
-    both = dict(coverage=0.9)
-    assert verify.choose_attempt([v("digits-changed", ["1", "2"], **both), v("digits-changed", ["1"], **both)]) == 1
-    assert verify.choose_attempt([v("partial", ratio=0.3, **both), v("partial", ratio=0.2, **both)]) == 1
-    assert verify.choose_attempt([v("partial", ratio=0.2, **both), v("partial", ratio=0.2, **both)]) == 0
-    # coverage outranks the digit and leftover tie-breaks
-    assert verify.choose_attempt([v("partial", ratio=0.1, coverage=0.91), v("partial", ratio=0.5, coverage=0.99)]) == 1
+@pytest.mark.parametrize("usability, verdict", [(0.80, "pass"), (0.7999, "score"), (0.0, "score"), (1.0, "pass"), (0.95, "pass")])
+def test_score_fails_below_the_usability_threshold_and_the_threshold_itself_passes(usability, verdict):
+    assert verify.verify_output(SRC, GOOD, "en", judge=judge_record(usability=usability))["verdict"] == verdict
 
 
-def test_an_attempt_without_a_judge_ranks_below_a_judged_one_of_the_same_verdict():
-    assert verify.choose_attempt([v("pass"), v("pass", coverage=0.9)]) == 1
-    assert verify.choose_attempt([v("pass", coverage=0.9), v("pass")]) == 0
-    assert verify.choose_attempt([v("pass"), v("pass")]) == 0
-    assert verify.choose_attempt([None, v("garbled+partial")]) == 1
+def test_coverage_alone_never_decides():
+    report = verify.verify_output(SRC, GOOD, "en", judge=judge_record(usability=0.95, coverage=0.1))
+    assert report["verdict"] == "pass" and report["coverage"] == 0.1
 
 
-def test_check_garbled_follows_the_judge_record():
-    ok = verify.check_garbled(judge_record(coverage=0.97))
-    assert ok == {"garbled_ok": True, "coverage": 0.97, "garbled_count": 0, "judge_status": "ok"}
-    assert verify.check_garbled(judge_record(coverage=0.90))["garbled_ok"] is True  # inclusive at 0.90
-    assert verify.check_garbled(judge_record(coverage=0.8999))["garbled_ok"] is False
-    segments = judge_record(coverage=1.0, garbled=[("Banero Salaino", "菜單")])
-    assert verify.check_garbled(segments)["garbled_ok"] is False and verify.check_garbled(segments)["garbled_count"] == 1
-    for record in (None, judge_record(status="unavailable", error="boom"), judge_record(status="skipped")):
-        assert verify.check_garbled(record)["garbled_ok"] is True
-        assert verify.check_garbled(record)["coverage"] is None
-    assert verify.check_garbled(judge_record(status="unavailable"))["judge_status"] == "unavailable"
+@pytest.mark.parametrize("n", range(1, 32))
+def test_every_combination_of_failures_is_named_in_the_order_numbers_rows_garbled_partial_score(n):
+    failing = [name for i, name in enumerate(CHECKS) if n >> i & 1]
+    judge = judge_record(
+        usability=0.5 if "score" in failing else 0.95,
+        altered=[("1", "2")] if "numbers" in failing else (),
+        rows=[("duplicated_row", "x")] if "rows" in failing else (),
+        garbled=["xyz"] if "garbled" in failing else (),
+        untranslated=["abc"] if "partial" in failing else (),
+    )
+    report = verify.verify_output(SRC, GOOD, "en", judge=judge)
+    assert report["verdict"] == "+".join(failing) and report["failed_checks"] == failing
+    assert verify.verdict_for(reversed(failing)) == "+".join(failing)  # the order is fixed, not the input's
+
+
+def test_verdict_for_names_and_rejects_unknown_checks():
+    assert verify.verdict_for([]) == "pass" and verify.verdict_for({"score"}) == "score"
+    assert verify.verdict_for(["partial", "numbers"]) == "numbers+partial"
+    with pytest.raises(ValueError):
+        verify.verdict_for(["digits-changed"])
+
+
+@pytest.mark.parametrize(
+    "record",
+    [judge_record(status="unavailable", error="no key"), judge_record(status="skipped"), None],
+)
+def test_without_a_judge_answer_the_verdict_is_unverified_but_the_ocr_warnings_are_still_there(record):
+    report = verify.verify_output(SRC, ocr(("TEL", "en"), ("09446916", "en"), size=(100, 100)), "en", judge=record)
+    assert report["verdict"] == "unverified" and report["checks"] is None and report["usability"] is None
+    assert report["failed_checks"] == [] and report["coverage"] is None
+    assert report["ocr_warnings"]["status"] == "ok" and "digits-missing" in report["ocr_warnings"]["warnings"]
+    assert not verify.is_verified(report["verdict"]) and not verify.needs_retry(report["verdict"])
+
+
+def test_needs_retry_is_a_reached_verdict_that_is_not_pass():
+    assert verify.needs_retry("score") and verify.needs_retry("numbers+garbled")
+    assert not verify.needs_retry("pass") and not verify.needs_retry("unverified") and not verify.needs_retry(None)
+
+
+def test_the_ocr_checks_are_warnings_only_and_never_touch_the_verdict():
+    # digits changed AND the title left in Japanese: round 4 said digits-changed+partial; now the judge says pass
+    bad = ocr(("TEL", "en"), ("09446916", "en"), ("営業時間", "ja"), ("Menu", "en"), ("Rice", "en"), ("Set", "en"), size=(100, 100))
+    report = verify.verify_output(SRC, bad, "en", judge=judge_record(usability=0.93))
+    assert report["verdict"] == "pass" and report["failed_checks"] == []
+    warnings = report["ocr_warnings"]
+    assert warnings["status"] == "ok" and warnings["warnings"] == ["digits-missing", "leftover-ratio"]
+    assert warnings["missing_digit_runs"] == ["77446716"] and warnings["leftover_words"] == ["営業時間"]
+    assert warnings["source_language"] == "ja" and warnings["source_language_method"] == "detected"
+    assert "output_text" not in warnings  # only with include_text
+    assert verify.verify_output(SRC, bad, "en", include_text=True, judge=judge_record())["ocr_warnings"]["output_text"].startswith("TEL 09446916")
+
+
+def test_a_failed_vision_costs_only_the_warnings():
+    report = verify.verify_output(None, None, "en", judge=judge_record(usability=0.9), ocr_error="Google Vision credentials are not usable")
+    assert report["verdict"] == "pass" and report["usability"] == 0.9
+    assert report["ocr_warnings"] == {"status": "unavailable", "error": "Google Vision credentials are not usable", "warnings": []}
+
+
+def test_an_empty_source_has_nothing_to_compare_and_says_so():
+    report = verify.verify_output(ocr(size=(100, 100)), ocr(("Hello", "en"), size=(100, 100)), "en", judge=judge_record())
+    assert report["verdict"] == "pass" and "nothing to compare" in report["note"]
+    assert report["ocr_warnings"]["source_language"] is None and report["ocr_warnings"]["source_digit_runs"] == 0
+
+
+def test_the_output_digits_come_from_the_words_when_vision_gave_no_full_text():
+    source = ocr(("TEL", "en"), ("77446716", "en"), size=(100, 100))
+    no_text = ocr(("TEL", "en"), ("09446916", "en"), text="", size=(100, 100))
+    assert verify.verify_output(source, no_text, "en")["ocr_warnings"]["missing_digit_runs"] == ["77446716"]
+    kept = ocr(("TEL", "en"), ("77446716", "en"), text="", size=(100, 100))
+    report = verify.verify_output(source, kept, "en", include_text=True)
+    assert report["ocr_warnings"]["warnings"] == [] and report["ocr_warnings"]["output_text"] == "TEL 77446716"
 
 
 SRC = ocr(("TEL", "en"), ("77446716", "en"), ("営業時間", "ja"), ("メニュー", "ja"), ("ご飯", "ja"), ("定食", "ja"), size=(100, 100))
 GOOD = ocr(("TEL", "en"), ("77446716", "en"), ("Hours", "en"), ("Menu", "en"), ("Rice", "en"), ("Set", "en"), size=(100, 100))
-GIBBERISH = ocr(("TEL", "en"), ("77446716", "en"), ("Banero", "en"), ("Salaino", "en"), ("Az-infe", "en"), ("Rilchkan", "en"), size=(100, 100))
 
 
-def test_gibberish_in_the_target_script_passes_the_ocr_checks_but_not_the_judge():
-    assert verify.verify_output(SRC, GIBBERISH, "en")["verdict"] == "pass"  # round 3: nothing to see for OCR alone
-    judged = judge_record(coverage=0.35, garbled=[("Banero Salaino Az-infe Rilchkan", "営業時間 メニュー ご飯 定食")])
-    report = verify.verify_output(SRC, GIBBERISH, "en", judge=judged)
-    assert report["verdict"] == "garbled" and report["coverage"] == 0.35 and report["garbled_ok"] is False
-    assert report["garbled_count"] == 1 and report["judge"] is judged and report["digits_ok"] and report["leftover_ok"]
+# ---------------------------------------------------------------- picking between attempts
 
 
-def test_low_coverage_alone_is_garbled_and_a_clean_judge_keeps_pass():
-    assert verify.verify_output(SRC, GOOD, "en", judge=judge_record(coverage=0.89))["verdict"] == "garbled"
-    report = verify.verify_output(SRC, GOOD, "en", judge=judge_record(coverage=0.97))
-    assert report["verdict"] == "pass" and report["coverage"] == 0.97
-    assert report["thresholds"]["coverage_min"] == 0.9
+def v(verdict, usability=None, coverage=None):
+    return {"verdict": verdict, "usability": usability, "coverage": coverage}
 
 
-def test_an_unavailable_judge_leaves_the_verdict_to_the_ocr_checks():
-    report = verify.verify_output(SRC, GOOD, "en", judge=judge_record(status="unavailable", error="no key"))
-    assert report["verdict"] == "pass" and report["coverage"] is None and report["judge"]["status"] == "unavailable"
-    assert verify.verify_output(SRC, GOOD, "en")["judge"] is None
+ALL_VERDICTS = ["pass"] + ["+".join(n for i, n in enumerate(CHECKS) if m >> i & 1) for m in range(1, 32)]
 
 
-def test_all_three_problems_together():
-    bad = ocr(("TEL", "en"), ("09446916", "en"), ("営業時間", "ja"), ("Banero", "en"), size=(100, 100))
-    report = verify.verify_output(SRC, bad, "en", judge=judge_record(coverage=0.3, garbled=[("Banero", "メニュー")]))
-    assert report["verdict"] == "digits-changed+garbled+partial"
-    garbled_partial = verify.verify_output(SRC, ocr(("TEL", "en"), ("77446716", "en"), ("営業時間", "ja"), ("Menu", "en"), ("Rice", "en"), ("Set", "en"), size=(100, 100)),
-                                           "en", judge=judge_record(coverage=0.5))  # fmt: skip
-    assert garbled_partial["verdict"] == "garbled+partial"
+def flags(verdict):
+    failed = set() if verdict == "pass" else set(verdict.split("+"))
+    return tuple(name not in failed for name in CHECKS)
+
+
+def test_verdict_flags_and_the_order_of_a_verdict():
+    assert verify.verdict_flags("pass") == (True,) * 5
+    assert verify.verdict_flags("numbers+score") == (False, True, True, True, False)
+    for junk in ("unverified", None, "", "digits-changed", "garbled+nonsense", 5):
+        assert verify.verdict_flags(junk) is None
+
+
+def test_precedence_over_every_pair_of_verdicts_is_lexicographic_on_the_five_checks():
+    assert len(ALL_VERDICTS) == 32
+    for a in ALL_VERDICTS:
+        for b in ALL_VERDICTS:
+            if a == b:
+                continue
+            # the checks are compared in the order numbers, rows, garbled, partial, score; a fully ok check wins
+            expected_a_wins = flags(a) > flags(b)
+            assert verify.choose_attempt([v(b), v(a)]) == (1 if expected_a_wins else 0), (a, b)
+
+
+def test_the_brief_s_examples_of_the_order():
+    # a changed number is worse than anything else
+    assert verify.choose_attempt([v("numbers"), v("rows+garbled+partial+score")]) == 1
+    # rows come before garbled, which comes before partial, which comes before score
+    assert verify.choose_attempt([v("rows"), v("garbled+partial+score")]) == 1
+    assert verify.choose_attempt([v("garbled"), v("partial+score")]) == 1
+    assert verify.choose_attempt([v("partial"), v("score")]) == 1
+    assert verify.choose_attempt([v("pass", 0.8), v("score", 0.99)]) == 0
+
+
+def test_ties_prefer_usability_then_coverage_then_the_earlier_attempt():
+    assert verify.choose_attempt([v("score", 0.6), v("score", 0.7)]) == 1
+    assert verify.choose_attempt([v("pass", 0.99), v("pass", 0.95)]) == 0
+    assert verify.choose_attempt([v("pass", 0.9, 0.7), v("pass", 0.9, 0.95)]) == 1
+    assert verify.choose_attempt([v("pass", 0.9, 0.95), v("pass", 0.9, 0.7)]) == 0
+    assert verify.choose_attempt([v("pass", 0.9, 0.9), v("pass", 0.9, 0.9)]) == 0  # the earlier attempt keeps ties
+    assert verify.choose_attempt([v("garbled", 0.9), v("garbled", 0.9), v("garbled", 0.9)]) == 0
+    # usability outranks coverage; an unknown value counts as below any known one
+    assert verify.choose_attempt([v("pass", 0.85, 0.99), v("pass", 0.9, 0.5)]) == 1
+    assert verify.choose_attempt([v("pass", None, 0.5), v("pass", 0.1, None)]) == 1
+
+
+def test_the_check_order_beats_usability():
+    assert verify.choose_attempt([v("partial", 0.7), v("numbers", 0.99)]) == 0  # more usable, but a changed number
+    assert verify.choose_attempt([v("numbers", 0.99), v("partial", 0.1)]) == 1
+
+
+def test_an_unverified_attempt_never_replaces_a_verified_one():
+    assert verify.choose_attempt([v("numbers+rows+garbled+partial+score", 0.0), None]) == 0
+    assert verify.choose_attempt([None, v("score", 0.5)]) == 1
+    assert verify.choose_attempt([{"verdict": "unverified"}, v("pass")]) == 1
+    assert verify.choose_attempt([v("pass"), {"verdict": "unverified"}]) == 0
+    assert verify.choose_attempt([None]) == 0 and verify.choose_attempt([None, None]) == 0
+
+
+def test_the_attempt_key_ranks_verified_attempts_above_unverified_ones():
+    assert verify.attempt_key(None) == verify.attempt_key({"verdict": "unverified"}) == (0,)
+    assert verify.attempt_key(v("pass", 0.9, 0.8)) == (1, True, True, True, True, True, 0.9, 0.8)

@@ -15,6 +15,13 @@ LINE_RATIO = 1.2  # line pitch / font size for horizontal text
 COLUMN_PITCH_RATIO = 1.2  # column pitch / font size for vertical CJK text
 MAX_OVERFLOW = 0.30  # allowed overflow of the frame bottom (or column end) at the minimum size
 SIZE_CAP_RATIO = 1.1  # largest font size = source glyph height x 1.1
+MIN_FIT_RATIO = 0.70  # readable: the font size needed is at least this share of the source glyph height
+MAX_GROW = 1.5  # a unit may grow sideways into free space up to this x its original width (length for columns)
+GROW_STEPS = 4  # the smallest growth that makes the text readable is looked for in this many steps
+ORPHAN_LATIN_MAX = 4  # a last line of one Latin word of at most this many characters is an orphan
+ORPHAN_NARROW_STEP = 0.04  # a wrap that left an orphan is retried this much narrower, step by step ...
+ORPHAN_NARROW_MAX = 0.28  # ... up to this much narrower
+ORPHAN_SHRINK_MIN = 0.85  # a smaller size is tried against an orphan down to this share of the best size
 
 NO_LINE_START = set("，。、．,.;:!?！？；：）)]}】」』〉》”’…・ー%")
 VERTICAL_FORMS = {
@@ -132,6 +139,37 @@ def wrap_text(text: str, font, max_w: float, hard_break: bool = False) -> list[s
     return lines
 
 
+def is_orphan(line: str) -> bool:
+    """A last line that is a single CJK glyph (closing punctuation aside) or one short Latin word."""
+    core = line.strip().rstrip("".join(NO_LINE_START)).strip()
+    tokens = [t for t in tokenize(core) if t != " "]
+    if len(tokens) != 1:
+        return False
+    token = tokens[0]
+    return len(token) == 1 if is_cjk(token[0]) else len(token) <= ORPHAN_LATIN_MAX
+
+
+def wrap_avoiding_orphan(text: str, font, max_w: float, hard_break: bool = False) -> list[str]:
+    """`wrap_text`, but a title does not end with a single character or one short word on its own line.
+
+    When the greedy wrap leaves such an orphan the text is wrapped again with a slightly narrower
+    first line (up to 28% narrower), which moves a word or glyph down from the line above; the
+    first narrower wrap with the same number of lines and no orphan wins. When none exists the
+    greedy wrap comes back unchanged (fit_horizontal then tries a smaller size).
+    """
+    lines = wrap_text(text, font, max_w, hard_break=hard_break)
+    if len(lines) < 2 or not is_orphan(lines[-1]):
+        return lines
+    steps = int(round(ORPHAN_NARROW_MAX / ORPHAN_NARROW_STEP))
+    for k in range(1, steps + 1):
+        narrower = wrap_text(text, font, max_w * (1.0 - ORPHAN_NARROW_STEP * k), hard_break=hard_break)
+        if len(narrower) > len(lines):
+            break  # one more line: narrowing further only makes it worse
+        if len(narrower) == len(lines) and not is_orphan(narrower[-1]):
+            return narrower
+    return lines
+
+
 @dataclass
 class HLayout:
     size: int
@@ -164,29 +202,35 @@ def fit_horizontal(
     frame_h: float,
     max_size: float,
     min_size: int = MIN_FONT_PX,
+    avoid_orphan: bool = False,
 ) -> HLayout:
     """Largest font size in [min_size, max_size] whose wrapped text fits (frame_w x frame_h).
 
     If nothing fits at the minimum size the text is laid out at that size and may overflow the
     frame bottom by at most 30% of the frame height (further lines are cut with an ellipsis).
+    With `avoid_orphan` (titles) a wrap that ends in a lone glyph or short word is re-wrapped
+    narrower, and when that fails a size up to 15% smaller without an orphan is preferred.
     """
     hi = max(1, int(math.floor(max_size)))
     lo = min(min_size, hi)
+    wrapper = wrap_avoiding_orphan if avoid_orphan else wrap_text
 
     def attempt(size: int, hard: bool):
         font = font_for_size(size)
-        lines = wrap_text(text, font, frame_w, hard_break=hard)
+        lines = wrapper(text, font, frame_w, hard_break=hard)
         pitch = max(1, int(round(size * LINE_RATIO)))
         widest = max((font.getlength(line) for line in lines), default=0.0)
         return font, lines, pitch, widest
 
-    def fits(size: int) -> bool:
+    def fits(size: int, strict: bool = False) -> bool:
         _, lines, pitch, widest = attempt(size, False)
-        return bool(lines) and widest <= frame_w + 0.5 and len(lines) * pitch <= frame_h + 0.5
+        ok = bool(lines) and widest <= frame_w + 0.5 and len(lines) * pitch <= frame_h + 0.5
+        return ok and not (strict and len(lines) > 1 and is_orphan(lines[-1]))
 
     if not text.strip():
         return HLayout(lo, [], max(1, int(round(lo * LINE_RATIO))), True, False)
 
+    best = None
     if fits(hi):
         best = hi
     elif fits(lo):
@@ -198,7 +242,11 @@ def fit_horizontal(
             else:
                 bad = mid
         best = good
-    else:
+    if best is not None and avoid_orphan and not fits(best, strict=True):
+        # an orphan at the best size: a somewhat smaller size without one is better than the orphan
+        floor = max(lo, int(best * ORPHAN_SHRINK_MIN))
+        best = next((size for size in range(best - 1, floor - 1, -1) if fits(size, strict=True)), best)
+    if best is None:
         font, lines, pitch, _ = attempt(lo, True)
         limit = max(1, int(math.floor(frame_h * (1.0 + MAX_OVERFLOW) / pitch)))
         truncated = len(lines) > limit

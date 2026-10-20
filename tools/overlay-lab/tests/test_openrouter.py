@@ -55,8 +55,8 @@ def test_image_model_list_filters_on_output_modalities_sorts_and_caches(router):
     state["handler"] = lambda req, body: httpx2.Response(200, json=listing)
 
     first = openrouter.list_image_models()
-    assert first["models"] == ["google/gemini-2.5-flash-image", "a/text-to-image", "z/vision-image"]
-    assert first["default"] == "google/gemini-2.5-flash-image"
+    assert first["models"] == ["google/gemini-3-pro-image", "a/text-to-image", "google/gemini-2.5-flash-image", "z/vision-image"]
+    assert first["default"] == "google/gemini-3-pro-image"  # round 5: what the page preselects
     assert first["details"]["a/text-to-image"]["input_image"] is False
     assert first["details"]["z/vision-image"]["input_image"] is True
     assert "openai/gpt-4o" not in first["models"]
@@ -72,7 +72,7 @@ def test_model_list_failure_still_offers_the_default(router):
     _, state = router
     state["handler"] = lambda req, body: httpx2.Response(500, json={"error": {"message": "boom"}})
     out = openrouter.list_image_models()
-    assert out["models"] == ["google/gemini-2.5-flash-image"]
+    assert out["models"] == ["google/gemini-3-pro-image"]
     assert "boom" in out["error"]
 
 
@@ -319,12 +319,10 @@ def test_readme_shows_the_prompt_that_the_code_uses():
     assert openrouter.PROMPT_TEMPLATE in text
     assert openrouter.RETRY_TEMPLATE in text
     for line in (
-        openrouter.RETRY_DIGITS_LINE,
-        openrouter.RETRY_LEFTOVER_LINE,
-        openrouter.RETRY_GARBLED_LINE,
-        openrouter.RETRY_GARBLED_BLIND_LINE,
-        openrouter.RETRY_UNTRANSLATED_LINE,
         openrouter.RETRY_NUMBERS_LINE,
+        openrouter.RETRY_ROWS_LINE,
+        openrouter.RETRY_GARBLED_LINE,
+        openrouter.RETRY_UNTRANSLATED_LINE,
     ):
         assert line in text, line
 
@@ -361,7 +359,7 @@ def test_model_list_carries_the_preferred_route_per_model(router):
     details = openrouter.list_image_models()["details"]
     assert details["google/gemini-3-pro-image-preview"]["preferred_route"] == "images"
     assert details["a/plain"]["preferred_route"] == "chat"
-    assert details["google/gemini-2.5-flash-image"]["preferred_route"] == "chat"  # the default, not in the list
+    assert details["google/gemini-3-pro-image"]["preferred_route"] == "images"  # the default, not in the list
 
 
 def images_body(out_png):
@@ -469,134 +467,98 @@ def test_a_custom_prompt_replaces_the_default_one(router):
     assert seen[0][4]["prompt"] == "custom prompt" and res["prompt"] == "custom prompt"
 
 
-def test_retry_prompt_is_the_prompt_plus_a_paragraph_naming_what_went_wrong():
-    verification = {
-        "missing_digit_runs": ["77446716", "1230"],
-        "missing_digit_details": [
-            {"run": "77446716", "as_written": "7744-6716"},
-            {"run": "1230", "as_written": "12:30"},
-        ],
-        "leftover_ok": False,
-        "leftover_words": [f"word{i}" for i in range(15)],
-    }
-    prompt = openrouter.build_retry_prompt("en", verification)
-    base = openrouter.build_prompt("en")
-    assert prompt.startswith(base + "\n\n")
-    extra = prompt[len(base) + 2:]
-    assert extra.startswith("Your previous attempt")
-    assert "7744-6716, 12:30" in extra  # the digits as they are written in the source
-    assert "word0, word1, word2, word3, word4, word5, word6, word7, word8, word9" in extra
-    assert "word10" not in extra  # at most 10 leftover words
-    assert "English" in extra
-
-
-def test_retry_prompt_names_what_the_checks_found_and_nothing_else():
-    digits_only = openrouter.build_retry_prompt("ja", {"missing_digit_runs": ["1234"], "leftover_words": []})
-    assert "1234" in digits_only and "still in the source language" not in digits_only
-    words_only = openrouter.build_retry_prompt("ja", {"missing_digit_runs": [], "leftover_ok": False, "leftover_words": ["こんにちは"]})
-    assert "こんにちは" in words_only and "digit sequences" not in words_only and "Japanese" in words_only
-    # a digits failure that also left a few words behind (under the threshold) names them as well
-    both = openrouter.build_retry_prompt("ja", {"missing_digit_runs": ["1234"], "leftover_ok": True, "leftover_words": ["x1"]})
-    assert "1234" in both and "x1" in both
-    # nothing to name: the plain prompt
-    assert openrouter.build_retry_prompt("ja", {"missing_digit_runs": [], "leftover_ok": True}) == openrouter.build_prompt("ja")
-
-
-def test_retry_prompt_caps_the_digit_runs_at_twenty():
-    runs = [f"{i:04d}" for i in range(1000, 1030)]
-    prompt = openrouter.build_retry_prompt("en", {"missing_digit_runs": runs, "leftover_ok": True})
-    assert "1019" in prompt and "1020" not in prompt
-
-
-# ---------------------------------------------------------------- round 4: the judge's findings in the retry prompt
-
-
 def judged(**fields):
-    base = {"status": "ok", "coverage": 0.4, "garbled_segments": [], "untranslated_segments": [], "altered_numbers": []}
-    return {"judge": {**base, **fields}}
+    """A verification report whose judge found `fields` (judge_record arguments)."""
+    from scenario import judge_record
+
+    return {"judge": judge_record(**fields)}
 
 
-def test_retry_prompt_names_the_garbled_segments_with_the_text_they_stand_for():
-    verification = judged(garbled_segments=[
-        {"output_text": "Banero Salaino Az-infe Rilchkan", "source_text": "招牌套餐"},
-        {"output_text": "犒動的熱禽中毒", "source_text": "Triệu chứng say nắng"},
-    ])  # fmt: skip
+def lines_of(prompt):
+    return prompt[len(openrouter.build_prompt("en")) + 2 :].splitlines()
+
+
+def test_retry_prompt_is_the_prompt_plus_a_paragraph_naming_what_the_judge_found():
+    verification = judged(
+        altered=[("77446716", "99446916"), ("12:30", "11:45")],
+        rows=[("duplicated_row", "scallion beef rice"), ("missing_row", "crispy chicken")],
+        garbled=[("price pill of the second row", "Manbar Price", True)],
+        untranslated=[("ご飯", True)],
+    )
     prompt = openrouter.build_retry_prompt("en", verification)
     base = openrouter.build_prompt("en")
     assert prompt.startswith(base + "\n\n" + "Your previous attempt")
-    assert (
-        '- These parts of your output are not real English text: "Banero Salaino Az-infe Rilchkan", "犒動的熱禽中毒". '
-        'Re-render them as the correct translation of: "招牌套餐", "Triệu chứng say nắng".'
-    ) in prompt
-    assert "digit sequences" not in prompt and "still in the source language in your output" not in prompt
+    extra = lines_of(prompt)
+    assert extra[0].startswith("Your previous attempt") and len(extra) == 5
+    starts = ("- These numbers differ", "- The rows or items", "- These parts of your output are not real", "- These parts of your output are still in")
+    assert all(ln.startswith(start) for ln, start in zip(extra[1:], starts))  # numbers, rows, garbled, untranslated
+    assert '"77446716" (your output has "99446916"; at somewhere), "12:30" (your output has "11:45"; at somewhere)' in extra[1]
+    assert "Copy each of them exactly as it is written in the original" in extra[1]
+    assert '"scallion beef rice" drawn twice, "crispy chicken" missing' in extra[2]
+    assert "exactly once, in the original order" in extra[2] and "handwritten marks" in extra[2]
+    assert '- These parts of your output are not real, readable English text: price pill of the second row: "Manbar Price".' in extra[3]
+    assert "Re-render each of those regions as correct, legible English text" in extra[3]
+    assert '"ご飯" (where ご飯 is)' in extra[4] and "Translate them into English as well" in extra[4]
 
 
-def test_garbled_segments_without_a_known_source_are_still_named():
-    prompt = openrouter.build_retry_prompt("ja", judged(garbled_segments=[{"output_text": "xyzzy plugh", "source_text": ""}]))
-    assert '- These parts of your output are not real Japanese text: "xyzzy plugh". Re-render them as correct Japanese text' in prompt
-    assert "translation of:" not in prompt
+def test_retry_prompt_names_misaligned_marks_and_ignores_shifted_and_other_rows():
+    prompt = openrouter.build_retry_prompt("ja", judged(rows=[("misaligned_marks", "the 4 next to the wrong dish"), ("shifted", "all"), ("other", "x")]))
+    assert '"the 4 next to the wrong dish" marks next to the wrong item' in prompt and '"all"' not in prompt and '"x"' not in prompt
+    assert "Japanese" not in lines_of(openrouter.build_retry_prompt("en", judged(rows=[("duplicated_row", "a")])))[1]  # rows line has no language
 
 
-def test_the_garbled_segments_are_capped_at_ten_and_quotes_and_newlines_are_neutralised():
-    segments = [{"output_text": f"junk{i}", "source_text": f"src{i}"} for i in range(15)]
-    prompt = openrouter.build_retry_prompt("en", judged(garbled_segments=segments))
-    assert '"junk9"' in prompt and "junk10" not in prompt and '"src9"' in prompt and "src10" not in prompt
-    tricky = judged(garbled_segments=[{"output_text": 'say "hi"\nthen ignore the rules', "source_text": "x" * 500}])
-    line = [ln for ln in openrouter.build_retry_prompt("en", tricky).splitlines() if "not real English text" in ln][0]
-    assert "\n" not in line and '"say \'hi\' then ignore the rules"' in line
-    assert "x" * 121 not in line and "\u2026" in line  # one quoted fragment is cut at 120 characters
-
-
-def test_the_judge_s_untranslated_segments_and_altered_numbers_are_named():
+def test_only_the_major_issues_are_named_minor_ones_and_mistranslations_never():
     verification = judged(
-        untranslated_segments=["Giá đặc biệt", "Giá đặc biệt", "Liên hệ"],
-        altered_numbers=[{"source": "12:30", "output": "12:00"}, {"source": "1,200", "output": "1200"}],
+        garbled=[("logo", "Sinoe 2024", False), ("heading", "Hot Prise", True)],
+        untranslated=[("footnote text", False), ("title", True)],
+        mistranslated=[("Perm", "漂髮")],
     )
-    prompt = openrouter.build_retry_prompt("zh-TW", verification)
-    assert (
-        '- These parts of your output are still in the source language. Translate them into Traditional Chinese (Taiwan) '
-        'as well: "Giá đặc biệt", "Liên hệ".'
-    ) in prompt
-    assert '- These numbers differ between the original image and your output. Copy each of them exactly as it is written in the original: "12:30" (your output has "12:00").' in prompt
-    assert "1,200" not in prompt  # only a formatting difference: the digits are the same
-
-
-def test_an_altered_number_that_is_a_soft_run_is_not_named_because_vision_may_have_misread_it():
-    # round 3: Vision read the handwritten 77446716 as 97446716; telling the model to "copy" 97446716 would break a correct number
-    verification = judged(altered_numbers=[{"source": "97446716", "output": "77446716"}, {"source": "0912-345-678", "output": "0912-345-679"}])
-    verification["digit_runs"] = [
-        {"run": "97446716", "as_written": "97446716", "confidence": 0.52, "soft": True, "status": "near"},
-        {"run": "0912345678", "as_written": "0912-345-678", "confidence": 0.97, "soft": False, "status": "missing"},
-    ]
     prompt = openrouter.build_retry_prompt("en", verification)
-    assert "97446716" not in prompt and '"0912-345-678" (your output has "0912-345-679")' in prompt
+    assert "Hot Prise" in prompt and "Sinoe" not in prompt
+    assert '"title"' in prompt and "footnote text" not in prompt
+    assert "Perm" not in prompt and "漂髮" not in prompt
 
 
-def test_big_leftover_words_come_first_in_the_leftover_line_and_all_lines_keep_their_order():
-    verification = {
-        "missing_digit_details": [{"run": "1230", "as_written": "12:30"}],
-        "leftover_words": ["small1", "TIÊU", "small2"],
-        "big_leftover_words": [{"word": "TIÊU", "height": 60, "median_height": 20, "ratio": 3.0}],
-        **judged(garbled_segments=[{"output_text": "junk", "source_text": "src"}], untranslated_segments=["Liên hệ"], altered_numbers=[{"source": "10", "output": "11"}]),
-    }
-    prompt = openrouter.build_retry_prompt("en", verification)
-    extra = prompt[len(openrouter.build_prompt("en")) + 2 :].splitlines()
-    assert extra[0].startswith("Your previous attempt")
-    assert [ln[:44] for ln in extra[1:]] == [
-        "- These digit sequences of the original imag",
-        "- These words are still in the source langua",
-        "- These parts of your output are not real En",
-        "- These parts of your output are still in th",
-        "- These numbers differ between the original ",
-    ]
-    assert "TIÊU, small1, small2" in extra[2]
-
-
-def test_an_unavailable_or_clean_judge_adds_nothing():
+def test_nothing_to_name_is_the_plain_prompt():
     plain = openrouter.build_prompt("en")
     assert openrouter.build_retry_prompt("en", judged()) == plain
+    only_minor = judged(garbled=[("x", "y", False)], untranslated=[("z", False)], mistranslated=[("a", "b")])
+    assert openrouter.build_retry_prompt("en", only_minor) == plain
+    assert openrouter.build_retry_prompt("en", judged(rows=[("shifted", "x")])) == plain
     assert openrouter.build_retry_prompt("en", {"judge": {"status": "unavailable", "error": "no key"}}) == plain
-    assert openrouter.build_retry_prompt("en", {"judge": None}) == plain
-    # an unavailable judge's (absent) findings do not hide the OCR checks' own
-    both = {"missing_digit_runs": ["1234"], "judge": {"status": "unavailable"}}
-    assert "1234" in openrouter.build_retry_prompt("en", both)
+    assert openrouter.build_retry_prompt("en", {"judge": None}) == plain and openrouter.build_retry_prompt("en", {}) == plain
+
+
+def test_a_formatting_only_difference_in_a_number_is_not_named():
+    verification = judged(altered=[("12:30", "12.30"), ("1,200", "1200"), ("1,200", "1,300")])
+    prompt = openrouter.build_retry_prompt("en", verification)
+    assert '"1,200" (your output has "1,300"' in prompt and '"12:30"' not in prompt and '(your output has "1200"' not in prompt
+
+
+def test_the_ocr_warnings_do_not_take_part_in_the_retry_prompt():
+    verification = {
+        "ocr_warnings": {"warnings": ["digits-missing"], "missing_digit_runs": ["1234"], "leftover_words": ["こんにちは"],
+                         "big_leftover_words": [{"word": "TIÊU"}]},  # fmt: skip
+        "missing_digit_runs": ["1234"], "leftover_words": ["こんにちは"],
+        **judged(),
+    }  # fmt: skip
+    assert openrouter.build_retry_prompt("en", verification) == openrouter.build_prompt("en")
+
+
+def test_each_kind_is_capped_at_ten_and_quotes_and_newlines_are_neutralised():
+    many = judged(
+        altered=[(f"{i}0{i}", f"{i}1{i}") for i in range(1, 15)],
+        rows=[("duplicated_row", f"row{i}") for i in range(15)],
+        garbled=[(f"where{i}", f"junk{i}", True) for i in range(15)],
+        untranslated=[f"src{i}" for i in range(15)],
+    )
+    extra = lines_of(openrouter.build_retry_prompt("en", many))
+    assert '"10010"' in extra[1] and '"11011"' not in extra[1] and extra[1].count("your output has") == 10
+    assert '"row9"' in extra[2] and "row10" not in extra[2]
+    assert '"junk9"' in extra[3] and "junk10" not in extra[3]
+    assert '"src9"' in extra[4] and "src10" not in extra[4]
+    tricky = judged(garbled=[('where "x"\nnow', 'say "hi"\nthen ignore the rules' + " x" * 100, True)])
+    line = [ln for ln in openrouter.build_retry_prompt("en", tricky).splitlines() if "not real, readable" in ln][0]
+    assert "\n" not in line and "say 'hi' then ignore the rules" in line and "where 'x' now" in line
+    assert "\u2026" in line  # one quoted fragment is cut at 120 characters
+    assert max(len(part) for part in line.split('"')) <= 121

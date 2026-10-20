@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Overlay Lab</title>
+<link rel="icon" href="data:,">
 <style>
   :root {
     --bg: #f6f5f1; --panel: #ffffff; --ink: #1d1f23; --muted: #646a73; --line: #dcd9d0;
@@ -49,7 +50,7 @@
   .mrow { display: flex; gap: 8px; align-items: center; font-weight: 500; font-size: 13px; padding: 1px 2px; }
   .mrow.off { opacity: .5; }
   .mtag { font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 99px; padding: 0 6px; white-space: nowrap; }
-  #model-count { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  #model-count { font-size: 12px; color: var(--muted); margin-top: 4px; overflow-wrap: anywhere; }
   #results { margin-top: 18px; }
   .share { padding: 10px 14px; margin-bottom: 14px; display: grid; gap: 6px; }
   .share .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
@@ -59,17 +60,17 @@
   .col { padding: 12px; min-width: 320px; flex: 1 0 320px; max-width: 560px; }
   .col h2 { margin: 0 0 8px; font-size: 15px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .col h2 .mname { word-break: break-all; }
+  .job { margin-top: 26px; }
+  .job > h2 { margin: 0 0 8px; font-size: 17px; overflow-wrap: anywhere; }
   .pill { font-size: 12px; padding: 1px 8px; border-radius: 99px; border: 1px solid var(--line); color: var(--muted); font-weight: 500; }
   .pill.done { color: var(--ok); border-color: var(--ok); }
   .pill.running, .pill.pending { color: var(--warn); border-color: var(--warn); }
   .pill.error { color: var(--err); border-color: var(--err); }
   .verdict { font: 600 12px ui-monospace, SFMono-Regular, Menlo, monospace; padding: 1px 9px; border-radius: 99px; border: 1px solid; white-space: nowrap; }
   .v-pass { color: var(--ok); background: var(--ok-bg); border-color: var(--ok); }
-  .v-partial { color: var(--warn); background: var(--warn-bg); border-color: var(--warn); }
-  .v-garbled, .v-garbled-partial { color: var(--err); background: var(--err-bg); border-color: var(--err); border-style: dashed; }
-  .v-digits-changed, .v-digits-changed-partial, .v-digits-changed-garbled, .v-digits-changed-garbled-partial { color: var(--err); background: var(--err-bg); border-color: var(--err); }
-  .v-garbled-partial, .v-digits-changed-partial { border-width: 2px; }
-  .v-digits-changed-garbled, .v-digits-changed-garbled-partial { border-width: 3px; }
+  .v-fail { color: var(--err); background: var(--err-bg); border-color: var(--err); }
+  .v-fail.n2 { border-width: 2px; }
+  .v-fail.n3 { border-width: 3px; }
   .v-unverified, .v-none { color: var(--muted); background: var(--code); border-color: var(--line); }
   .imgbox { position: relative; border: 1px solid var(--line); border-radius: 6px; overflow: hidden;
             background: repeating-conic-gradient(var(--code) 0 25%, transparent 0 50%) 0 0 / 16px 16px; }
@@ -90,31 +91,43 @@
   pre { margin: 10px 0 0; padding: 10px; background: var(--code); border-radius: 6px; overflow: auto;
         max-height: 520px; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word; }
   .toggle { margin-top: 8px; font-size: 13px; }
-  .judge { margin-top: 8px; }
   .seg { margin-top: 8px; font-size: 13px; }
   .seg ul { margin: 4px 0 0; padding-left: 18px; }
   .seg .src { color: var(--muted); }
+  .seg .major { color: var(--err); font-weight: 600; }
   .softrun { color: var(--warn); }
   #summary { margin-bottom: 14px; padding: 10px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
   .tablewrap { overflow-x: auto; max-width: 100%; }
   .summary-table { border-collapse: collapse; width: 100%; margin-top: 8px; font-size: 13px; }
   .summary-table th, .summary-table td { text-align: left; padding: 4px 10px 4px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
-  .summary-table th { color: var(--muted); font-weight: 600; }
+  .summary-table th { color: var(--muted); font-weight: 600; white-space: nowrap; }
+  .summary-table td.num, .summary-table th.num { text-align: right; white-space: nowrap; }
+  .summary-table tr.total td { font-weight: 600; border-bottom: 0; }
   .summary-table .vlist { display: flex; gap: 4px; flex-wrap: wrap; }
-  .runs-table { border-collapse: collapse; font-size: 12px; margin-top: 6px; }
-  .runs-table th, .runs-table td { text-align: left; padding: 2px 10px 2px 0; }
+  @media (max-width: 640px) {  /* a phone: one block per row, so the costs are not behind a sideways scroll */
+    .summary-table, .summary-table tbody, .summary-table tr, .summary-table td { display: block; }
+    .summary-table thead { display: none; }
+    .summary-table tr { padding: 6px 0; border-bottom: 1px solid var(--line); }
+    .summary-table td { border: 0; padding: 1px 0; text-align: left !important; white-space: normal !important; }
+    .summary-table td:empty { display: none; }
+    .summary-table td[data-label]::before { content: attr(data-label) "　"; color: var(--muted); }
+  }
+  .runs-table, .units-table { border-collapse: collapse; font-size: 12px; margin-top: 6px; }
+  .runs-table th, .runs-table td, .units-table th, .units-table td { text-align: left; padding: 2px 10px 2px 0; white-space: nowrap; }
+  .units-table td.txt { white-space: normal; min-width: 120px; }
   .empty { padding: 28px 8px; text-align: center; color: var(--muted); font-size: 13px; }
 </style>
 </head>
-<body data-default-model="{{ default_image_model }}" data-max-models="{{ max_models }}">
+<body data-default-model="{{ default_image_model }}" data-max-models="{{ max_models }}" data-max-batch="{{ max_batch }}">
 <header>
   <h1>Overlay Lab{% if mock %}<span class="badge">LAB_MOCK=1</span>{% endif %}</h1>
-  <p class="sub">圖片翻譯 overlay 的離線對照實驗：影像模型整張重畫（Mode B，主線，可同時比較多個模型、每個模型連跑多次，並自動驗證數字、漏翻與亂碼）對 hybrid（Mode A，Vision 字框 + Claude 分組 + inpaint + 重繪，選用）。不是正式服務。</p>
+  <p class="sub">圖片翻譯 overlay 的離線對照實驗：一次最多 {{ max_batch }} 張圖，每張圖各跑 Mode A（hybrid：Vision 字框 + Claude 規劃 + 乾淨擦除 + 重繪，可重試一次）與 Mode B（影像模型整張重畫，可多模型、每個模型連跑多次）；每張輸出都由 Claude 看著原圖與輸出圖審查（數字、表格列、亂碼、漏翻、可用度）。不是正式服務。</p>
 </header>
 <main>
   <form id="form">
-    <label>圖片（jpg / png / webp，最大 {{ max_upload_mb }} MB）
-      <input type="file" id="file" accept="image/jpeg,image/png,image/webp" required>
+    <label>圖片（1–{{ max_batch }} 張；jpg / png / webp，每張最大 {{ max_upload_mb }} MB）
+      <input type="file" id="file" accept="image/jpeg,image/png,image/webp" multiple required>
+      <span class="hint">一次送出就是一個批次：每張圖一個 job、一個區塊，上方有批次彙總表。</span>
     </label>
     <label>目標語言
       <select id="lang">
@@ -122,8 +135,9 @@
       </select>
     </label>
     <div>
-      <label class="check"><input type="checkbox" id="mode-b" checked> Mode B（影像模型，主線）</label>
-      <label class="check"><input type="checkbox" id="mode-a"> Mode A（hybrid，{{ claude_model }}，選用）</label>
+      <label class="check"><input type="checkbox" id="mode-a" checked> Mode A（hybrid，{{ claude_model }}）</label>
+      <label class="check"><input type="checkbox" id="mode-a-retry"{% if mode_a_retry %} checked{% endif %}> Mode A 重試一次（帶著 judge 的發現再請 Claude 規劃一次）</label>
+      <label class="check"><input type="checkbox" id="mode-b" checked> Mode B（影像模型）</label>
     </div>
     <fieldset class="models" id="models-box">
       <legend>Mode B 影像模型（最多 {{ max_models }} 個，同時平行執行）</legend>
@@ -142,19 +156,18 @@
       <select id="runs">
         {% for n in range(1, max_runs + 1) %}<option value="{{ n }}"{% if n == 1 %} selected{% endif %}>{{ n }}</option>{% endfor %}
       </select>
-      <span class="hint">每次都是獨立的一輪（各自的重試、驗證與 judge），每輪一欄，並算出各模型的通過率。同時最多 {{ max_generations }} 個生成在跑，其餘排隊；429 會等 20 秒再試一次。費用大約是 N 倍。</span>
+      <span class="hint">每次都是獨立的一輪（各自的重試、驗證與 judge），每輪一欄，並算出各模型的通過率。同時最多 {{ max_generations }} 個生成在跑、最多 {{ max_claude }} 個 Claude 呼叫在跑（規劃與 judge 共用），其餘排隊；429 會等 20 秒再試一次。費用大約是 N 倍。</span>
     </label>
-    <label class="check"><input type="checkbox" id="judge" checked> 語意審查（Claude judge：{{ judge_model }}，每次嘗試一次呼叫）</label>
+    <label class="check"><input type="checkbox" id="judge" checked> 視覺審查（Claude judge：{{ judge_model }}，每次嘗試一次呼叫；沒開就沒有判定）</label>
     <label class="check"><input type="checkbox" id="details"> 顯示驗證細節（展開面板，並附上輸出圖的 OCR 全文）</label>
     <button type="submit" id="submit">開始</button>
     <div id="status" role="status"></div>
   </form>
 
   <section id="results" hidden>
-    <div class="share" id="share"></div>
     <div id="summary" hidden></div>
-    <div class="scroller"><div class="grid" id="grid"></div></div>
-    <details id="units-panel" hidden><summary>Mode A units（JSON）</summary><pre id="units-json"></pre></details>
+    <div class="share" id="batch-share"></div>
+    <div id="jobs"></div>
   </section>
 </main>
 
@@ -173,9 +186,11 @@
   const SVGNS = 'http://www.w3.org/2000/svg';
   const DEFAULT_MODEL = document.body.dataset.defaultModel;
   const MAX_MODELS = parseInt(document.body.dataset.maxModels, 10) || 4;
+  const MAX_BATCH = parseInt(document.body.dataset.maxBatch, 10) || 4;
   const fmtMs = (ms) => ms == null ? '—' : (ms >= 1000 ? (ms / 1000).toFixed(1) + ' s' : ms + ' ms');
   const fmtUsd = (v) => v == null ? '—' : '$' + (v < 0.01 ? v.toFixed(5) : v.toFixed(4));
-  let showFrames = false, timer = null, startedAt = 0, gridJob = null;
+  const fmtScore = (v) => v == null ? '—' : (Math.floor(v * 100) / 100).toFixed(2);  // 0.996 shows as 0.99, never as a rounded-up 1.00
+  let timer = null, startedAt = 0;
 
   // ------------------------------------------------------------ model picker (up to MAX_MODELS)
   const picker = { all: [], details: {}, selected: [DEFAULT_MODEL] };
@@ -227,30 +242,127 @@
   function dlLink(job, name, label) { return el('a', { href: url('files/' + job.job_id + '/' + name + '?dl=1') }, label); }
   function imgBox(src) { const img = el('img', { src: url(src), alt: '' }); return el('div', { class: 'imgbox' }, img); }
 
-  const VERDICTS = {
-    'pass': ['pass', '數字、語言與語意都過關'],
-    'partial': ['partial', '有來源語言的字沒翻掉（比例超過門檻，或有一個大字沒翻）'],
-    'garbled': ['garbled', '輸出裡有亂碼（不是真的字），或 judge 的完成度低於 0.90'],
-    'garbled+partial': ['garbled+partial', '有亂碼，而且還有漏翻'],
-    'digits-changed': ['digits-changed', '來源圖上（高信心）的數字有被改掉或遺失'],
-    'digits-changed+partial': ['digits-changed+partial', '數字被改，而且還有漏翻'],
-    'digits-changed+garbled': ['digits-changed+garbled', '數字被改，而且有亂碼'],
-    'digits-changed+garbled+partial': ['digits-changed+garbled+partial', '數字被改、有亂碼、還有漏翻'],
-    'unverified': ['unverified', '驗證本身沒跑成功（看驗證錯誤）'],
+  // ------------------------------------------------------------ verdicts
+  const CHECK_TEXT = {
+    numbers: 'numbers：judge 看到價格、日期、時間、電話或數量被改',
+    rows: 'rows：表格／清單的列重複、漏掉，或手寫標記錯位到別的項目旁',
+    garbled: 'garbled：有重要的字是亂碼、讀不出來或被遮住',
+    partial: 'partial：有重要的字（標題、整欄內文）還是來源語言',
+    score: 'score：可用度低於門檻',
   };
-  const covText = (c) => (Math.floor(c * 100) / 100).toFixed(2);  // 0.996 shows as 0.99, never as a rounded-up 1.00
-  // the verdict, plus the judge's coverage when it is below 1 (e.g. "pass · 0.97")
-  function verdictBadge(verdict, pending, coverage) {
-    if (!verdict) return el('span', { class: 'verdict v-none', title: pending ? '驗證進行中' : '沒有驗證' }, pending ? '驗證中…' : '未驗證');
-    const [text, tip] = VERDICTS[verdict] || [verdict, ''];
-    const cov = typeof coverage === 'number' && coverage < 1 ? ' · ' + covText(coverage) : '';
-    return el('span', { class: 'verdict v-' + verdict.replace(/[^a-z]+/g, '-'), title: tip + (cov ? '（judge 完成度 ' + covText(coverage) + '）' : '') }, text + cov);
+  function verdictTip(verdict) {
+    if (verdict === 'pass') return '五項檢查都過：數字、表格列、文字清晰度、完整翻譯、可用度';
+    if (verdict === 'unverified') return 'judge 沒有給出判定（沒開、沒有金鑰、API 錯誤或沒有輸出圖）；圖照常顯示，不會重試';
+    return verdict.split('+').map((c) => CHECK_TEXT[c] || c).join('\n');
   }
-  const coverageOf = (t) => (t && t.verification && typeof t.verification.coverage === 'number') ? t.verification.coverage : null;
+  // the verdict, plus the judge's usability when there is one (e.g. "pass · 0.97")
+  function verdictBadge(verdict, pending, usability) {
+    if (!verdict) return el('span', { class: 'verdict v-none', title: pending ? '審查進行中' : '沒有審查' }, pending ? '審查中…' : '未審查');
+    const n = verdict === 'pass' || verdict === 'unverified' ? 0 : verdict.split('+').length;
+    const cls = verdict === 'pass' ? 'v-pass' : verdict === 'unverified' ? 'v-unverified' : 'v-fail n' + Math.min(n, 3);
+    const score = typeof usability === 'number' ? ' · ' + fmtScore(usability) : '';
+    return el('span', { class: 'verdict ' + cls, title: verdictTip(verdict) + (score ? '\n可用度 ' + fmtScore(usability) : '') }, verdict + score);
+  }
+  const usabilityOf = (t) => (t && t.verification && typeof t.verification.usability === 'number') ? t.verification.usability : null;
+
+  // ------------------------------------------------------------ the verification panel of one attempt
+  const SEG_STRUCT = { duplicated_row: '列重複', missing_row: '列漏掉', shifted: '位置移動', misaligned_marks: '標記錯位', other: '其他' };
+  const WARN_TEXT = {
+    'digits-missing': '來源的（高信心）數字在輸出 OCR 裡找不到',
+    'digits-unverified': '低信心（手寫）的數字在輸出 OCR 裡找不到，請用肉眼確認',
+    'leftover-ratio': '輸出 OCR 裡來源語言的字比例超過門檻',
+    'leftover-big-glyph': '輸出 OCR 裡有一個很大的字還是來源語言',
+  };
+
+  function ocrWarningsPanel(v) {
+    const w = v.ocr_warnings || {};
+    const codes = w.warnings || [];
+    const d = el('details', { class: 'ocrwarn' });
+    d.append(el('summary', {}, 'OCR 警告（' + (w.status === 'ok' ? codes.length : '沒有') + '；只提醒，不影響判定）'));
+    if (w.status !== 'ok') { d.append(el('div', { class: 'note' }, 'Vision 沒跑成功：' + (w.error || '沒有 OCR 結果') + '——沒有 OCR 警告可看，判定不受影響。')); return d; }
+    d.append(el('div', { class: 'hint' }, 'Vision 會把很小的字、手寫字讀錯，所以這些檢查只當提示：判定只看 judge 看圖的結果。'));
+    if (codes.length) d.append(el('ul', { class: 'note' }, codes.map((c) => el('li', {}, WARN_TEXT[c] || c))));
+    else d.append(el('div', { class: 'hint' }, 'OCR 沒有發現問題。'));
+    const dl = el('dl');
+    row(dl, '來源語言', (w.source_language || '（無法判斷）') + (w.source_language_method ? '（' + (w.source_language_method === 'detected' ? 'Vision 偵測' : '文字 script 推斷') + '）' : '') + ' → ' + v.target_language);
+    const soft = w.soft_digit_runs || 0;
+    row(dl, '數字', w.digits_ok ? `沒有遺失（來源有 ${w.source_digit_runs} 組 2 位以上的數字${soft ? `，其中 ${soft} 組是低信心的手寫／小字` : ''}）` : `找不到 ${(w.missing_digit_runs || []).length} 組 / 共 ${w.source_digit_runs} 組`);
+    if (!w.digits_ok) row(dl, '缺少的數字', el('span', { class: 'words' }, (w.missing_digit_details || []).map((m) => m.as_written).join('、') || (w.missing_digit_runs || []).join('、')));
+    if (w.unverified_digit_runs && w.unverified_digit_runs.length) {
+      row(dl, '無法確認的數字', el('span', { class: 'words softrun' }, '⚠ ' + (w.unverified_digit_details || []).map((m) => `${m.as_written}（信心 ${m.confidence}）`).join('、')));
+    }
+    row(dl, '殘留比例', `${(w.leftover_ratio * 100).toFixed(1)}%（門檻 ${(v.thresholds.leftover_ratio_max * 100).toFixed(0)}%；${w.leftover_count} / ${w.source_language_words} 個來源語言的字）`);
+    if (w.leftover_words && w.leftover_words.length) row(dl, '殘留的字', el('span', { class: 'words' }, w.leftover_words.join('、')));
+    if (w.big_leftover_words && w.big_leftover_words.length) {
+      row(dl, '大字沒翻', el('span', { class: 'words' }, w.big_leftover_words.map((b) => `「${b.word}」高 ${b.height}px，是輸出字高中位數 ${b.median_height}px 的 ${b.ratio} 倍`).join('；')));
+    }
+    d.append(dl);
+    if (w.digit_runs && w.digit_runs.length) {
+      const statusText = { ok: '找到', near: '找到（差 1 位）', unverified: '沒找到（低信心，只提醒）', missing: '沒找到' };
+      const table = el('table', { class: 'runs-table' }, el('thead', {}, el('tr', {}, ['數字', 'OCR 信心', '類型', '結果'].map((h) => el('th', {}, h)))),
+        el('tbody', {}, w.digit_runs.map((r) => el('tr', {}, el('td', {}, r.as_written), el('td', {}, String(r.confidence)), el('td', {}, r.soft ? '軟（< ' + v.thresholds.soft_confidence_max + '）' : '硬'),
+          el('td', {}, (statusText[r.status] || r.status) + (r.matched ? '：' + r.matched : ''))))));
+      d.append(el('details', {}, el('summary', {}, '數字明細（' + w.digit_runs.length + ' 組）'), table));
+    }
+    if (w.output_text != null) d.append(el('details', {}, el('summary', {}, '輸出圖的 OCR 全文'), el('pre', {}, w.output_text || '（沒有辨識到文字）')));
+    return d;
+  }
+
+  function verificationPanel(job, b, t, open) {
+    const v = t.verification;
+    const d = el('details', { class: 'vdetail' });
+    if (open) d.open = true;
+    d.append(el('summary', {}, '驗證細節'));
+    if (!v) {
+      d.append(el('div', { class: 'note' }, t.verify_error ? '驗證沒跑成功：' + t.verify_error : (b.status === 'running' ? '驗證進行中…' : '沒有驗證結果')));
+      return d;
+    }
+    const j = v.judge;
+    const dl = el('dl');
+    row(dl, '判定', verdictBadge(v.verdict, false, v.usability));
+    if (v.checks) {
+      const c = v.checks;
+      const mark = (ok) => ok ? '過' : '沒過';
+      row(dl, 'numbers', `${mark(c.numbers.ok)}（${c.numbers.count} 個被改的數字）`);
+      row(dl, 'rows', `${mark(c.rows.ok)}（${c.rows.count} 個列問題）`);
+      row(dl, 'garbled', `${mark(c.garbled.ok)}（${c.garbled.count} 處重要的文字讀不出來）`);
+      row(dl, 'partial', `${mark(c.partial.ok)}（${c.partial.count} 處重要的文字沒翻）`);
+      row(dl, 'score', `${mark(c.score.ok)}（可用度 ${fmtScore(c.score.usability)}，門檻 ${fmtScore(c.score.min)}）`);
+      row(dl, '完成度 coverage', fmtScore(v.coverage) + '（只顯示，不影響判定，用來比較）');
+    }
+    if (j && j.status === 'ok') {
+      row(dl, 'judge', `${j.served_model || j.model}　${fmtMs(j.elapsed_ms)}　${j.cost_usd == null ? '（未知模型，只有 tokens）' : fmtUsd(j.cost_usd)}　${j.input_tokens} / ${j.output_tokens} tokens`);
+      row(dl, 'judge 摘要', j.summary);
+    } else if (j) {
+      row(dl, '視覺審查', el('span', { class: 'softrun' }, 'judge: ' + (j.status === 'skipped' ? 'skipped（' + (j.note || '') + '）' : 'unavailable' + (j.error ? '：' + j.error : '')) + '——沒有判定（unverified）'));
+    } else {
+      row(dl, '視覺審查', '沒有開（沒有判定）');
+    }
+    row(dl, '驗證耗時', fmtMs(t.verify_ms));
+    d.append(dl);
+    if (v.note) d.append(el('div', { class: 'note' }, v.note));
+    if (j && j.status === 'ok') {
+      const seg = (title, items, fmt) => (items && items.length)
+        ? el('div', { class: 'seg' }, el('strong', {}, title + '（' + items.length + '）'), el('ul', {}, items.map((x) => el('li', {}, fmt(x))))) : null;
+      const majorTag = (x) => x.major ? el('span', { class: 'major' }, '［重要］') : el('span', { class: 'src' }, '［次要］');
+      const lists = [
+        seg('文字亂碼／讀不出來', j.legibility_issues, (x) => [majorTag(x), el('span', {}, ' ' + (x.where || '') + (x.output_text ? '：「' + x.output_text + '」' : '')), x.problem ? el('span', { class: 'src' }, '　' + x.problem) : null]),
+        seg('表格／清單的結構問題', j.structure_issues, (x) => [el('span', { class: ['duplicated_row', 'missing_row', 'misaligned_marks'].includes(x.type) ? 'major' : 'src' }, '［' + (SEG_STRUCT[x.type] || x.type) + '］'), el('span', {}, ' ' + x.detail)]),
+        seg('數字被改', j.altered_numbers, (x) => `原圖 ${x.source} → 輸出 ${x.output}${x.where ? '（' + x.where + '）' : ''}`),
+        seg('沒翻（仍是來源語言）', j.untranslated, (x) => [majorTag(x), el('span', {}, ' 「' + x.text + '」' + (x.where ? '（' + x.where + '）' : ''))]),
+        seg('翻錯（意思不同，不影響判定）', j.mistranslated, (x) => [el('span', {}, '「' + x.output_text + '」'), x.source_text ? el('span', { class: 'src' }, ' ← 原文「' + x.source_text + '」') : null, x.problem ? el('span', { class: 'src' }, '　' + x.problem) : null]),
+      ].filter(Boolean);  // append(null) would print the word "null"
+      lists.forEach((n) => d.append(n));
+      if (!lists.length) d.append(el('div', { class: 'hint' }, 'judge 沒有列出任何問題。'));
+    }
+    d.append(ocrWarningsPanel(v));
+    if (t.verification_file) d.append(el('div', { class: 'links' }, dlLink(job, t.verification_file, '下載驗證 JSON')));
+    return d;
+  }
 
   // ------------------------------------------------------------ columns
-  function renderOriginal(job) {
-    const c = $('col-orig'); c.replaceChildren();
+  function renderOriginal(job, c, ctx) {
+    c.replaceChildren();
     c.append(el('h2', {}, '原圖'));
     const box = imgBox(job.image.url);
     c.append(box);
@@ -260,7 +372,7 @@
       const [pw, ph] = a.page || [job.image.width, job.image.height];
       svg.setAttribute('viewBox', `0 0 ${pw} ${ph}`);
       svg.setAttribute('preserveAspectRatio', 'none');
-      svg.style.display = showFrames ? '' : 'none';
+      svg.style.display = ctx.showFrames ? '' : 'none';
       const colors = { translated: '#1f6fe0', kept: '#1f9a50', skipped: '#999' };
       for (const u of a.units) {
         const poly = document.createElementNS(SVGNS, 'polygon');
@@ -277,39 +389,76 @@
       }
       box.append(svg);
       const cb = el('input', { type: 'checkbox' });
-      cb.checked = showFrames;
-      cb.addEventListener('change', () => { showFrames = cb.checked; svg.style.display = showFrames ? '' : 'none'; });
+      cb.checked = ctx.showFrames;
+      cb.addEventListener('change', () => { ctx.showFrames = cb.checked; svg.style.display = ctx.showFrames ? '' : 'none'; });
       c.append(el('label', { class: 'check toggle' }, cb, '疊上 Mode A 的 unit 框（藍：翻譯／綠：保留／灰：略過）'));
     }
     const dl = el('dl'); row(dl, '尺寸', job.image.width + ' × ' + job.image.height + ' px'); row(dl, '目標語言', job.params.target_lang);
     c.append(dl);
   }
 
-  function renderA(job) {
-    const c = $('col-a'); c.replaceChildren();
+  function unitsTable(units) {
+    const head = ['id', '動作', '角色', '重要性', '擦除', '用字', '字級（比例）', '長出'].map((h) => el('th', {}, h));
+    const body = units.map((u) => {
+      const action = u.action === 'skipped' ? 'skipped: ' + (u.skip_reason || '') : u.action;
+      return el('tr', {},
+        el('td', {}, u.id), el('td', {}, action), el('td', {}, u.role), el('td', {}, u.importance || ''),
+        el('td', {}, u.erase_method || '—'), el('td', {}, u.text_used || '—'),
+        el('td', {}, u.font_size ? u.font_size + ' px（' + (u.fit_ratio != null ? u.fit_ratio : '—') + (u.readable === false ? '，低於可讀門檻' : '') + '）' : '—'),
+        el('td', {}, u.grow && (u.grow[0] || u.grow[1]) ? u.grow.join(' / ') + ' px' : '—'));
+    });
+    return el('table', { class: 'units-table' }, el('thead', {}, el('tr', {}, head)), el('tbody', {}, body));
+  }
+
+  function countBy(units, key, value) { return units.filter((u) => u[key] === value).length; }
+
+  function aAttemptBlock(job, a, t) {
+    const d = el('details', { class: 'attempt' });
+    d.append(el('summary', {}, `嘗試 ${t.n}（${t.selected ? '採用' : '未採用'}）　`, verdictBadge(t.verdict, false, usabilityOf(t)), `　${fmtMs(t.elapsed_ms)}　${fmtUsd(t.cost_usd)}`));
+    d.append(imgBox('files/' + job.job_id + '/' + t.output));
+    if (t.retry_feedback) d.append(el('details', {}, el('summary', {}, '這次多送給 Claude 的段落（judge 的發現）'), el('pre', {}, t.retry_feedback)));
+    d.append(verificationPanel(job, { status: a.status }, t, false));
+    d.append(el('div', { class: 'links' }, dlLink(job, t.output, '下載 PNG'), t.units_file ? dlLink(job, t.units_file, '下載 units JSON') : null));
+    return d;
+  }
+
+  function renderA(job, c) {
+    c.replaceChildren();
     const a = job.mode_a;
-    c.append(el('h2', {}, 'Mode A', pill(a.status)));
-    if (a.output) c.append(imgBox('files/' + job.job_id + '/' + a.output + '?v=' + (a.elapsed_ms || 0)));
+    const attempts = a.attempts || [];
+    const main = attempts.find((t) => t.selected) || attempts[0];
+    c.append(el('h2', {}, 'Mode A', pill(a.status), a.status === 'done' ? verdictBadge(a.verdict, false, a.usability) : null));
+    if (a.output) c.append(imgBox('files/' + job.job_id + '/' + a.output));
     else if (a.status !== 'error') c.append(el('div', { class: 'empty' }, '處理中…'));
     if (a.status === 'done') {
+      const units = a.units || [];
       const dl = el('dl');
-      row(dl, '總耗時', fmtMs(a.elapsed_ms));
+      row(dl, '總耗時', fmtMs(a.elapsed_ms) + (attempts.length > 1 ? '（含重試）' : ''));
       row(dl, 'Vision', fmtMs(a.vision_ms));
-      row(dl, 'Claude', fmtMs(a.claude_ms));
+      row(dl, 'Claude 規劃', fmtMs(a.claude_ms));
       row(dl, 'erase / render', fmtMs(a.erase_ms) + ' / ' + fmtMs(a.render_ms));
-      row(dl, 'tokens (in / out)', a.tokens.input + ' / ' + a.tokens.output);
-      row(dl, '估計費用', a.cost_usd == null ? '（未知模型，只顯示 tokens）' : fmtUsd(a.cost_usd));
+      row(dl, '審查耗時', fmtMs(a.verify_ms));
+      row(dl, 'tokens (in / out)', a.tokens.input + ' / ' + a.tokens.output + (attempts.length > 1 ? '（兩次規劃合計）' : ''));
+      row(dl, '費用（Anthropic 額度）', a.total_cost_usd == null ? '（未知模型，只顯示 tokens）' : fmtUsd(a.total_cost_usd) + '（規劃 ' + fmtUsd(a.cost_usd) + ' + judge ' + fmtUsd(a.judge_cost_usd) + '）');
       row(dl, 'units', `${a.translated_count} 翻譯 / ${a.unit_count} 共 / ${a.word_count} 字`);
+      row(dl, '擦除方法', `flat ${countBy(units, 'erase_method', 'flat')} 個 / inpaint ${countBy(units, 'erase_method', 'inpaint')} 個`);
+      row(dl, '用 short 的 unit', countBy(units, 'text_used', 'short') + ' 個');
+      const tooSmall = units.filter((u) => u.skip_reason === 'too small').length;
+      if (tooSmall) row(dl, '太小而略過', tooSmall + ' 個次要 unit（保持原樣）');
       row(dl, '模型', a.served_model && a.served_model !== a.model ? `${a.model}（實際：${a.served_model}）` : a.model);
       row(dl, 'fallback 形式', a.fallback_form);
+      if (attempts.length > 1) row(dl, '自動重試', `嘗試 1 是 ${attempts[0].verdict || '—'}，已重試；採用嘗試 ${a.selected_attempt}`);
       c.append(dl);
-      const links = el('div', { class: 'links' }, dlLink(job, a.output, '下載 PNG'), dlLink(job, a.erased, '下載僅擦除版'));
-      c.append(links);
+      c.append(el('div', { class: 'links' }, dlLink(job, a.output, '下載 PNG'), dlLink(job, a.erased, '下載僅擦除版'), a.units_file ? dlLink(job, a.units_file, '下載 units JSON') : null));
       if (a.warnings && a.warnings.length) c.append(el('div', { class: 'note' }, '提醒', el('ul', {}, a.warnings.map((w) => el('li', {}, w)))));
-      const over = (a.units || []).filter((u) => u.overflowed).length;
-      if (over) c.append(el('div', { class: 'note' }, over + ' 個 unit 超出框（見 JSON 面板的 overflowed）'));
+      const over = units.filter((u) => u.overflowed).length;
+      if (over) c.append(el('div', { class: 'note' }, over + ' 個 unit 超出框（見 units 表的字級與 JSON 面板的 overflowed）'));
+      if (main) c.append(verificationPanel(job, a, main, job.params.verify_details));
+      if (units.length) c.append(el('details', {}, el('summary', {}, 'Mode A 每個 unit（擦除方法、用字、字級）'), unitsTable(units)));
+      for (const t of attempts) if (!t.selected) c.append(aAttemptBlock(job, a, t));
     }
     addErr(c, a.error);
+    addErr(c, a.retry_error ? 'Mode A 自動重試失敗（沿用嘗試 1）：' + a.retry_error : null);
   }
 
   function sizeNote(b, t) {
@@ -320,78 +469,9 @@
     return b.resolution_requested + '（未套用）';
   }
 
-  // the checks of one attempt: missing digit runs, leftover words, ratio
-  function verificationPanel(job, b, t, open) {
-    const v = t.verification;
-    const d = el('details', { class: 'vdetail' });
-    if (open) d.open = true;
-    d.append(el('summary', {}, '驗證細節'));
-    if (!v) {
-      d.append(el('div', { class: 'note' }, t.verify_error ? '驗證沒跑成功：' + t.verify_error : (b.status === 'running' ? '驗證進行中…' : '沒有驗證結果')));
-      return d;
-    }
-    const dl = el('dl');
-    row(dl, '判定', verdictBadge(v.verdict, false, v.coverage));
-    row(dl, '來源語言', (v.source_language || '（無法判斷）') + (v.source_language_method ? '（' + (v.source_language_method === 'detected' ? 'Vision 偵測' : '文字 script 推斷') + '）' : '') + ' → ' + v.target_language);
-    const soft = v.soft_digit_runs || 0;
-    row(dl, '數字', v.digits_ok ? `沒有遺失（來源有 ${v.source_digit_runs} 組 2 位以上的數字${soft ? `，其中 ${soft} 組是低信心的手寫／小字` : ''}）` : `遺失或被改 ${v.missing_digit_runs.length} 組 / 共 ${v.source_digit_runs} 組`);
-    if (!v.digits_ok) {
-      row(dl, '缺少的數字', el('span', { class: 'words' }, (v.missing_digit_details || []).map((m) => m.as_written).join('、') || v.missing_digit_runs.join('、')));
-    }
-    if (v.unverified_digit_runs && v.unverified_digit_runs.length) {
-      row(dl, '無法確認的數字', el('span', { class: 'words softrun', title: '來源圖的 OCR 信心低於 ' + v.thresholds.soft_confidence_max + '（手寫或很小的字），Vision 可能讀錯；不計入判定，請用肉眼確認' },
-        '⚠ ' + (v.unverified_digit_details || []).map((m) => `${m.as_written}（信心 ${m.confidence}）`).join('、')));
-    }
-    row(dl, '殘留比例', `${(v.leftover_ratio * 100).toFixed(1)}%（門檻 ${(v.thresholds.leftover_ratio_max * 100).toFixed(0)}%；${v.leftover_count} / ${v.source_language_words} 個來源語言的字）`);
-    if (v.leftover_words && v.leftover_words.length) row(dl, '殘留的字', el('span', { class: 'words' }, v.leftover_words.join('、')));
-    if (v.big_leftover_words && v.big_leftover_words.length) {
-      row(dl, '大字沒翻', el('span', { class: 'words' }, v.big_leftover_words.map((b) => `「${b.word}」高 ${b.height}px，是輸出字高中位數 ${b.median_height}px 的 ${b.ratio} 倍`).join('；') + `（超過 ${v.thresholds.big_glyph_ratio} 倍就判 partial，不看比例）`));
-    }
-    const j = v.judge;
-    if (j && j.status === 'ok') {
-      row(dl, '語意審查 coverage', `${covText(j.coverage)}（${j.coverage < v.thresholds.coverage_min ? '低於' : '達到'}門檻 ${v.thresholds.coverage_min.toFixed(2)}）　${j.served_model || j.model}　${fmtMs(j.elapsed_ms)}　${j.cost_usd == null ? '（未知模型，只有 tokens）' : fmtUsd(j.cost_usd)}`);
-      row(dl, 'judge 摘要', j.summary);
-    } else if (j) {
-      row(dl, '語意審查', el('span', { class: 'softrun' }, 'judge: ' + (j.status === 'skipped' ? 'skipped（' + (j.note || '') + '）' : 'unavailable' + (j.error ? '：' + j.error : '') + '——只用 OCR 檢查判定')));
-    } else {
-      row(dl, '語意審查', '沒有開');
-    }
-    row(dl, '驗證耗時', fmtMs(t.verify_ms));
-    d.append(dl);
-    if (v.note) d.append(el('div', { class: 'note' }, v.note));
-    if (j && j.status === 'ok') {
-      const seg = (title, items, fmt) => (items && items.length)
-        ? el('div', { class: 'seg' }, el('strong', {}, title + '（' + items.length + '）'), el('ul', {}, items.map((x) => el('li', {}, fmt(x))))) : null;
-      const pair = (x) => [el('span', {}, '「' + x.output_text + '」'), x.source_text ? el('span', { class: 'src' }, ' ← 原文「' + x.source_text + '」') : null, x.problem ? el('span', { class: 'src' }, '　' + x.problem) : null];
-      const lists = [
-        seg('亂碼（不是真的字）', j.garbled_segments, pair),
-        seg('沒翻（仍是來源語言）', j.untranslated_segments, (x) => '「' + x + '」'),
-        seg('翻錯（意思不同）', j.mistranslated_segments, pair),
-        seg('數字被改（judge 的看法，不影響判定）', j.altered_numbers, (x) => `原文 ${x.source} → 輸出 ${x.output}`),
-      ].filter(Boolean);  // append(null) would print the word "null"
-      lists.forEach((n) => d.append(n));
-      if (!lists.length) d.append(el('div', { class: 'hint' }, 'judge 沒有列出任何問題段落。'));
-      if (j.reference_translation && j.reference_translation.length) {
-        d.append(el('details', { class: 'refbox' }, el('summary', {}, 'judge 的參考翻譯（' + j.reference_translation.length + ' 行，依來源圖的閱讀順序）'), el('pre', {}, j.reference_translation.join('\n'))));
-      }
-    }
-    if (v.digit_runs && v.digit_runs.length) {
-      const statusText = { ok: '找到', near: '找到（差 1 位）', unverified: '沒找到（低信心，只提醒）', missing: '遺失' };
-      const table = el('table', { class: 'runs-table' }, el('thead', {}, el('tr', {}, ['數字', 'OCR 信心', '類型', '結果'].map((h) => el('th', {}, h)))),
-        el('tbody', {}, v.digit_runs.map((r) => el('tr', {}, el('td', {}, r.as_written), el('td', {}, String(r.confidence)), el('td', {}, r.soft ? '軟（< ' + v.thresholds.soft_confidence_max + '）' : '硬'),
-          el('td', {}, (statusText[r.status] || r.status) + (r.matched ? '：' + r.matched : ''))))));
-      d.append(el('details', {}, el('summary', {}, '數字明細（' + v.digit_runs.length + ' 組）'), table));
-    }
-    if (t.verification_file) d.append(el('div', { class: 'links' }, dlLink(job, t.verification_file, '下載驗證 JSON')));
-    if (v.output_text != null) {
-      d.append(el('details', {}, el('summary', {}, '輸出圖的 OCR 全文'), el('pre', {}, v.output_text || '（沒有辨識到文字）')));
-    }
-    return d;
-  }
-
   function tryBlock(job, b, t) {
     const d = el('details', { class: 'attempt' });
-    d.append(el('summary', {}, `嘗試 ${t.n}（${t.selected ? '採用' : '未採用'}）　`, verdictBadge(t.verdict, b.status === 'running', coverageOf(t)), `　${fmtMs((t.elapsed_ms || 0) + (t.verify_ms || 0))}　${fmtUsd(t.cost_usd)}`));
+    d.append(el('summary', {}, `嘗試 ${t.n}（${t.selected ? '採用' : '未採用'}）　`, verdictBadge(t.verdict, b.status === 'running', usabilityOf(t)), `　${fmtMs((t.elapsed_ms || 0) + (t.verify_ms || 0))}　${fmtUsd(t.cost_usd)}`));
     d.append(imgBox('files/' + job.job_id + '/' + t.output));
     const dl = el('dl');
     row(dl, 'API 路徑', t.api_used);
@@ -404,14 +484,14 @@
     return d;
   }
 
-  function renderB(job, i) {
+  function renderB(job, i, c) {
     const b = job.mode_b.results[i];
-    const c = $('col-b-' + i); c.replaceChildren();
+    c.replaceChildren();
     const tries = b.tries || [];
     const main = tries.find((t) => t.selected) || tries[0];
     const checking = b.status === 'running' && b.verify;
     const runTag = (b.runs || 1) > 1 ? ' · run ' + b.run : '';
-    c.append(el('h2', {}, el('span', { class: 'mname' }, 'Mode B · ' + b.model + runTag), pill(b.status), main || b.status === 'running' ? verdictBadge(b.verdict, checking, coverageOf(main)) : null));
+    c.append(el('h2', {}, el('span', { class: 'mname' }, 'Mode B · ' + b.model + runTag), pill(b.status), main || b.status === 'running' ? verdictBadge(b.verdict, checking, usabilityOf(main)) : null));
     if (b.output) c.append(imgBox('files/' + job.job_id + '/' + b.output));
     else if (b.status !== 'error') c.append(el('div', { class: 'empty' }, '處理中…'));
     if (b.output && main) {
@@ -420,8 +500,8 @@
       row(dl, 'API 路徑', b.api_used + '　（優先：' + b.route_preference + '）');
       const u = b.usage || {};
       if (u.prompt_tokens != null || u.completion_tokens != null) row(dl, 'tokens (in / out)', (u.prompt_tokens ?? '—') + ' / ' + (u.completion_tokens ?? '—') + (tries.length > 1 ? '（兩次合計）' : ''));
-      row(dl, '費用（生成）', b.cost_usd == null ? '（回應沒有帶 cost）' : fmtUsd(b.cost_usd) + (tries.length > 1 ? '（兩次合計：' + tries.map((t) => fmtUsd(t.cost_usd)).join(' + ') + '）' : ''));
-      if (b.judge) row(dl, '費用（judge）', b.judge_cost_usd == null ? '（沒有，judge 不可用或未知模型）' : fmtUsd(b.judge_cost_usd) + (tries.length > 1 ? '（' + tries.map((t) => fmtUsd(t.judge_cost_usd)).join(' + ') + '）' : ''));
+      row(dl, '費用（OpenRouter 現金，生成）', b.cost_usd == null ? '（回應沒有帶 cost）' : fmtUsd(b.cost_usd) + (tries.length > 1 ? '（兩次合計：' + tries.map((t) => fmtUsd(t.cost_usd)).join(' + ') + '）' : ''));
+      if (b.judge) row(dl, '費用（Anthropic 額度，judge）', b.judge_cost_usd == null ? '（沒有，judge 不可用或未知模型）' : fmtUsd(b.judge_cost_usd) + (tries.length > 1 ? '（' + tries.map((t) => fmtUsd(t.judge_cost_usd)).join(' + ') + '）' : ''));
       row(dl, '費用（合計）', fmtUsd(b.total_cost_usd));
       row(dl, '輸出尺寸', b.output_size.join(' × ') + ' px（長寬比差 ' + b.aspect_drift_pct + '%）');
       row(dl, '尺寸選項', sizeNote(b, main));
@@ -438,33 +518,42 @@
     addErr(c, b.verify_error ? '驗證失敗：' + b.verify_error : null);
   }
 
-  // ------------------------------------------------------------ batch summary (one row per model)
-  function renderSummary(job) {
+  // ------------------------------------------------------------ the batch summary (one row per image x mode / model)
+  function renderSummary(batch) {
     const box = $('summary'); box.replaceChildren();
-    const rows = (job.mode_b && job.mode_b.summary) || [];
-    if (!rows.length || (job.params.runs || 1) < 2) { box.hidden = true; return; }
+    const rows = batch.summary || [];
+    if (!rows.length) { box.hidden = true; return; }
     box.hidden = false;
-    box.append(el('strong', {}, '各模型彙總（每個模型連跑 ' + job.params.runs + ' 次；通過率 = 判定為 pass 的 run 數 ÷ 已結束的 run 數，失敗的 run 算沒過）'));
+    box.append(el('strong', {}, '批次彙總（' + batch.job_ids.length + ' 張圖；每張圖 × Mode / 模型一列）'));
+    const nameOf = (r) => '圖片 ' + r.image_index + (r.image_name ? ' · ' + r.image_name : '');
+    const head = [['圖片', ''], ['Mode / 模型', ''], ['判定', ''], ['可用度', 'num'], ['Anthropic（額度）', 'num'], ['OpenRouter（現金）', 'num'], ['時間', 'num']];
     const table = el('table', { class: 'summary-table' });
-    table.append(el('thead', {}, el('tr', {}, ['模型', '通過率', '各次判定', '平均總費用', '平均總時間', '最佳 run'].map((h) => el('th', {}, h)))));
+    table.append(el('thead', {}, el('tr', {}, head.map(([h, cls]) => el('th', { class: cls }, h)))));
     const body = el('tbody');
-    for (const s of rows) {
-      const finished = s.runs_done + s.runs_failed;
-      const verdicts = (s.verdicts || []).map((v) => VERDICTS[v] ? verdictBadge(v) : el('span', { class: 'pill ' + (v === 'error' ? 'error' : 'running') }, { error: '失敗', pending: '等待', running: '執行中' }[v] || String(v)));
+    let last = null;
+    for (const r of rows) {
+      const first = r.image_index !== last; last = r.image_index;
+      const live = ['pending', 'running'].includes(r.status);
+      const verdict = live ? pill(r.status) : r.status === 'error' ? pill('error') : verdictBadge(r.verdict, false, null);
+      const runs = r.runs > 1 && !live ? el('span', { class: 'hint' }, `　${r.passes} / ${r.runs_done + r.runs_failed} 次 pass（最佳 run）`) : null;
       body.append(el('tr', {},
-        el('td', {}, el('span', { class: 'mname' }, s.model)),
-        el('td', {}, s.pass_rate == null ? '—' : `${s.passes} / ${finished}（${Math.round(s.pass_rate * 100)}%）` + (s.runs_live ? `，還有 ${s.runs_live} 個在跑` : '')),
-        el('td', {}, el('div', { class: 'vlist' }, verdicts)),
-        el('td', {}, fmtUsd(s.mean_total_cost_usd)),
-        el('td', {}, fmtMs(s.mean_elapsed_ms)),
-        el('td', {}, s.best_run == null ? '—' : ['run ' + s.best_run + ' ', verdictBadge(s.best_verdict)])));
+        el('td', {}, first ? el('a', { href: '#job-' + r.image_index }, nameOf(r)) : null),
+        el('td', {}, el('span', { class: 'mname' }, r.label)),
+        el('td', {}, verdict, runs),
+        el('td', { class: 'num', 'data-label': '可用度' }, r.status === 'done' ? fmtScore(r.usability) : '—'),
+        el('td', { class: 'num', 'data-label': 'Anthropic（額度）' }, fmtUsd(r.cost_anthropic_usd)),
+        el('td', { class: 'num', 'data-label': 'OpenRouter（現金）' }, r.mode === 'A' ? '—' : fmtUsd(r.cost_openrouter_usd)),
+        el('td', { class: 'num', 'data-label': '時間' }, fmtMs(r.elapsed_ms))));
     }
+    const t = batch.totals || {};
+    body.append(el('tr', { class: 'total' }, el('td', {}, '合計'), el('td', {}, `${t.rows_passed || 0} / ${t.rows || 0} 列 pass`), el('td', {}), el('td', {}),
+      el('td', { class: 'num', 'data-label': 'Anthropic（額度）' }, fmtUsd(t.cost_anthropic_usd)), el('td', { class: 'num', 'data-label': 'OpenRouter（現金）' }, fmtUsd(t.cost_openrouter_usd)), el('td', {})));
     table.append(body);
     box.append(el('div', { class: 'tablewrap' }, table));  // scrolls inside the box on a phone, never the page
-    box.append(el('div', { class: 'hint' }, '費用與時間是每個 run 的總和（含重試、驗證與 judge）再取平均，只算完成的 run。'));
+    box.append(el('div', { class: 'hint' }, '判定與可用度是該列最佳一次的結果（Mode B 連跑多次時取 verify.choose_attempt 排出的最佳 run）；Anthropic 是 Claude 的費用（Mode A 的規劃與所有 judge，由訂閱額度支付），OpenRouter 是影像模型的現金費用（含重試）；時間是每次嘗試的平均。費用只算已完成的 run，且是依價目表的估計。'));
   }
 
-  // ------------------------------------------------------------ the reviewer link
+  // ------------------------------------------------------------ the reviewer links
   function copyText(text, button) {
     const done = () => { const old = button.textContent; button.textContent = '已複製'; setTimeout(() => { button.textContent = old; }, 1500); };
     const fallback = () => {
@@ -474,19 +563,41 @@
     if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, fallback); else fallback();
   }
 
-  function renderShare(job) {
-    const s = $('share'); s.replaceChildren();
+  function linkRow(manifestUrl, label) {
+    const input = el('input', { type: 'text', readonly: 'readonly', value: manifestUrl, 'aria-label': label });
+    const btn = el('button', { type: 'button', class: 'small' }, '複製');
+    btn.addEventListener('click', () => copyText(manifestUrl, btn));
+    input.addEventListener('focus', () => input.select());
+    return el('div', { class: 'row' }, input, btn);
+  }
+
+  function renderBatchShare(batch) {
+    const s = $('batch-share'); s.replaceChildren();
+    const p = batch.publish || { status: 'pending' };
+    s.append(el('strong', {}, '批次 manifest（給審閱者的連結）'));
+    if (p.status === 'pending' || p.status === 'running') {
+      s.append(el('div', { class: 'row' }, batch.status === 'done' ? el('span', { class: 'spinner' }) : null, '等每張圖都跑完、上傳完，才會上傳批次 manifest'));
+    } else if (p.status === 'done') {
+      s.append(linkRow(p.manifest_url, '批次 manifest 連結'));
+      s.append(el('div', { class: 'hint' }, `這是批次 manifest.json 的連結，裡面有每張圖的 manifest 連結與上面的彙總列；${p.expiry_hours} 小時內有效（到 ${p.expires_at}），連到 ${p.jobs_linked} 個 job manifest。` + (p.note ? ' ' + p.note : '')));
+      s.append(el('div', { class: 'links' }, el('a', { href: url('api/batches/' + batch.batch_id + '/manifest') }, '本機 manifest.json')));
+    } else if (p.status === 'skipped') {
+      s.append(el('div', { class: 'note' }, p.note || '未發佈'));
+    } else {
+      s.append(el('div', { class: 'errbox' }, p.error || '發佈失敗'));
+    }
+    if (batch.warnings && batch.warnings.length) s.append(el('div', { class: 'note' }, '提醒', el('ul', {}, batch.warnings.map((w) => el('li', {}, w)))));
+  }
+
+  function renderShare(job, s) {
+    s.replaceChildren();
     const p = job.publish || { status: 'pending' };
-    s.append(el('strong', {}, '給審閱者的連結'));
+    s.append(el('strong', {}, '這張圖的 manifest（給審閱者的連結）'));
     if (p.status === 'pending' || p.status === 'running') {
       s.append(el('div', { class: 'row' }, job.status === 'done' ? el('span', { class: 'spinner' }) : null, job.status === 'done' ? '上傳到 MinIO 中…' : '等所有模型跑完之後上傳'));
     } else if (p.status === 'done') {
-      const input = el('input', { type: 'text', readonly: 'readonly', value: p.manifest_url, 'aria-label': '給審閱者的連結' });
-      const btn = el('button', { type: 'button', class: 'small' }, '複製');
-      btn.addEventListener('click', () => copyText(p.manifest_url, btn));
-      input.addEventListener('focus', () => input.select());
-      s.append(el('div', { class: 'row' }, input, btn));
-      s.append(el('div', { class: 'hint' }, `這是 manifest.json 的連結，裡面有這次所有圖片與 JSON 的連結；${p.expiry_hours} 小時內有效（到 ${p.expires_at}），共 ${p.objects} 個物件。` + (p.note ? ' ' + p.note : '')));
+      s.append(linkRow(p.manifest_url, '給審閱者的連結'));
+      s.append(el('div', { class: 'hint' }, `這是這個 job 的 manifest.json 的連結，裡面有這張圖所有圖片與 JSON 的連結；${p.expiry_hours} 小時內有效（到 ${p.expires_at}），共 ${p.objects} 個物件。` + (p.note ? ' ' + p.note : '')));
       s.append(el('div', { class: 'links' }, el('a', { href: url('files/' + job.job_id + '/manifest.json') }, '本機 manifest.json')));
     } else if (p.status === 'skipped') {
       s.append(el('div', { class: 'note' }, p.note || '未發佈'));
@@ -496,41 +607,67 @@
     if (job.warnings && job.warnings.length) s.append(el('div', { class: 'note' }, '提醒', el('ul', {}, job.warnings.map((w) => el('li', {}, w)))));
   }
 
-  // ------------------------------------------------------------ render loop
-  const seen = {};
-  function changed(key, value) {
+  // ------------------------------------------------------------ one section per image
+  const sections = {};
+
+  function section(job, n) {
+    let ctx = sections[job.job_id];
+    if (ctx) return ctx;
+    const root = el('section', { class: 'job', id: 'job-' + n });
+    const head = el('h2', {});
+    const share = el('div', { class: 'share' });
+    const grid = el('div', { class: 'grid' });
+    const units = el('details', { hidden: 'hidden' }, el('summary', {}, 'Mode A units（JSON，每個 attempt 的最後選用版）'), el('pre'));
+    root.append(head, share, el('div', { class: 'scroller' }, grid), units);
+    $('jobs').append(root);
+    ctx = { n, root, head, share, grid, units, seen: {}, gridKey: null, showFrames: false };
+    sections[job.job_id] = ctx;
+    return ctx;
+  }
+
+  function changed(ctx, key, value) {
     const s = JSON.stringify(value);
-    if (seen[key] === s) return false;
-    seen[key] = s;
+    if (ctx.seen[key] === s) return false;
+    ctx.seen[key] = s;
     return true;
   }
 
-  function ensureGrid(job) {
+  function ensureGrid(job, ctx) {
     const results = job.mode_b.results || [];
-    const key = JSON.stringify([job.job_id, job.mode_a.status === 'skipped', results.length]);
-    if (gridJob === key) return;
-    gridJob = key;
-    for (const k of Object.keys(seen)) delete seen[k];
-    const grid = $('grid'); grid.replaceChildren();
-    const col = (id) => grid.append(el('article', { class: 'col', id }));
-    col('col-orig');
-    if (job.mode_a.status !== 'skipped') col('col-a');
-    results.forEach((_, i) => col('col-b-' + i));
+    const key = JSON.stringify([job.mode_a.status === 'skipped', results.length]);
+    if (ctx.gridKey === key) return;
+    ctx.gridKey = key;
+    ctx.seen = {};
+    ctx.grid.replaceChildren();
+    const col = (cls) => ctx.grid.append(el('article', { class: 'col ' + cls }));
+    col('c-orig');
+    if (job.mode_a.status !== 'skipped') col('c-a');
+    results.forEach((_, i) => col('c-b-' + i));
   }
 
-  function render(job) {
-    $('results').hidden = false;
-    ensureGrid(job);
+  function renderJob(job, n) {
+    const ctx = section(job, n);
+    ensureGrid(job, ctx);
+    const cols = (cls) => ctx.grid.querySelector('.' + cls);
+    if (changed(ctx, 'head', [job.image.name, job.status])) ctx.head.textContent = '圖片 ' + n + (job.image.name ? ' · ' + job.image.name : '');
     // re-render a column only when its data changed, so pictures do not flicker while polling
-    if (changed('orig', [job.image, job.mode_a.units, job.mode_a.page])) renderOriginal(job);
-    if (job.mode_a.status !== 'skipped' && changed('a', job.mode_a)) renderA(job);
-    (job.mode_b.results || []).forEach((r, i) => { if (changed('b' + i, [r, job.params.verify_details])) renderB(job, i); });
-    if (changed('share', [job.status, job.publish, job.warnings])) renderShare(job);
-    if (changed('summary', [job.mode_b.summary, job.params.runs])) renderSummary(job);
-    const a = job.mode_a, up = $('units-panel');
-    if (changed('units', a.units)) {
-      if (a && a.units) { $('units-json').textContent = JSON.stringify(a.units, null, 2); up.hidden = false; } else up.hidden = true;
+    if (changed(ctx, 'orig', [job.image, job.mode_a.units, job.mode_a.page])) renderOriginal(job, cols('c-orig'), ctx);
+    if (job.mode_a.status !== 'skipped' && changed(ctx, 'a', [job.mode_a, job.params.verify_details])) renderA(job, cols('c-a'));
+    (job.mode_b.results || []).forEach((r, i) => { if (changed(ctx, 'b' + i, [r, job.params.verify_details])) renderB(job, i, cols('c-b-' + i)); });
+    if (changed(ctx, 'share', [job.status, job.publish, job.warnings])) renderShare(job, ctx.share);
+    const a = job.mode_a;
+    if (changed(ctx, 'units', a.units)) {
+      if (a && a.units) { ctx.units.querySelector('pre').textContent = JSON.stringify(a.units, null, 2); ctx.units.hidden = false; } else ctx.units.hidden = true;
     }
+  }
+
+  // ------------------------------------------------------------ render loop
+  const top = { seen: {} };
+  function render(batch) {
+    $('results').hidden = false;
+    if (changed(top, 'summary', [batch.summary, batch.totals, batch.job_ids])) renderSummary(batch);
+    if (changed(top, 'share', [batch.status, batch.publish, batch.warnings])) renderBatchShare(batch);
+    (batch.jobs || []).forEach((job, i) => renderJob(job, i + 1));
   }
 
   function setBusy(busy, text) {
@@ -540,22 +677,22 @@
     if (text) s.append(text);
   }
 
-  async function poll(jobId) {
+  async function poll(batchId) {
     let failures = 0, doneTicks = 0;
     clearInterval(timer);
     const tick = async () => {
       try {
-        const r = await fetch(url('api/jobs/' + jobId), { headers: H });
+        const r = await fetch(url('api/batches/' + batchId), { headers: H });
         if (!r.ok) throw new Error('HTTP ' + r.status);
-        const job = await r.json();
+        const batch = await r.json();
         failures = 0;
-        render(job);
+        render(batch);
         const secs = Math.round((Date.now() - startedAt) / 1000);
-        const settled = ['done', 'skipped', 'error'].includes((job.publish || {}).status);
-        if (job.status === 'done') {
+        const settled = ['done', 'skipped', 'error'].includes((batch.publish || {}).status);
+        if (batch.status === 'done') {
           setBusy(false, '完成，共 ' + secs + ' 秒' + (settled ? '' : '（正在上傳給審閱者的連結…）'));
           if (settled || ++doneTicks > 180) clearInterval(timer);  // the upload gets ~4.5 minutes
-        } else setBusy(true, '處理中… 已 ' + secs + ' 秒');
+        } else setBusy(true, '處理中… 已 ' + secs + ' 秒（' + (batch.jobs || []).filter((j) => j.status === 'done').length + ' / ' + batch.job_ids.length + ' 張完成）');
       } catch (e) {
         if (++failures >= 8) { clearInterval(timer); setBusy(false, '與伺服器失聯：' + e.message); }
       }
@@ -566,16 +703,18 @@
 
   $('form').addEventListener('submit', async (ev) => {
     ev.preventDefault();
-    const file = $('file').files[0];
-    if (!file) return;
+    const files = Array.from($('file').files);
+    if (!files.length) return;
+    if (files.length > MAX_BATCH) { setBusy(false, '一次最多 ' + MAX_BATCH + ' 張圖，你選了 ' + files.length + ' 張'); return; }
     const useA = $('mode-a').checked, useB = $('mode-b').checked;
     if (!useA && !useB) { setBusy(false, '請至少勾選一個 Mode'); return; }
     if (useB && !picker.selected.length) { setBusy(false, '請至少選一個影像模型'); return; }
     const fd = new FormData();
-    fd.append('file', file);
+    for (const f of files) fd.append('files', f);
     fd.append('target_lang', $('lang').value);
     fd.append('mode_a', useA ? '1' : '0');
     fd.append('mode_b', useB ? '1' : '0');
+    fd.append('mode_a_retry', $('mode-a-retry').checked ? '1' : '0');
     for (const m of picker.selected) fd.append('image_models', m);
     fd.append('output_size', $('size').value);
     fd.append('runs', $('runs').value);
@@ -585,10 +724,13 @@
     setBusy(true, '上傳中…');
     startedAt = Date.now();
     try {
-      const r = await fetch(url('api/jobs'), { method: 'POST', body: fd, headers: H });
+      const r = await fetch(url('api/batches'), { method: 'POST', body: fd, headers: H });
       const body = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(body.detail || 'HTTP ' + r.status);
-      poll(body.job_id);
+      $('jobs').replaceChildren();
+      for (const k of Object.keys(sections)) delete sections[k];
+      top.seen = {};
+      poll(body.batch_id);
     } catch (e) { setBusy(false, '送出失敗：' + e.message); }
   });
 

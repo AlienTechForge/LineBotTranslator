@@ -41,6 +41,7 @@ def test_index_page_renders_with_languages_and_mock_badge(make_client):
     for code in ("en", "zh-TW", "zh-CN", "ja", "ko", "vi"):
         assert f'value="{code}"' in html
     assert "LAB_MOCK=1" in html and "Mode A" in html and "Mode B" in html
+    assert 'rel="icon"' in html  # no /favicon.ico request, so no 404 in the browser console
     assert "default-src 'self'" in r.headers["content-security-policy"]
     assert r.headers["x-content-type-options"] == "nosniff"
 
@@ -54,6 +55,9 @@ def test_token_is_required_on_every_route_when_set(make_client):
         ("get", "/api/jobs/0123456789abcdef"),
         ("get", "/files/0123456789abcdef/A.png"),
         ("post", "/api/jobs"),
+        ("post", "/api/batches"),
+        ("get", "/api/batches/0123456789abcdef"),
+        ("get", "/api/batches/0123456789abcdef/manifest"),
     ):
         assert getattr(client, method)(path).status_code == 401, path
     assert client.get("/?token=wrong").status_code == 401
@@ -63,6 +67,8 @@ def test_token_is_required_on_every_route_when_set(make_client):
     assert client.get("/api/image-models?token=s3cret-token").status_code == 200
     r = client.post("/api/jobs?token=s3cret-token", files={"file": ("a.png", png_bytes(), "image/png")}, data=form())
     assert r.status_code == 200
+    r = client.post("/api/batches?token=s3cret-token", files=[("files", ("a.png", png_bytes(), "image/png"))], data=form())
+    assert r.status_code == 200 and set(r.json()) == {"batch_id", "job_ids"}
 
 
 def test_no_token_configured_means_open_access(make_client):
@@ -71,7 +77,7 @@ def test_no_token_configured_means_open_access(make_client):
 
 def test_image_models_endpoint_in_mock_mode(make_client):
     body = make_client().get("/api/image-models").json()
-    assert body["default"] == "google/gemini-2.5-flash-image"
+    assert body["default"] == "google/gemini-3-pro-image"  # round 5: Pro is what the page preselects
     assert body["models"][0] == body["default"]
 
 

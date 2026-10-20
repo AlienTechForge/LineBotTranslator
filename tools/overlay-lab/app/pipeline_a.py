@@ -1,26 +1,51 @@
-"""Mode A (hybrid): Vision words -> Claude units -> OpenCV inpaint -> Pillow render."""
+"""Mode A (hybrid): Vision words -> Claude plans units -> clean erase -> readable fit -> Pillow render.
+
+Round 5 changes, in the order the pixels are touched:
+
+* every translated unit's background is measured on its own box and the unit is erased by flat
+  fill (flat background) or inpainting (anything else), the dilation guarded by colour so that it
+  never reaches into a neighbouring cell or rule (erase.py);
+* the text is fitted readably before anything is erased: the full translation, then grown sideways
+  into the free lane, then the planner's `short` alternative; a minor unit that is still too small
+  is left untouched (render.py, geometry.free_lane);
+* the output goes through the vision judge like a Mode B attempt, and when the verdict is not
+  `pass` the planner is called once more with what the judge found (`MODE_A_RETRY`); both attempts
+  are kept and verify.choose_attempt picks the one that is shown.
+"""
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 from PIL import Image
 
-from . import claude_units, vision
-from .colors import hex_color, pick_colors
-from .erase import UnitMask, build_global_mask, build_unit_mask, inpaint_all
-from .geometry import UnitGeometry, compute_geometry, glyph_height
+from . import claude_units, verify, vision
+from .colors import ColorChoice, hex_color, pick_colors
+from .erase import (
+    BackgroundInfo,
+    EraseUnit,
+    UnitMask,
+    build_polygon_mask,
+    build_unit_mask,
+    erase_units,
+    measure_background,
+)
+from .geometry import UnitGeometry, compute_geometry, extension_polygons, free_lane, glyph_height
 from .imaging import LoadedImage
+from .layout import MAX_GROW
 from .models import ClaudeUnit, OcrResult, Word
-from .render import paste_unit, render_unit
+from .render import SKIP_TOO_SMALL, UnitRender, growth_limits, paste_unit, render_unit
 
 log = logging.getLogger("lab.pipeline_a")
 
-BOLD_ROLES = {"title", "heading"}
+FLAT_COLUMN_SHARE = 0.97  # a column of the lane is background when this share of its samples is
+LANE_SAMPLE_STEP_PX = 2.0
 
 
 @dataclass
@@ -57,6 +82,10 @@ class _Prepared:
     reason: str | None
     report: dict
     mask: UnitMask | None = None
+    info: BackgroundInfo | None = None
+    colors: ColorChoice | None = None
+    render: UnitRender | None = None
+    extension: UnitMask | None = None
 
 
 def _base_report(uid: str, unit: ClaudeUnit, words: list[Word], geom: UnitGeometry, action, reason):
@@ -65,9 +94,13 @@ def _base_report(uid: str, unit: ClaudeUnit, words: list[Word], geom: UnitGeomet
         "word_ids": list(unit.word_ids),
         "source_text": unit.source_text,
         "translation": unit.translation,
+        "short": unit.short,
         "direction": unit.direction,
         "rotated": unit.rotated,
         "role": unit.role,
+        "align": unit.align,
+        "weight": unit.weight,
+        "importance": unit.importance,
         "keep": unit.keep,
         "notes": unit.notes,
         "paragraphs": sorted({w.para for w in words if w.para is not None}),
@@ -82,8 +115,38 @@ def _base_report(uid: str, unit: ClaudeUnit, words: list[Word], geom: UnitGeomet
     return report
 
 
+def _flat_run(rgb: np.ndarray, geom: UnitGeometry, axis: int, along: bool, limit: float, info: BackgroundInfo) -> float:
+    """How far beyond the frame edge (up to `limit` px) the image keeps the unit's background colour.
+
+    Columns of samples across the frame are checked outward in 2 px steps; the run ends at the first
+    column in which fewer than 97% of the samples are within the unit's colour tolerance.
+    """
+    if limit <= 1.0:
+        return 0.0
+    u, v = geom.axes
+    direction, cross = (u, v) if axis == 0 else (v, u)
+    half_along, half_cross = geom.size[axis] / 2.0, geom.size[1 - axis] / 2.0
+    sign = 1.0 if along else -1.0
+    offsets = np.arange(LANE_SAMPLE_STEP_PX, limit + LANE_SAMPLE_STEP_PX, LANE_SAMPLE_STEP_PX)
+    across = np.linspace(-half_cross, half_cross, max(3, int(2 * half_cross / LANE_SAMPLE_STEP_PX) + 1))
+    centre = np.asarray(geom.center, dtype=np.float64)
+    pts = (
+        centre
+        + (sign * (half_along + offsets))[:, None, None] * direction[None, None, :]
+        + across[None, :, None] * cross[None, None, :]
+    )
+    h, w = rgb.shape[:2]
+    xs = np.clip(np.round(pts[..., 0]).astype(int), 0, w - 1)
+    ys = np.clip(np.round(pts[..., 1]).astype(int), 0, h - 1)
+    dist = np.linalg.norm(rgb[ys, xs].astype(np.float32) - np.asarray(info.color, np.float32), axis=2)
+    ok = (dist <= info.tolerance).mean(axis=1) >= FLAT_COLUMN_SHARE
+    bad = np.flatnonzero(~ok)
+    first_bad = int(bad[0]) if bad.size else len(offsets)
+    return float(offsets[first_bad - 1]) if first_bad > 0 else 0.0
+
+
 def render_units(rgb: np.ndarray, ocr: OcrResult, units: list[ClaudeUnit], lang: str) -> RenderResult:
-    """Pure image work (no network): geometry, one inpaint for all units, colours, text."""
+    """Pure image work (no network): geometry, background and colours, fit, one erase pass, text."""
     img_h, img_w = rgb.shape[:2]
     words_by_id = {w.id: w for w in ocr.words}
     prepared: list[_Prepared] = []
@@ -97,12 +160,67 @@ def render_units(rgb: np.ndarray, ocr: OcrResult, units: list[ClaudeUnit], lang:
             _Prepared(uid, unit, words, geom, action, reason, _base_report(uid, unit, words, geom, action, reason))
         )
 
-    # ---- erase: one mask, one inpaint call for every translated unit
+    # ---- measure: background of every translated unit on its own box, colours from the original
     t0 = time.perf_counter()
     translated = [p for p in prepared if p.action == "translated"]
-    translated_ids = {w.id for p in translated for w in p.words}
     for p in translated:
         p.mask = build_unit_mask((img_h, img_w), p.words, p.geom.glyph_h)
+        if p.mask is None:
+            p.action, p.reason = "skipped", "outside the image"
+            p.report.update(action="skipped", skip_reason="outside the image")
+            continue
+        p.info = measure_background(rgb, p.mask)
+    translated = [p for p in translated if p.action == "translated"]
+    proxy = rgb.copy()  # the original with each unit's box painted in its background colour
+    for p in translated:
+        p.mask.roi(proxy)[p.mask.raw > 0] = p.info.color
+    for p in translated:
+        p.colors = pick_colors(rgb, proxy, p.mask, p.geom.corners, p.geom.glyph_h)
+    measure_ms = int((time.perf_counter() - t0) * 1000)
+
+    # ---- fit: readable text first, then growth into the free lane, then `short`; decides what is erased
+    t1 = time.perf_counter()
+    listed = {w.id for p in prepared for w in p.words}
+    loose = [np.asarray(w.polygon, dtype=np.float64) for w in ocr.words if w.id not in listed]
+    frames = {p.uid: p.geom.corners for p in prepared}  # grows as units grow, so that two never meet
+    for p in translated:
+        try:
+            axis = 0 if p.unit.direction == "horizontal" else 1
+            lane = (0.0, 0.0)
+            if p.info.flat:
+                obstacles = [c for uid, c in frames.items() if uid != p.uid] + loose
+                free = free_lane(p.geom, axis, obstacles, (img_h, img_w))
+                want = growth_limits(p.geom.size[axis], free, p.unit.align)
+                lane = (
+                    _flat_run(rgb, p.geom, axis, False, want[0], p.info) if want[0] > 0 else 0.0,
+                    _flat_run(rgb, p.geom, axis, True, want[1], p.info) if want[1] > 0 else 0.0,
+                )
+            bold = p.unit.weight == "bold" or p.colors.bold
+            p.render = render_unit(
+                p.unit.translation, p.unit.direction, lang, p.unit.role, p.geom, bold,
+                short=p.unit.short, align=p.unit.align, importance=p.unit.importance, lane=lane,
+            )  # fmt: skip
+            p.report["lane"] = [round(lane[0], 1), round(lane[1], 1)]
+            if p.render.skipped:
+                p.action, p.reason = "skipped", p.render.skipped
+                p.report.update(action="skipped", skip_reason=p.render.skipped, min_fit_px=p.render.min_fit_px)
+                continue
+            frames[p.uid] = p.render.geom.corners
+            if sum(p.render.grow) > 0.5:
+                p.extension = build_polygon_mask(
+                    (img_h, img_w), extension_polygons(p.geom, axis, p.render.grow[0], p.render.grow[1])
+                )
+        except Exception as exc:  # noqa: BLE001 - one bad unit must not sink the others
+            log.warning("stage=fit unit %s failed: %s", p.uid, type(exc).__name__)
+            p.action, p.reason = "skipped", f"fit failed: {type(exc).__name__}"
+            p.report.update(action="skipped", skip_reason=p.reason, error=f"{type(exc).__name__}: {exc}")
+            warnings.append(f"{p.uid}: fitting failed ({type(exc).__name__}: {exc}); the area stays untouched")
+    translated = [p for p in translated if p.action == "translated"]
+    fit_ms = int((time.perf_counter() - t1) * 1000)
+
+    # ---- erase: flat fill or inpaint per unit, colour-guarded; skipped and unlisted words keep their pixels
+    t2 = time.perf_counter()
+    translated_ids = {w.id for p in translated for w in p.words}
     protect = []
     for w in ocr.words:
         if w.id in translated_ids:
@@ -110,30 +228,27 @@ def render_units(rgb: np.ndarray, ocr: OcrResult, units: list[ClaudeUnit], lang:
         pm = build_unit_mask((img_h, img_w), [w], glyph_height([w]), dilate=0)
         if pm is not None:
             protect.append(pm)
-    mask = build_global_mask((img_h, img_w), [p.mask for p in translated if p.mask], protect)
-    erased = inpaint_all(rgb, mask)
-    erase_ms = int((time.perf_counter() - t0) * 1000)
-    log.info(
-        "stage=erase ms=%d units=%d mask_px=%d image=%dx%d",
-        erase_ms,
-        len(translated),
-        int(np.count_nonzero(mask)),
-        img_w,
-        img_h,
+    erase = erase_units(
+        rgb, [EraseUnit(p.uid, p.mask, p.info, p.extension) for p in translated], protect
     )
+    erased = erase.erased
+    erase_ms = measure_ms + int((time.perf_counter() - t2) * 1000)
+    log.info(
+        "stage=erase ms=%d units=%d flat=%d inpaint=%d image=%dx%d",
+        erase_ms, len(translated), sum(1 for m in erase.methods.values() if m == "flat"),
+        sum(1 for m in erase.methods.values() if m == "inpaint"), img_w, img_h,
+    )  # fmt: skip
 
-    # ---- colour + render
-    t1 = time.perf_counter()
+    # ---- draw
+    t3 = time.perf_counter()
     canvas = Image.fromarray(erased.copy())
     overflowed = 0
     for p in prepared:
-        if p.action != "translated" or p.mask is None:
+        if p.action != "translated" or p.render is None:
             continue
+        ur = p.render
         try:
-            colors = pick_colors(rgb, erased, p.mask, p.geom.corners, p.geom.glyph_h)
-            bold = p.unit.role in BOLD_ROLES or colors.bold
-            ur = render_unit(p.unit.translation, p.unit.direction, lang, p.unit.role, p.geom, bold)
-            ink = paste_unit(canvas, ur, p.geom, colors.text)
+            ink = paste_unit(canvas, ur, p.geom, p.colors.text)
             p.report.update(
                 {
                     "font_size": ur.font_size,
@@ -142,22 +257,32 @@ def render_units(rgb: np.ndarray, ocr: OcrResult, units: list[ClaudeUnit], lang:
                     "layout": ur.mode,
                     "lines": ur.lines,
                     "fitted": ur.fitted,
+                    "readable": ur.readable,
                     "overflowed": ur.overflowed,
                     "truncated": ur.truncated,
-                    "text_color": hex_color(colors.text),
-                    "bg_color": hex_color(colors.background),
-                    "color_fallback": colors.fallback,
-                    "contrast": round(colors.contrast, 1),
-                    "stroke_ratio": None if colors.stroke_ratio is None else round(colors.stroke_ratio, 3),
+                    "text_used": ur.text_used,
+                    "fit_ratio": round(ur.font_size / p.geom.glyph_h, 2) if p.geom.glyph_h else None,
+                    "min_fit_px": ur.min_fit_px,
+                    "grow": [round(ur.grow[0], 1), round(ur.grow[1], 1)],
+                    "erase_method": erase.methods[p.uid],
+                    "erase_bg": hex_color(p.info.color),
+                    "erase_spread": round(p.info.spread, 1),
+                    "erase_ink_share": round(p.info.ink_share, 2),
+                    "erase_px": erase.mask_px[p.uid],
+                    "text_color": hex_color(p.colors.text),
+                    "bg_color": hex_color(p.colors.background),
+                    "color_fallback": p.colors.fallback,
+                    "contrast": round(p.colors.contrast, 1),
+                    "stroke_ratio": None if p.colors.stroke_ratio is None else round(p.colors.stroke_ratio, 3),
                     "ink_bbox": ink,
                 }
             )
             overflowed += int(ur.overflowed)
         except Exception as exc:  # noqa: BLE001 - one bad unit must not sink the others
-            log.exception("stage=render unit %s failed", p.uid)
+            log.warning("stage=render unit %s failed: %s", p.uid, type(exc).__name__)
             p.report.update({"error": f"{type(exc).__name__}: {exc}", "fitted": False, "overflowed": False})
             warnings.append(f"{p.uid}: render failed ({type(exc).__name__}: {exc}); the area stays erased")
-    render_ms = int((time.perf_counter() - t1) * 1000)
+    render_ms = fit_ms + int((time.perf_counter() - t3) * 1000)
     log.info("stage=render ms=%d units=%d overflowed=%d", render_ms, len(translated), overflowed)
 
     return RenderResult(
@@ -169,36 +294,44 @@ def render_units(rgb: np.ndarray, ocr: OcrResult, units: list[ClaudeUnit], lang:
     )
 
 
-def _save_png(arr: np.ndarray, path: Path) -> None:
-    Image.fromarray(arr).save(path, "PNG")
+def _png_bytes(arr: np.ndarray) -> bytes:
+    import io
+
+    buf = io.BytesIO()
+    Image.fromarray(arr).save(buf, "PNG")
+    return buf.getvalue()
 
 
-def run_mode_a(image: LoadedImage, lang: str, out_dir: Path, source_ocr=None) -> dict:
-    """Full Mode A. Raises on failure (the caller shows the message in Mode A's error box).
+def problem_units(units: list[dict]) -> list[dict]:
+    """The unit reports the renderer could not draw readably: overflowed, truncated, below the readable
+    size or skipped as too small (named by their source text in the planner's retry paragraph)."""
+    return [
+        u for u in units
+        if (u.get("action") == "translated" and (u.get("overflowed") or u.get("truncated") or u.get("readable") is False))
+        or u.get("skip_reason") == SKIP_TOO_SMALL
+    ]  # fmt: skip
 
-    `source_ocr` (jobs.SourceOcr) is the per-job cache of the Vision call on the source image,
-    shared with the Mode B verification; without it Vision is called here.
-    """
-    t_all = time.perf_counter()
 
-    if source_ocr is not None:
-        ocr = source_ocr.get()
-        vision_ms = source_ocr.ms or 0
-    else:
-        t0 = time.perf_counter()
-        ocr = vision.ocr_words(image.data, image.width, image.height)
-        vision_ms = int((time.perf_counter() - t0) * 1000)
-    if not ocr.words:
-        raise RuntimeError("Vision found no text in the image")
+CheckFn = Callable[[bytes, tuple[int, int]], dict]
 
-    call = claude_units.request_units(image, ocr, lang)
+
+def _sum_known(values: list) -> float | None:
+    known = [v for v in values if isinstance(v, (int, float))]
+    return round(sum(known), 6) if known else None
+
+
+def _attempt(
+    n: int, image: LoadedImage, ocr: OcrResult, lang: str, out_dir: Path, feedback: str | None, check: CheckFn | None,
+    meta: dict,
+) -> dict:
+    """One planner call, one render, the files, and (with `check`) the verification of the output."""
+    t0 = time.perf_counter()
+    call = claude_units.request_units(image, ocr, lang, feedback)
     result = render_units(image.rgb(), ocr, call.units, lang)
-
     out_dir.mkdir(parents=True, exist_ok=True)
-    _save_png(result.output, out_dir / "A.png")
-    _save_png(result.erased, out_dir / "A_erased.png")
-
-    elapsed_ms = int((time.perf_counter() - t_all) * 1000)
+    png = _png_bytes(result.output)
+    (out_dir / f"A_a{n}.png").write_bytes(png)
+    (out_dir / f"A_a{n}_erased.png").write_bytes(_png_bytes(result.erased))
     translated = [u for u in result.units if u["action"] == "translated"]
     extra: list[str] = []
     if not result.units:
@@ -208,17 +341,16 @@ def run_mode_a(image: LoadedImage, lang: str, out_dir: Path, source_ocr=None) ->
     listed = {wid for u in result.units for wid in u["word_ids"]}
     if ocr.words and len(listed) < len(ocr.words):
         extra.append(f"{len(ocr.words) - len(listed)} of {len(ocr.words)} OCR words are in no unit and stay untouched")
-    log.info(
-        "stage=mode-a-done ms=%d words=%d units=%d translated=%d overflowed=%d",
-        elapsed_ms,
-        len(ocr.words),
-        len(result.units),
-        len(translated),
-        sum(1 for u in translated if u.get("overflowed")),
-    )
-    return {
-        "elapsed_ms": elapsed_ms,
-        "vision_ms": vision_ms,
+    too_small = sum(1 for u in result.units if u.get("skip_reason") == SKIP_TOO_SMALL)
+    if too_small:
+        extra.append(f"{too_small} minor unit(s) could not be drawn at a readable size and stay untouched")
+    attempt = {
+        "n": n,
+        "output": f"A_a{n}.png",
+        "erased": f"A_a{n}_erased.png",
+        "units_file": None,
+        "verification_file": None,
+        "elapsed_ms": int((time.perf_counter() - t0) * 1000),
         "claude_ms": call.elapsed_ms,
         "erase_ms": result.timings["erase_ms"],
         "render_ms": result.timings["render_ms"],
@@ -235,8 +367,140 @@ def run_mode_a(image: LoadedImage, lang: str, out_dir: Path, source_ocr=None) ->
         "claude_image_size": list(call.sent_image_size) if call.sent_image_size else None,
         "word_list_tokens_est": call.word_list_tokens_est,
         "warnings": call.notes + result.warnings + extra,
-        "page": [ocr.width, ocr.height],
         "units": result.units,
-        "output": "A.png",
-        "erased": "A_erased.png",
+        "retry_feedback": feedback,
+        "verdict": None,
+        "verification": None,
+        "verify_error": None,
+        "verify_ms": None,
+        "judge_ms": None,
+        "judge_cost_usd": None,
+        "judge_status": None,
+    }
+    try:  # the units as a file of their own, for the published bundle
+        doc = {**meta, "attempt": n, "page": [ocr.width, ocr.height], "units": result.units}
+        (out_dir / f"A_a{n}_units.json").write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
+        attempt["units_file"] = f"A_a{n}_units.json"
+    except OSError:
+        log.warning("could not write A_a%d_units.json", n)
+    if check is not None:
+        attempt.update(check(png, (result.output.shape[1], result.output.shape[0])))
+        if attempt.get("verification") is not None:
+            name = f"A_a{n}_verify.json"
+            try:
+                doc = {**meta, "attempt": n, "image": attempt["output"], **attempt["verification"]}
+                (out_dir / name).write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
+                attempt["verification_file"] = name
+            except OSError:
+                log.warning("could not write %s", name)
+    log.info(
+        "stage=mode-a-attempt n=%d words=%d units=%d translated=%d overflowed=%d verdict=%s",
+        n, len(ocr.words), len(result.units), len(translated),
+        sum(1 for u in translated if u.get("overflowed")), attempt["verdict"],
+    )  # fmt: skip
+    return attempt
+
+
+def run_mode_a(
+    image: LoadedImage,
+    lang: str,
+    out_dir: Path,
+    source_ocr=None,
+    *,
+    check: CheckFn | None = None,
+    retry: bool = False,
+    meta: dict | None = None,
+) -> dict:
+    """Full Mode A. Raises on failure (the caller shows the message in Mode A's error box).
+
+    `source_ocr` (jobs.SourceOcr) is the per-job cache of the Vision call on the source image,
+    shared with the Mode B verification; without it Vision is called here. `check(png, size)` runs
+    the vision judge on an output and returns the verdict fields of the attempt (jobs._check_output);
+    without it nothing is verified and nothing is retried. With `retry` and a verdict that is not
+    `pass`, the planner is called once more with what the judge found and the units that did not
+    fit; a failing second attempt keeps the first.
+    """
+    t_all = time.perf_counter()
+    meta = meta or {}
+
+    if source_ocr is not None:
+        ocr = source_ocr.get()
+        vision_ms = source_ocr.ms or 0
+    else:
+        t0 = time.perf_counter()
+        ocr = vision.ocr_words(image.data, image.width, image.height)
+        vision_ms = int((time.perf_counter() - t0) * 1000)
+    if not ocr.words:
+        raise RuntimeError("Vision found no text in the image")
+
+    attempts = [_attempt(1, image, ocr, lang, out_dir, None, check, meta)]
+    retry_error = None
+    first = attempts[0]
+    if retry and check is not None and verify.needs_retry(first["verdict"]):
+        feedback = claude_units.build_feedback(first["verification"], problem_units(first["units"]))
+        if feedback:
+            try:
+                attempts.append(_attempt(2, image, ocr, lang, out_dir, feedback, check, meta))
+            except Exception as exc:  # noqa: BLE001 - attempt 1 stays the result
+                from .redaction import describe_error
+
+                log.warning("stage=mode-a-retry failed: %s", type(exc).__name__)
+                retry_error = describe_error(exc)
+    chosen = verify.choose_attempt([a["verification"] for a in attempts])
+    for i, a in enumerate(attempts):
+        a["selected"] = i == chosen
+    main = attempts[chosen]
+
+    planner_cost = _sum_known([a["cost_usd"] for a in attempts])
+    judge_cost = _sum_known([a["judge_cost_usd"] for a in attempts])
+    elapsed_ms = int((time.perf_counter() - t_all) * 1000)
+    log.info(
+        "stage=mode-a-done ms=%d attempts=%d selected=%d verdict=%s",
+        elapsed_ms, len(attempts), main["n"], main["verdict"],
+    )  # fmt: skip
+    verification = main["verification"] or {}
+    return {
+        "elapsed_ms": elapsed_ms,
+        "vision_ms": vision_ms,
+        "claude_ms": sum(a["claude_ms"] for a in attempts),
+        "erase_ms": sum(a["erase_ms"] for a in attempts),
+        "render_ms": sum(a["render_ms"] for a in attempts),
+        "verify_ms": sum(a.get("verify_ms") or 0 for a in attempts),
+        "judge_ms": sum(a.get("judge_ms") or 0 for a in attempts),
+        "word_count": len(ocr.words),
+        "unit_count": main["unit_count"],
+        "translated_count": main["translated_count"],
+        "tokens": {
+            "input": sum(a["tokens"]["input"] for a in attempts),
+            "output": sum(a["tokens"]["output"] for a in attempts),
+        },
+        "cost_usd": planner_cost,
+        "judge_cost_usd": judge_cost,
+        "total_cost_usd": _sum_known([planner_cost, judge_cost]),
+        "cost_anthropic_usd": _sum_known([planner_cost, judge_cost]),  # Mode A costs Claude only
+        "cost_openrouter_usd": 0.0,
+        "model": main["model"],
+        "served_model": main["served_model"],
+        "stop_reason": main["stop_reason"],
+        "fallback_form": main["fallback_form"],
+        "fallback_attempts": main["fallback_attempts"],
+        "claude_image_size": main["claude_image_size"],
+        "word_list_tokens_est": main["word_list_tokens_est"],
+        "warnings": list(main["warnings"]),
+        "page": [ocr.width, ocr.height],
+        "units": main["units"],
+        "output": main["output"],
+        "erased": main["erased"],
+        "units_file": main["units_file"],
+        "verdict": main["verdict"],
+        "verification": main["verification"],
+        "verification_file": main["verification_file"],
+        "verify_error": main["verify_error"],
+        "usability": verification.get("usability"),
+        "coverage": verification.get("coverage"),
+        "selected_attempt": main["n"],
+        "attempts": attempts,
+        "retry": bool(retry),
+        "retry_error": retry_error,
+        "max_grow": MAX_GROW,
     }

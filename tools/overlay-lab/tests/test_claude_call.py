@@ -313,3 +313,133 @@ def test_installed_sdk_steps_down_to_the_array_form_then_plain_on_http_400(setup
     assert seen[1][2]["fallbacks"] == [{"model": "claude-opus-4-8"}]
     assert "fallbacks" not in seen[2][2] and "anthropic-beta" not in seen[2][1]
     assert seen[2][2]["output_config"]["effort"] == "high"
+
+
+# ------------------------------------------------------------------ round 5: the retry paragraph and the Claude slots
+
+
+def test_the_planner_prompt_explains_the_four_new_fields_and_the_table_rules():
+    prompt = claude_units.SYSTEM_PROMPT
+    for needle in (
+        "- short:",
+        "at most about 60% of the characters",
+        "- align: left | center | right",
+        "- weight: regular | bold",
+        "- importance: major | minor",
+        "Table rows stay one unit per cell, in the same order as in the picture",
+        "price-like or number-only cell",
+        "brand names and logos",
+        "drawn rotated by 90 degrees",
+        "Look at the picture, not only at the OCR text, to decide alignment and weight",
+    ):
+        assert needle in prompt, needle
+
+
+def test_the_feedback_paragraph_is_appended_to_the_word_list_of_the_request(setup):
+    image, ocr, install = setup
+    fake = install({"default": Response()})
+    claude_units.request_units(image, ocr, "en")
+    claude_units.request_units(image, ocr, "en", feedback="This is a second attempt. Fix the heading.")
+    first = fake.calls[0][1]["messages"][0]["content"][1]["text"]
+    second = fake.calls[1][1]["messages"][0]["content"][1]["text"]
+    assert "second attempt" not in first
+    assert second.startswith(first) and second.endswith("This is a second attempt. Fix the heading.")
+    assert second.count("w0001 10 10 70 30 價格") == 1  # the same word list, the paragraph after it
+
+
+def judge_findings(**fields):
+    from scenario import judge_record
+
+    return {"judge": judge_record(**fields)}
+
+
+def test_build_feedback_names_what_the_judge_found_and_the_units_that_did_not_fit():
+    verification = judge_findings(
+        garbled=[("price pill", "Manbar Price", True), ("logo", "Sinoe", False)],
+        untranslated=[("ご飯", True), ("footnote", False)],
+        altered=[("77446716", "99446916")],
+        rows=[("duplicated_row", "scallion rice")],
+    )
+    problems = [
+        {"source_text": "招牌套餐", "overflowed": True, "action": "translated"},
+        {"source_text": '請勿 "打擾"\n謝謝', "truncated": True, "action": "translated"},
+        {"source_text": "小字", "action": "skipped", "skip_reason": "too small"},
+    ]
+    text = claude_units.build_feedback(verification, problems)
+    assert text.startswith(claude_units.FEEDBACK_HEAD) and text.endswith(claude_units.FEEDBACK_TAIL)
+    assert '"Manbar Price" (price pill)' in text
+    assert "Sinoe" not in text and "footnote" not in text  # minor findings are not worth a retry
+    assert '"ご飯"' in text and '"77446716" became "99446916"' in text and '"scallion rice"' in text
+    assert '"招牌套餐" (did not fit its box)' in text and "(was cut off)" in text and '"小字" (had to be drawn too small)' in text
+    assert "\"請勿 '打擾' 謝謝\"" in text  # quotes and newlines of OCR text are neutralised
+    assert "The reviewer's summary:" in text
+
+
+def test_build_feedback_caps_every_kind_at_ten_and_is_empty_when_there_is_nothing_to_say():
+    many = judge_findings(garbled=[(f"w{i}", f"junk{i}", True) for i in range(15)])
+    text = claude_units.build_feedback(many, [{"source_text": f"u{i}", "overflowed": True} for i in range(15)])
+    assert '"junk9"' in text and "junk10" not in text and '"u9"' in text and '"u10"' not in text
+    assert claude_units.build_feedback(None, []) == ""
+    assert claude_units.build_feedback({"judge": {"status": "unavailable"}}, []) == ""
+    assert claude_units.build_feedback({"judge": None}, [{"source_text": "x", "overflowed": True}]) != ""  # render problems alone
+
+
+def test_the_claude_slots_are_four_and_shared_by_the_planner_and_the_judge():
+    held = [claude_units.CLAUDE_SLOTS.acquire(blocking=False) for _ in range(4)]
+    assert all(held) and not claude_units.CLAUDE_SLOTS.acquire(blocking=False)
+    for _ in held:
+        claude_units.CLAUDE_SLOTS.release()
+
+
+def test_at_most_four_claude_calls_are_in_flight_planner_and_judge_together(setup, monkeypatch):
+    import threading
+    import time
+
+    from app import judge
+
+    image, ocr, _ = setup
+    state = {"active": 0, "peak": 0, "calls": 0}
+    lock = threading.Lock()
+    judge_answer = json.dumps(
+        {"usability": 1, "coverage": 1, "legibility_issues": [], "structure_issues": [], "altered_numbers": [],
+         "untranslated": [], "mistranslated": [], "summary": "ok"}  # fmt: skip
+    )
+
+    class SlowClient:
+        class beta:  # noqa: N801
+            class messages:  # noqa: N801
+                @staticmethod
+                def create(**kw):
+                    with lock:
+                        state["active"] += 1
+                        state["calls"] += 1
+                        state["peak"] = max(state["peak"], state["active"])
+                    time.sleep(0.12)
+                    with lock:
+                        state["active"] -= 1
+                    is_judge = "quality judge" in kw["system"]
+                    return Response(text=judge_answer if is_judge else json.dumps({"units": []}), model=kw["model"])
+
+    monkeypatch.setattr(anthropic, "Anthropic", lambda **kw: SlowClient())
+    source = Image.new("RGB", (200, 100))
+    png = io.BytesIO()
+    Image.new("RGB", (200, 100)).save(png, "PNG")
+    results = []
+
+    def planner():
+        try:
+            claude_units.request_units(image, ocr, "en")
+            results.append("ok")
+        except Exception as exc:  # noqa: BLE001
+            results.append(repr(exc))
+
+    def judging():
+        results.append("ok" if judge.judge_output(None, source, png.getvalue(), "en")["status"] == "ok" else "judge failed")
+
+    threads = [threading.Thread(target=planner if i % 2 else judging) for i in range(12)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+    assert state["calls"] == 12 and results == ["ok"] * 12
+    assert state["peak"] == 4  # twelve calls, never more than four at once, and four really do run together
