@@ -1,4 +1,4 @@
-"""Google Cloud Vision wrapper: word boxes for Mode A, full text for Mode B verification."""
+"""Google Cloud Vision wrapper: words (with detected languages) and full text for Mode A and Mode B checks."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import time
 from functools import lru_cache
 
 from .config import REQUEST_TIMEOUT_S, get_settings
-from .models import ModeError, OcrResult, Word
+from .models import ModeError, OcrResult, Word, base_language
 
 log = logging.getLogger("lab.vision")
 
@@ -38,8 +38,38 @@ def _annotate(image_bytes: bytes):
     return response
 
 
+def _languages(prop) -> list[tuple[str, float]]:
+    """`detected_languages` of a Vision `property` message as (base code, confidence), best first.
+
+    Script subtags are dropped ('zh-Hant' -> 'zh'), undetermined codes ('und') are ignored and
+    two codes with the same base keep the higher confidence.
+    """
+    try:
+        raw = list(prop.detected_languages)
+    except AttributeError:
+        return []
+    best: dict[str, float] = {}
+    for item in raw:
+        code = base_language(item.language_code)
+        if code:
+            best[code] = max(best.get(code, 0.0), float(item.confidence or 0.0))
+    return sorted(best.items(), key=lambda pair: -pair[1])
+
+
+def _best_language(prop) -> str | None:
+    langs = _languages(prop)
+    return langs[0][0] if langs else None
+
+
 def ocr_words(image_bytes: bytes, width: int, height: int) -> OcrResult:
-    """Run document_text_detection and flatten the hierarchy to a word list (ids w0001...)."""
+    """Run document_text_detection and flatten the hierarchy to a word list (ids w0001...).
+
+    Every word carries `detected_languages` (what Vision said about the word itself, when it
+    said anything) and `lang`, the language the checks use: the best of those or, when Vision
+    gave none for the word, the one of its paragraph, block or page (None when there is no
+    information). `OcrResult.text` is Vision's full text. Used for the source image (Mode A and
+    the Mode B verification share one call per job) and for each Mode B output.
+    """
     if get_settings().mock:
         from . import mock
 
@@ -50,12 +80,16 @@ def ocr_words(image_bytes: bytes, width: int, height: int) -> OcrResult:
     words: list[Word] = []
     page_w, page_h = width, height
     para_index = 0
-    pages = response.full_text_annotation.pages if response.full_text_annotation else []
+    annotation = response.full_text_annotation
+    pages = annotation.pages if annotation else []
     for page_no, page in enumerate(pages):
         if page_no == 0 and page.width and page.height:
             page_w, page_h = int(page.width), int(page.height)
+        page_lang = _best_language(page.property)
         for block in page.blocks:
+            block_lang = _best_language(block.property) or page_lang
             for paragraph in block.paragraphs:
+                para_lang = _best_language(paragraph.property) or block_lang
                 for word in paragraph.words:
                     vertices = [(float(v.x), float(v.y)) for v in word.bounding_box.vertices]
                     if len(vertices) < 3:
@@ -68,6 +102,7 @@ def ocr_words(image_bytes: bytes, width: int, height: int) -> OcrResult:
                         break_type = word.symbols[-1].property.detected_break.type_
                         if int(break_type) != 0:
                             brk = break_type.name
+                    own = _languages(word.property)
                     words.append(
                         Word(
                             id=f"w{len(words) + 1:04d}",
@@ -76,6 +111,8 @@ def ocr_words(image_bytes: bytes, width: int, height: int) -> OcrResult:
                             confidence=float(word.confidence),
                             brk=brk,
                             para=para_index,
+                            detected_languages=own,
+                            lang=own[0][0] if own else para_lang,
                         )
                     )
                 para_index += 1
@@ -95,15 +132,4 @@ def ocr_words(image_bytes: bytes, width: int, height: int) -> OcrResult:
         page_w,
         page_h,
     )
-    return OcrResult(width=page_w, height=page_h, words=words)
-
-
-def ocr_text(image_bytes: bytes) -> str:
-    """Full OCR text of an image (Mode B verification). The text is returned, never logged."""
-    if get_settings().mock:
-        return "MOCK OCR TEXT (LAB_MOCK=1)"
-    t0 = time.perf_counter()
-    response = _annotate(image_bytes)
-    text = response.full_text_annotation.text if response.full_text_annotation else ""
-    log.info("stage=vision-verify ms=%d chars=%d", (time.perf_counter() - t0) * 1000, len(text))
-    return text
+    return OcrResult(width=page_w, height=page_h, words=words, text=annotation.text if annotation else "")

@@ -9,6 +9,9 @@ from pathlib import Path
 DEFAULT_CLAUDE_MODEL = "claude-opus-5-5"
 DEFAULT_IMAGE_MODEL = "google/gemini-2.5-flash-image"
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+MAX_IMAGE_MODELS = 4  # Mode B models compared side by side in one job
+# Output-size tiers of the OpenRouter Image API (`resolution`); "" = leave the provider default
+OUTPUT_SIZES = ("", "1K", "2K", "4K")
 REQUEST_TIMEOUT_S = 600.0  # 10 minutes everywhere (SDK, httpx2, uvicorn keep-alive)
 
 # language code -> English name used in prompts
@@ -48,6 +51,54 @@ def openrouter_api_key() -> str:
 
 def openrouter_referer() -> str:
     return _env("OPENROUTER_HTTP_REFERER") or _env("OPEN_ROUTE_HTTP_REFERER")
+
+
+@dataclass(frozen=True)
+class MinioSettings:
+    """Where the finished job is published for a reviewer (all optional; see publish.py)."""
+
+    endpoint: str  # upload endpoint, as configured (may carry a scheme)
+    public_endpoint: str  # endpoint used to sign the links the reviewer opens ("" = same as endpoint)
+    access_key: str
+    secret_key: str
+    bucket: str
+    prefix: str
+    region: str
+    expiry_hours: int  # clamped to 1..168 (SigV4 presigned URLs live at most 7 days)
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.endpoint and self.access_key and self.secret_key)
+
+    def missing(self) -> list[str]:
+        """Names of the variables that keep publishing from running (never their values)."""
+        names = []
+        if not self.endpoint:
+            names.append("MINIO_ENDPOINT (or MINIO_PUBLIC_ENDPOINT)")
+        if not self.access_key:
+            names.append("MINIO_ACCESS_KEY")
+        if not self.secret_key:
+            names.append("MINIO_SECRET_KEY")
+        return names
+
+
+def get_minio_settings() -> MinioSettings:
+    """Same variable names as the production bot, so they can be copied from its container."""
+    public = _env("MINIO_PUBLIC_ENDPOINT")
+    try:
+        hours = int(_env("MINIO_URL_EXPIRY_HOURS", "168"))
+    except ValueError:
+        hours = 168
+    return MinioSettings(
+        endpoint=_env("MINIO_ENDPOINT") or public,
+        public_endpoint=public,
+        access_key=_env("MINIO_ACCESS_KEY"),
+        secret_key=_env("MINIO_SECRET_KEY"),
+        bucket=_env("MINIO_BUCKET_NAME", "line-bot"),
+        prefix=_env("MINIO_PREFIX", "overlay-lab").strip("/"),
+        region=_env("MINIO_REGION", "us-east-1"),
+        expiry_hours=min(max(hours, 1), 168),
+    )
 
 
 def get_settings() -> Settings:

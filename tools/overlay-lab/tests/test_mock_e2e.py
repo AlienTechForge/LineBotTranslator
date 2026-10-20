@@ -36,6 +36,17 @@ def wait_done(client: TestClient, job_id: str, timeout: float = 60.0) -> dict:
     raise AssertionError("job did not finish")
 
 
+def wait_published(client: TestClient, job_id: str, timeout: float = 30.0) -> dict:
+    """Like wait_done, but also waits for the background upload to settle."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        job = client.get(f"/api/jobs/{job_id}").json()
+        if job["status"] == "done" and job["publish"]["status"] in ("done", "skipped", "error"):
+            return job
+        time.sleep(0.05)
+    raise AssertionError("job was not published")
+
+
 def polygon_mask(shape, polygons, grow=0) -> np.ndarray:
     mask = np.zeros(shape[:2], np.uint8)
     for poly in polygons:
@@ -68,8 +79,9 @@ def test_mock_end_to_end_both_modes(client):
     r = client.post(
         "/api/jobs",
         files={"file": ("fixture.png", png_of(fx.image), "image/png")},
-        data={"target_lang": "en", "mode_a": "1", "mode_b": "1", "image_model": "mock/image-model", "verify": "1"},
-    )
+        data={"target_lang": "en", "mode_a": "1", "mode_b": "1", "image_models": "mock/image-model", "verify": "1",
+              "verify_details": "1"},
+    )  # fmt: skip
     assert r.status_code == 200
     job = wait_done(client, r.json()["job_id"])
     job_id = job["job_id"]
@@ -129,11 +141,15 @@ def test_mock_end_to_end_both_modes(client):
         assert fx0 - 2 <= x0 and x1 <= fx1 + 2 and fy0 - 2 <= y0 and y1 <= fy1 + 2, u["id"]
 
     # ---- Mode B in mock returns the input image unchanged
-    b = job["mode_b"]
+    assert job["mode_b"]["status"] == "done"
+    (b,) = job["mode_b"]["results"]
     assert b["status"] == "done" and b["error"] is None, b.get("error")
     assert b["api_used"] == "mock" and b["model"] == "mock/image-model" and b["cost_usd"] == 0.0
-    assert b["verify_text"].startswith("MOCK OCR TEXT") and isinstance(b["verify_ms"], int)
-    assert np.array_equal(fetch_png(client, job_id, "B.png"), original)
+    # the mock output is the source image, so the verification passes and no retry happens
+    assert b["verdict"] == "pass" and b["verification"]["digits_ok"] and b["verification"]["leftover_ok"]
+    assert b["verification"]["output_text"].startswith("TONKATSU SET MENU") and isinstance(b["verify_ms"], int)
+    assert len(b["tries"]) == 1 and b["selected_attempt"] == 1
+    assert np.array_equal(fetch_png(client, job_id, b["output"]), original)
     assert b["output_size"] == [640, 480] and b["aspect_drift_pct"] == 0.0
 
     # ---- the job stays retrievable (also from disk) and the original is served back
@@ -173,7 +189,9 @@ def test_mode_errors_are_isolated_per_mode(client, monkeypatch):
     )
     job = wait_done(client, r.json()["job_id"])
     assert job["mode_a"]["status"] == "done"
-    assert job["mode_b"]["status"] == "error" and "image model exploded" in job["mode_b"]["error"]
+    (b,) = job["mode_b"]["results"]
+    assert b["status"] == "error" and "image model exploded" in b["error"]
+    assert job["mode_b"]["status"] == "error" and job["status"] == "done"
 
 
 def test_errors_never_leak_secrets(client, monkeypatch):
