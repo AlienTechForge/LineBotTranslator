@@ -1,9 +1,5 @@
 package com.linetranslate.bot.service.ocr;
 
-import java.util.Optional;
-
-import com.linetranslate.bot.service.ai.AiExecutionFailure;
-
 public sealed interface ImageTranslationOutcome
         permits ImageTranslationOutcome.Success, ImageTranslationOutcome.Failure {
 
@@ -16,23 +12,12 @@ public sealed interface ImageTranslationOutcome
         }
     }
 
-    record Failure(
-            ImageTranslationFailureStage stage,
-            Optional<AiExecutionFailure> executionFailure) implements ImageTranslationOutcome {
-
-        public Failure(ImageTranslationFailureStage stage) {
-            this(stage, Optional.empty());
-        }
-
-        public Failure(ImageTranslationFailureStage stage, AiExecutionFailure executionFailure) {
-            this(stage, Optional.ofNullable(executionFailure));
-        }
+    record Failure(ImageTranslationFailureStage stage) implements ImageTranslationOutcome {
 
         public Failure {
             if (stage == null) {
                 throw new IllegalArgumentException("Failed image translation requires a stage");
             }
-            executionFailure = executionFailure == null ? Optional.empty() : executionFailure;
         }
     }
 }

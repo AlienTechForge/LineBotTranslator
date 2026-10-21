@@ -18,7 +18,6 @@ import com.linecorp.bot.messaging.model.PostbackAction;
 import com.linecorp.bot.messaging.model.TextMessage;
 import com.linetranslate.bot.model.UserProfile;
 import com.linetranslate.bot.repository.UserProfileRepository;
-import com.linetranslate.bot.service.ai.AiExecutionResult;
 import com.linetranslate.bot.service.ai.AiModelCatalog;
 import com.linetranslate.bot.service.ai.AiModelDescriptor;
 import com.linetranslate.bot.service.ai.AiModelPage;
@@ -37,9 +36,7 @@ import com.linetranslate.bot.service.preference.UserPreferencesModule;
 import com.linetranslate.bot.service.settings.RuntimeSettings;
 import com.linetranslate.bot.service.settings.RuntimeSettingsSource;
 import com.linetranslate.bot.service.storage.ImageStorageResult;
-import com.linetranslate.bot.service.translation.TranslationRequestKind;
 import com.linetranslate.bot.service.translation.TranslationResponse;
-import com.linetranslate.bot.service.translation.TranslationWorkflowResult;
 
 class LineMessageRendererTests {
 
@@ -326,6 +323,12 @@ class LineMessageRendererTests {
         return new ImageTranslationReply(response, Optional.of(SIGNED_IMAGE));
     }
 
+    private static ImageTranslationReply warnedReply() {
+        ImageTranslationReply clean = overlayReply();
+        return new ImageTranslationReply(clean.response(), clean.renderedImageUrl(), Optional.empty(),
+                Optional.of(ImageTranslationService.WARNING_TEXT));
+    }
+
     private static ImageTranslationReply textOnlyReply() {
         TranslationResponse response = new TranslationResponse(
                 "【圖片文字辨識結果】\n\n識別的文字：\nhello\n\n翻譯結果：\n你好\n\n"
@@ -367,13 +370,54 @@ class LineMessageRendererTests {
     }
 
     @Test
-    void imageTextReplyDefaultsToOnWhenNoRuntimeSettingsAreAvailable() {
+    void imageTextReplyDefaultsToOffWhenNoRuntimeSettingsAreAvailable() {
         assertThat(imageRenderer(null).imageResultMessages(overlayReply()))
-                .hasSize(2)
-                .satisfies(messages -> {
-                    assertThat(messages.get(0)).isInstanceOf(ImageMessage.class);
-                    assertThat(messages.get(1)).isInstanceOf(TextMessage.class);
-                });
+                .singleElement().isInstanceOf(ImageMessage.class);
+    }
+
+    @Test
+    void aWarnedPictureIsFollowedByTheWarningLineAsItsOwnTextMessage() {
+        List<com.linecorp.bot.messaging.model.Message> messages =
+                imageRenderer(false).imageResultMessages(warnedReply());
+
+        assertThat(messages).hasSize(2);
+        assertThat(messages.get(0)).isInstanceOf(ImageMessage.class);
+        assertThat(messages.get(1)).isInstanceOfSatisfying(TextMessage.class, warning -> {
+            assertThat(warning.text()).isEqualTo("⚠️ 圖片翻譯可能有遺漏或錯字，數字請以原圖為準");
+            assertThat(warning.quickReply()).isNull();
+        });
+    }
+
+    @Test
+    void theWarningComesBeforeTheTextReplyWhichKeepsTheQuickRepliesAsTheLastMessage() {
+        List<com.linecorp.bot.messaging.model.Message> messages =
+                imageRenderer(true).imageResultMessages(warnedReply());
+
+        assertThat(messages).hasSize(3);
+        assertThat(messages.get(0)).isInstanceOf(ImageMessage.class);
+        assertThat(((TextMessage) messages.get(1)).text()).startsWith("⚠️");
+        assertThat(((TextMessage) messages.get(1)).quickReply()).isNull();
+        assertThat(((TextMessage) messages.get(2)).text()).contains("翻譯結果：\n你好");
+        assertThat(((TextMessage) messages.get(2)).quickReply()).isNotNull();
+    }
+
+    @Test
+    void aCleanPictureHasNoWarningLine() {
+        assertThat(imageRenderer(false).imageResultMessages(overlayReply())).singleElement()
+                .isInstanceOf(ImageMessage.class);
+    }
+
+    @Test
+    void aWarningThatHasNoPictureToWarnAboutIsNotSent() {
+        ImageTranslationReply unsafePicture = new ImageTranslationReply(
+                textOnlyReply().response(), Optional.of("http://user:secret@s3.azndev.com/image.png"),
+                Optional.empty(), Optional.of("⚠️ careful"));
+
+        List<com.linecorp.bot.messaging.model.Message> messages =
+                imageRenderer(true).imageResultMessages(unsafePicture);
+
+        assertThat(messages).singleElement().isInstanceOf(TextMessage.class)
+                .satisfies(message -> assertThat(((TextMessage) message).text()).doesNotContain("careful"));
     }
 
     @Test
@@ -437,18 +481,18 @@ class LineMessageRendererTests {
         when(preferences.profile("U-long")).thenReturn(UserProfile.builder().userId("U-long").build());
         String recognized = "字".repeat(50_000);
         ImageTranslationContext context = new ImageTranslationContext(
-                new DownloadedImage(new byte[] {1}, "image/png"),
-                ImageStorageResult.notStored(), recognized);
-        TranslationWorkflowResult translation = new TranslationWorkflowResult(
-                recognized, "ja", "zh-TW", new AiExecutionResult("短譯文", "openrouter", "model"),
-                20, TranslationRequestKind.IMAGE_OCR, "507f1f77bcf86cd799439011");
+                new DownloadedImage(new byte[] {1}, "image/png"), ImageStorageResult.notStored());
         when(pipeline.execute(any())).thenReturn(new ImageTranslationOutcome.Success(
-                new ImageTranslationPipelineResult(context, translation)));
+                new ImageTranslationPipelineResult(context, ImageStorageResult.stored(SIGNED_IMAGE), false,
+                        new ImageTranslationPipelineResult.Text(recognized, "短譯文", "ja", "zh-TW",
+                                "507f1f77bcf86cd799439011", "faithful", "faithful-v1"))));
         ImageTranslationReply reply = new ImageTranslationService(pipeline, profiles, preferences)
                 .processImageTranslationReply("U-long", "message");
 
-        TextMessage rendered = (TextMessage) renderer.imageResult(reply);
+        List<com.linecorp.bot.messaging.model.Message> messages = imageRenderer(true).imageResultMessages(reply);
 
+        assertThat(messages).hasSize(2);
+        TextMessage rendered = (TextMessage) messages.get(1);
         assertThat(codePoints(rendered.text())).isLessThanOrEqualTo(5_000);
         assertThat(rendered.text())
                 .contains("識別的文字：\n字字字")

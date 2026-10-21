@@ -6,9 +6,9 @@
 
 ## 產品邊界
 
-本系統接收 LINE webhook，把文字、圖片、命令或 postback 轉成明確 intent，執行翻譯或管理操作，再以 LINE message 回覆。MongoDB 是必要的 durable state；MinIO 與 Google Cloud Vision 可 disabled/degraded；OpenRouter 是唯一 AI Provider，其設定狀態直接影響翻譯 readiness。
+本系統接收 LINE webhook，把文字、圖片、命令或 postback 轉成明確 intent，執行翻譯或管理操作，再以 LINE message 回覆。MongoDB 是必要的 durable state；MinIO 與圖片翻譯服務可 disabled/degraded；OpenRouter 是唯一 AI Provider，其設定狀態直接影響翻譯 readiness。
 
-目前產品範圍包含文字翻譯、指定目標語言、圖片 OCR/AI 辨識後翻譯、翻譯結果 actions、個人翻譯偏好、管理員卡片、runtime settings、使用量／成本報表與可靠 webhook ingestion。
+目前產品範圍包含文字翻譯、指定目標語言、圖片翻譯（交給圖片翻譯服務、回傳翻好的圖片）、翻譯結果 actions、個人翻譯偏好、管理員卡片、runtime settings、使用量／成本報表與可靠 webhook ingestion。
 
 下列項目明確不在目前範圍，不應從本文件推導為待實作功能：
 
@@ -40,18 +40,18 @@
 | **Target Language** | 本次 Translation Request 實際要輸出的語言；可由命令指定或由 User Preferences 推導。 | 不一定等於全域 fallback。 |
 | **User Profile** | MongoDB 中的使用者 identity、LINE profile metadata、活動時間與翻譯計數。 | 不應被當成所有設定規則的 Interface。 |
 | **User Preferences** | `UserPreferencesModule` 對外提供的 immutable effective preferences：target language、中文目標語言、OpenRouter model、預設 Translation Style Preset 與最近語言。 | 不包含 API keys，也不等同原始 `UserProfile` document。 |
-| **Runtime Settings** | 管理員可動態變更、MongoDB versioned persistence 的非敏感全域設定；包含翻譯 defaults、OCR、木雷短網址輸出與圖片文字回覆開關，以及管理員 LINE user ID 清單（`ADMIN_USERS` 只是清單尚未保存時的 bootstrap seed）；讀取失敗時使用 deployment defaults。 | 不可保存 credential、token、API key 或 connection secret；管理員 user ID 是個人識別碼，日誌只能使用 `SafeLog.user(...)` 指紋。 |
+| **Runtime Settings** | 管理員可動態變更、MongoDB versioned persistence 的非敏感全域設定；包含翻譯 defaults、圖片翻譯開關（`ocrEnabled`，部署預設 `OCR_ENABLED`）、木雷短網址輸出與圖片文字回覆開關（`imageTextReplyEnabled`，預設關），以及管理員 LINE user ID 清單（`ADMIN_USERS` 只是清單尚未保存時的 bootstrap seed）；讀取失敗時使用 deployment defaults。 | 不可保存 credential、token、API key 或 connection secret；管理員 user ID 是個人識別碼，日誌只能使用 `SafeLog.user(...)` 指紋。 |
 | **AI Provider** | 應用程式直接串接的外部 AI gateway；目前且唯一為 OpenRouter。 | OpenRouter catalog 內的模型廠商不是應用程式的直接 provider。 |
-| **Provider Adapter** | `AiProviderAdapter` Interface 的唯一 Implementation `OpenRouterService`，封裝 Chat Completions request/response/error。 | 不包含 Google Cloud Vision OCR，也不在 caller 暴露 wire payload。 |
+| **Provider Adapter** | `AiProviderAdapter` Interface 的唯一 Implementation `OpenRouterService`，封裝 Chat Completions request/response/error。 | 不包含圖片翻譯服務（`services/image-translator`，它自己呼叫 Vision、Anthropic 與 OpenRouter），也不在 caller 暴露 wire payload。 |
 | **AI Model Catalog** | `AiModelCatalog` 提供的 OpenRouter model/capability/pricing snapshot，具有 TTL cache 與 stale fallback。 | 不是寫死的模型 allowlist，也不包含非文字輸出模型。 |
 | **Model Selection** | 依 User Preferences → Runtime Settings → deployment default 決定本次 OpenRouter model，並以 catalog 驗證 capability。 | 不是成本／品質自動路由，也不會跨 provider fallback。 |
 | **Provider Attempt** | 對 OpenRouter 的一次實際 operation，具有 status、outcome、model 與 latency。 | 不等同整體 Translation Result；一次 workflow 可有 detection 與 translation 等不同 operation。 |
 | **AI Execution Outcome** | provider execution Module 對 caller 的 normalized Success 或 Failure。 | Caller 不應解析第三方 exception message 決策。 |
 | **Translation Cache** | 以內容 hash、target、provider/model、style、glossary 與 prompt version 建立 identity 的 bounded Caffeine cache。 | 不是產品「翻譯記憶」或永久歷史；failure 不會寫入。 |
-| **Translation Record** | 成功 Translation Workflow 的 durable product record；包含原文、譯文、語言、實際 provider/model、實際 style/version、時間與圖片 storage metadata。 | 不可用來推算精確 token/cost。 |
-| **Image Translation** | LINE image download → optional storage → OCR 或 AI recognition → 共用 Translation Workflow。 | 圖片存檔失敗不等於圖片翻譯必須失敗。 |
+| **Translation Record** | 成功 Translation Workflow 的 durable product record；包含原文、譯文、語言、實際 provider/model、實際 style/version、時間與圖片 storage metadata；圖片翻譯另帶服務回報的 mode（A/B）、tier、verdict、usability 與費用（`imageMode`、`imageTier`、`imageVerdict`、`imageUsability`、`imageCostUsd`）。 | 文字翻譯不可用來推算精確 token/cost；圖片費用是服務回報的估計值。 |
+| **Image Translation** | LINE image download → validation → optional storage of the original → `ImageTranslatorClient` 呼叫圖片翻譯服務（`POST /v1/translations`，目標語言是使用者的偏好語言）→ 依服務的 `status`／`tier` 回覆翻譯後的圖片或文字，並保存 Translation Record。不經過共用 Translation Workflow，也沒有 Java 端的 OCR 或覆寫渲染。 | 圖片存檔失敗不等於圖片翻譯必須失敗；服務停擺不影響文字翻譯。 |
 | **Image Storage Result** | MinIO storage 的 stored/not-stored 結果與可選 URL。 | 不可假設每張圖片都有 URL。 |
-| **Translated Image Delivery** | 以 MinIO presigned URL 直接產生 LINE Image Message，預設再附一則辨識文字、譯文與 Translation Actions 的文字訊息（`imageTextReplyEnabled`）；可選用木雷縮短，或配置 `/i/{token}` original/preview proxy。 | 不改變 Image Storage retention；短網址有效期不可長於 presigned URL。 |
+| **Translated Image Delivery** | 以 MinIO presigned URL 直接產生 LINE Image Message；預設只回這張圖（`tier: warned` 時圖片後多一則警語），`imageTextReplyEnabled` 開啟時再附辨識文字、譯文與 Translation Actions 的文字訊息；可選用木雷縮短，或配置 `/i/{token}` original/preview proxy。 | 不改變 Image Storage retention；短網址有效期不可長於 presigned URL。 |
 | **Usage Event** | 每個 Provider Attempt 的 privacy-minimized accounting event，保存 operation、provider/model、status、latency、token、pricing snapshot 與 cost。 | 不保存 user ID、原文、譯文、correlation ID、provider payload 或 secret。 |
 | **Pricing Snapshot** | Usage Event 發生時套用的 pricing version、effective date、currency 與 cost。 | 歷史報表不應用最新價格重算。 |
 | **Usage Report** | MongoDB aggregation 產生的期間／provider／model／content kind 統計。 | 不應把全部 Translation Record 載入記憶體。 |
@@ -76,11 +76,11 @@
    - 文字翻譯（`CachedTranslationAdapter` 搭配 `CaffeineTranslationCacheStore`）：identity 為 `TranslationCacheKey`，由 source digest、target language、provider、model、Translation Style Preset ID、glossary version 與 prompt version 組成；prompt version 是 preset prompt version 加文字 prompt version（ADR 0013、ADR 0015）。寫入時以 provider 實際回傳的 model 當 key，並以規劃路由的 key 建索引，所以別名 model 讀得到實際版本。只有成功、未使用 fallback、provider 與規劃路由一致且通過 `TargetLocalePolicy.accepts` 的結果才寫入（該檢查要求譯文非空白，並只對 `zh-TW`／`zh-Hant`／`zh-CN`／`zh-Hans` 目標比對繁簡專用字，其他目標語言沒有 script 檢查）；`TranslationCacheSkipReason` 列出不寫入的情況：`FAILURE`（含被 `max_tokens` 截斷的 normalized failure）、`SAFETY_BLOCKED`、`FALLBACK`、`ROUTE_MISMATCH` 與 `INVALID_RESPONSE`。命中時以同一個驗證再檢查，不合格視為 miss。容量與時效有界：`TRANSLATION_CACHE_TTL`（expire-after-write）與 `TRANSLATION_CACHE_MAX_ENTRIES`。
    - 圖片 structured 翻譯：沒有獨立 store，`StructuredImageTranslationAdapter` 經 `CachedTranslationAdapter.translateValidated` 共用同一個 store 與 TTL／容量；source digest 取自送出的 region payload，prompt version 另加圖片 prompt version 與 structured schema version。只有通過嚴格驗證（schema、每個可翻譯 region 恰好一個答案、protected token 保留，以及同一個 `TargetLocalePolicy.accepts` 檢查，所以只有中文目標會驗證繁簡字集）的回應才寫入；未通過者，包含最後以部分 region 降級採用的回應，記為 `INVALID_RESPONSE` 而不寫入。
    - `LanguageDetectionCache`：只記住 AI 語言偵測的語言代碼，不是翻譯結果。key 只有文字的 SHA-256 digest（偵測 model、prompt 與預設中文變體在 process 內固定，不入 key）；它是獨立的 Caffeine 實例，但沿用 Translation Cache 的 TTL 與 maximum entries。`unknown`（偵測失敗）不寫入，下次會重新偵測；本地規則 fallback 的結果不經過這個 cache。命中時不再產生 detection Provider Attempt。
-9. Image Translation pipeline 不在 singleton/thread field 保存 request state；MinIO 是 optional side effect，storage degraded 時仍可繼續 OCR/翻譯。
+9. Image Translation pipeline 不在 singleton/thread field 保存 request state；MinIO 是 optional side effect，storage degraded 時仍可繼續翻譯。圖片翻譯服務（loopback、`X-Service-Token`）失敗不影響文字翻譯：它只在 liveness 群組（`imageTranslator`），不在 readiness。
 10. MinIO 內部 S3 操作使用 `MINIO_ENDPOINT`；外部 presigned URL 由 `MINIO_PUBLIC_ENDPOINT` 獨立簽署，避免流量被迫繞過 reverse proxy。
 11. Runtime Settings 只保存 allowlisted 非敏感欄位，具有 schema version、revision、operator 與 timestamp；Mongo 讀取失敗時回 deployment defaults。
 12. 每個 Provider Attempt 產生一個 Usage Event；app 不做跨 provider fallback；accounting failure 採 fail-open，不可改變 provider outcome。
-13. Usage Event 與 logs 遵守 data minimization；credential、使用者原文、OCR 結果、signed URL 與第三方完整 payload 不得記錄。
+13. Usage Event 與 logs 遵守 data minimization；credential、使用者原文、辨識結果、服務令牌、signed URL 與第三方完整 payload 不得記錄。
 14. AI Prompt 由 server-owned versioned catalog 產生；文字與圖片翻譯使用獨立模板。Target locale 以 BCP 47 canonical form 注入，圖片回應另驗證 locale/script，prompt/schema version 納入 cache identity。
 15. Translation Action 必須以 `recordId + userId` 驗證 ownership；同一來源紀錄與 target 的 durable claim 在 lease 內只允許一次 Provider Attempt；超過 lease 仍為 processing 的 claim 只能由一個 worker 原子接手重試。每次取得 claim 遞增 `attempt` fencing token，完成狀態只能以 `_id + attempt + PROCESSING` 條件寫入，失去 lease 的舊 worker 不得覆寫接手者。
 16. Translation Style 只接受 catalog 內的 stable ID；單次 style 不可修改使用者預設，無效或已移除的 stored style 回退 faithful。
@@ -109,12 +109,12 @@
 
 ### Image Translation
 
-1. 從 LINE blob API 下載圖片。
-2. 嘗試 MinIO storage；失敗只產生 not-stored result。
-3. 優先使用 configured OCR；不可用時使用 AI Provider image operation。
-4. 無可辨識文字時回明確 failure stage；有文字時進入同一 Translation Workflow。
-5. Translation Record 只在成功時保存 image URL/storage state；沒有 storage URL 仍可成功翻譯。
-6. 有安全 generated artifact 時直接回 LINE Image Message；木雷開關啟用時縮短 presigned URL。若額外配置 proxy public base，優先用 original/preview proxy URL。`imageTextReplyEnabled`（預設開，管理員可關）啟用時，同一次 reply 的第二則訊息附上辨識文字、譯文與 Translation Actions（不重複長網址）；Quick Reply 只出現在最後一則。
+1. 從 LINE blob API 下載圖片並驗證（類型、大小、尺寸、像素；EXIF 轉正）；失敗回明確 failure stage。
+2. 嘗試 MinIO storage 存下原圖；失敗只產生 not-stored result。
+3. 目標語言是使用者 profile 的偏好語言（與文字翻譯同一個 `UserPreferences` 解析，`/外文翻譯` 設定生效）。`ImageTranslatorClient` 以 multipart `POST /v1/translations`（`image`、`target_lang`、`request_id` = LINE message id，標頭 `X-Service-Token`）呼叫同容器內的圖片翻譯服務（`IMAGE_TRANSLATOR_URL`，預設 `http://127.0.0.1:4041`；讀取逾時 `IMAGE_TRANSLATOR_TIMEOUT`，預設 `PT4M`）。LINE 重送同一則事件時服務回 409，機器人回通用失敗、不會再翻一次。
+4. 依服務的 `status` 回覆：`image` 取回 PNG（`GET <image.path>`），超過 `IMAGE_TRANSLATION_MAX_OUTPUT_BYTES` 或 `IMAGE_TRANSLATION_DELIVERY_TARGET_BYTES` 時改成 JPEG，再存成 translated image 並回 LINE Image Message，`tier: warned` 時圖片後多一則警語；`text_only` 回「圖片無法完整翻譯，以下是文字翻譯：」加譯文；`no_text` 回未能識別文字；`error` 的 `anthropic_budget`／`openrouter_budget` 回額度已用完，其他原因回通用失敗；HTTP 錯誤、逾時或無法解析的回應回「圖片翻譯服務暫時無法使用」。圖片取不回、太大或存不進 storage 時，只要服務給了譯文就改回文字。
+5. 有圖或有譯文時保存 Translation Record（`sourceText` 是服務辨識的全文、`translatedText` 是服務整理的譯文，加上 image URL/storage state 與 `imageMode`、`imageTier`、`imageVerdict`、`imageUsability`、`imageCostUsd`），並更新 User Profile 的活動與最近語言；資料庫寫入失敗只會讓這則回覆沒有 Translation Actions，不會讓回覆失敗。管理員 `/admin stats` 顯示本月圖片翻譯費用的估計。
+6. 有安全 generated artifact 時直接回 LINE Image Message；木雷開關啟用時縮短 presigned URL。若額外配置 proxy public base，優先用 original/preview proxy URL。`imageTextReplyEnabled`（預設關，管理員可開）啟用時，圖片（與警語）之後再附一則辨識文字、譯文與 Translation Actions（不重複長網址）；Quick Reply 只出現在最後一則。
 
 ### 管理員互動
 
@@ -135,8 +135,8 @@
 | AI model catalog | `AiModelCatalog` → `AiModelPage` | discovery、capability/pricing parsing、TTL/stale cache、bounded search | 模型變動集中在 catalog Seam；LINE 與 admin 不直接呼叫 provider API。 |
 | Runtime settings | `RuntimeSettingsSource` → `RuntimeSettings` | allowlist、versioned persistence、fallback、audit metadata | admin 與 consumers 共用一個 non-secret Seam。 |
 | Usage accounting | `AiUsageEventSink`、`UsageQuery` | attempt event、pricing snapshot、Mongo aggregation | accounting fail-open；report 不依賴 Translation Record 掃描。 |
-| Image translation | `ImageTranslationRequest` → `ImageTranslationOutcome` | download、storage、recognition、workflow bridge | request state 為 explicit value，optional storage failure 局部化。 |
-| Translated image delivery | `ImageTranslationReply` → LINE `ImageMessage` 與文字訊息 | direct signed URL、optional proxy/preview、optional 木雷 Adapter | 木雷 failure 回退 presigned URL，不影響翻譯。 |
+| Image translation | `ImageTranslationRequest` → `ImageTranslationOutcome` | download、validation、storage、service call（`ImageTranslatorClient`）、delivery、record | request state 為 explicit value，optional storage failure 局部化；服務的失敗對應到各自的 failure stage 與回覆。 |
+| Translated image delivery | `ImageTranslationReply` → LINE `ImageMessage`、警語與文字訊息 | direct signed URL、optional proxy/preview、optional 木雷 Adapter | 木雷 failure 回退 presigned URL，不影響翻譯。 |
 | Admin image gallery | `AdminImageGalleryController` → `MinioObjectBrowser` | `ADMIN_WEB_TOKEN` bearer 驗證、僅限 `images/` 與 `translated-images/` 的 list／preview／delete | 使用者原圖不自動刪除，營運人員由此頁手動清理；token 未設定時不註冊任何路由。 |
 
 ## Durable data ownership
@@ -144,7 +144,7 @@
 | Collection | Owner | 可保存 | 不可保存／不可假設 |
 | --- | --- | --- | --- |
 | `user_profiles` | User Preferences / profile services | LINE profile metadata、preferences、活動與計數 | API secrets；其他 Module 不直接重建 preference precedence。 |
-| `translation_records` | Translation Workflow | 成功翻譯內容、語言、actual provider/model、actual style/version、時間、image storage metadata | 精確 token/cost；失敗 attempt。 |
+| `translation_records` | Translation Workflow | 成功翻譯內容、語言、actual provider/model、actual style/version、時間、image storage metadata、圖片翻譯服務的 mode/tier/verdict/usability/cost | 文字翻譯的精確 token/cost；失敗 attempt。 |
 | `translation_action_claims` | Translation Action Module | hashed action ID、owner、來源／結果 record ID、target、style ID、status、`attempt`、timestamps | 原文、譯文、LINE payload、postback data、provider payload 或 secret。 |
 | `runtime_settings` | Runtime Settings Module | allowlisted settings、schema/revision、operator/time | credential、token、API key、connection secret。 |
 | `ai_usage_events` | Usage Accounting Module | provider attempt metadata、token、pricing/cost snapshot | user ID、原文、譯文、correlation ID、secret。 |

@@ -105,23 +105,24 @@ class RuntimeSettingsModuleIntegrationTests {
 
     @Test
     void imageTextReplySwitchAcceptsTheSameValuesAsTheOtherSwitchesAndRecordsTheChange() {
-        assertThat(module.current().imageTextReplyEnabled()).isTrue();
+        // Picture-only replies are the default; an administrator can turn the text reply on and off again.
+        assertThat(module.current().imageTextReplyEnabled()).isFalse();
 
-        RuntimeSettings off = module.update(RuntimeSettingKey.IMAGE_TEXT_REPLY_ENABLED, "關", OPERATOR);
-        assertThat(off.imageTextReplyEnabled()).isFalse();
-        assertThat(off.shortUrlEnabled()).isEqualTo(appConfig.isShortUrlEnabled());
         RuntimeSettings on = module.update(RuntimeSettingKey.IMAGE_TEXT_REPLY_ENABLED, "ON", OPERATOR);
         assertThat(on.imageTextReplyEnabled()).isTrue();
-        assertThat(on.revision()).isEqualTo(2);
+        assertThat(on.shortUrlEnabled()).isEqualTo(appConfig.isShortUrlEnabled());
+        RuntimeSettings off = module.update(RuntimeSettingKey.IMAGE_TEXT_REPLY_ENABLED, "關", OPERATOR);
+        assertThat(off.imageTextReplyEnabled()).isFalse();
+        assertThat(off.revision()).isEqualTo(2);
 
         Document stored = mongoTemplate.getCollection(COLLECTION).find().first();
         List<Document> changes = stored.getList("changes", Document.class);
         assertThat(changes).extracting(change -> change.getString("key"))
                 .containsExactly("IMAGE_TEXT_REPLY_ENABLED", "IMAGE_TEXT_REPLY_ENABLED");
-        assertThat(changes.get(0).getBoolean("previousValue")).isTrue();
-        assertThat(changes.get(0).getBoolean("newValue")).isFalse();
-        assertThat(changes.get(1).getBoolean("previousValue")).isFalse();
-        assertThat(changes.get(1).getBoolean("newValue")).isTrue();
+        assertThat(changes.get(0).getBoolean("previousValue")).isFalse();
+        assertThat(changes.get(0).getBoolean("newValue")).isTrue();
+        assertThat(changes.get(1).getBoolean("previousValue")).isTrue();
+        assertThat(changes.get(1).getBoolean("newValue")).isFalse();
     }
 
     @Test
@@ -157,7 +158,7 @@ class RuntimeSettingsModuleIntegrationTests {
         assertThat(settings.ocrEnabled()).isEqualTo(appConfig.isOcrEnabled());
         assertThat(settings.shortUrlEnabled()).isEqualTo(appConfig.isShortUrlEnabled());
         assertThat(settings.imageTextReplyEnabled()).isEqualTo(appConfig.isImageTextReplyEnabled());
-        assertThat(settings.imageTextReplyEnabled()).isTrue();
+        assertThat(settings.imageTextReplyEnabled()).isFalse();
         assertThat(settings.adminUserIds()).isEmpty();
         assertThat(settings.source()).isEqualTo(RuntimeSettings.Source.DEPLOYMENT_DEFAULTS);
         assertThat(mongoTemplate.collectionExists(COLLECTION)).isFalse();

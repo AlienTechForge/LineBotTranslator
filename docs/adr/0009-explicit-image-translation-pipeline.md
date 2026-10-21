@@ -4,7 +4,9 @@
 
 ## Status
 
-Accepted
+Superseded by ADR-0017
+
+Java 端的 Vision OCR、區塊切分、方向與直書偵測、覆寫渲染與其安全政策（本文大部分內容）已隨 ADR-0017 移除，圖片改由 `services/image-translator` 處理。仍然適用的是 explicit、stateless 的 request／result、failure stage、保留 thread interruption 與 MinIO 為 optional side effect。本文保留作為歷史紀錄。
 
 ## Context
 

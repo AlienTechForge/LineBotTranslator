@@ -24,7 +24,7 @@ public class AppConfigurationSummary implements ApplicationListener<ApplicationS
     private final HealthIndicator lineConfiguration;
     private final HealthIndicator mongo;
     private final HealthIndicator minio;
-    private final HealthIndicator ocrConfiguration;
+    private final HealthIndicator imageTranslator;
     private final HealthIndicator openRouterConfiguration;
 
     public AppConfigurationSummary(
@@ -33,14 +33,14 @@ public class AppConfigurationSummary implements ApplicationListener<ApplicationS
             @Qualifier("lineConfigurationHealthIndicator") HealthIndicator lineConfiguration,
             @Qualifier("mongoHealthIndicator") HealthIndicator mongo,
             @Qualifier("minioHealthIndicator") HealthIndicator minio,
-            @Qualifier("ocrConfigurationHealthIndicator") HealthIndicator ocrConfiguration,
+            @Qualifier("imageTranslatorHealthIndicator") HealthIndicator imageTranslator,
             @Qualifier("openRouterConfigurationHealthIndicator") HealthIndicator openRouterConfiguration) {
         this.serverPort = serverPort;
         this.environment = environment;
         this.lineConfiguration = lineConfiguration;
         this.mongo = mongo;
         this.minio = minio;
-        this.ocrConfiguration = ocrConfiguration;
+        this.imageTranslator = imageTranslator;
         this.openRouterConfiguration = openRouterConfiguration;
     }
 
@@ -61,7 +61,7 @@ public class AppConfigurationSummary implements ApplicationListener<ApplicationS
                 "LINE=" + configurationState(lineConfiguration),
                 "MongoDB=" + requiredState(mongo),
                 "MinIO=" + optionalState(minio),
-                "OCR=" + configurationOptionalState(ocrConfiguration),
+                "ImageTranslator=" + optionalState(imageTranslator),
                 "OpenRouter=" + configurationState(openRouterConfiguration));
     }
 
@@ -73,17 +73,6 @@ public class AppConfigurationSummary implements ApplicationListener<ApplicationS
         Status status = indicator.health().getStatus();
         if (Status.UP.equals(status)) {
             return "ready";
-        }
-        if (DependencyHealthConfig.DISABLED.equals(status)) {
-            return "disabled";
-        }
-        return "degraded";
-    }
-
-    private String configurationOptionalState(HealthIndicator indicator) {
-        Status status = indicator.health().getStatus();
-        if (Status.UP.equals(status)) {
-            return "configured";
         }
         if (DependencyHealthConfig.DISABLED.equals(status)) {
             return "disabled";

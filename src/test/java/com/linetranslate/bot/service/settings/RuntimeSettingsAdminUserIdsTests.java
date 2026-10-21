@@ -45,12 +45,13 @@ class RuntimeSettingsAdminUserIdsTests {
 
         assertThat(withShortUrl.adminUserIds()).isEmpty();
         assertThat(withShortUrl.shortUrlEnabled()).isTrue();
-        assertThat(withShortUrl.imageTextReplyEnabled()).isTrue();
+        assertThat(withShortUrl.imageTextReplyEnabled()).isFalse();
         assertThat(withImageTextReply.adminUserIds()).isEmpty();
         assertThat(withImageTextReply.imageTextReplyEnabled()).isFalse();
         assertThat(original.adminUserIds()).isEmpty();
         assertThat(original.shortUrlEnabled()).isFalse();
-        assertThat(original.imageTextReplyEnabled()).isTrue();
+        // Picture-only replies: the text reply is off unless it is asked for.
+        assertThat(original.imageTextReplyEnabled()).isFalse();
     }
 
     @Test

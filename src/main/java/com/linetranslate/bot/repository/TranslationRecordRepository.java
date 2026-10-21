@@ -55,7 +55,22 @@ public interface TranslationRecordRepository extends MongoRepository<Translation
     })
     List<KeyedCount> countPerAiProviderByCreatedAtBetween(LocalDateTime start, LocalDateTime end);
 
+    /**
+     * What the image-translator service cost for the image records created in
+     * {@code [start, end)}: the sum of their {@code imageCostUsd} and how many carried one. Empty
+     * when there are none.
+     */
+    @Aggregation(pipeline = {
+            "{ $match: { createdAt: { $gte: ?0, $lt: ?1 }, isImageTranslation: true,"
+                    + " imageCostUsd: { $ne: null } } }",
+            "{ $group: { _id: null, totalUsd: { $sum: '$imageCostUsd' }, records: { $sum: 1 } } }"
+    })
+    Optional<ImageCostSummary> sumImageCostByCreatedAtBetween(LocalDateTime start, LocalDateTime end);
+
     record KeyedCount(String key, long count) {
+    }
+
+    record ImageCostSummary(double totalUsd, long records) {
     }
 
     record TranslationSummary(long total, long imageTranslations, double averageProcessingTimeMs) {

@@ -1,6 +1,6 @@
 # LINE Bot 翻譯機器人
 
-這是一個基於 Spring Boot 開發的 LINE Bot 翻譯機器人，透過 OpenRouter 統一 API 使用多種模型進行文字翻譯，並以 Google Cloud Vision API 進行圖片文字識別與翻譯。
+這是一個基於 Spring Boot 開發的 LINE Bot 翻譯機器人，透過 OpenRouter 統一 API 使用多種模型進行文字翻譯，並把圖片交給同一個容器裡的圖片翻譯服務（`services/image-translator`），回傳翻好的圖片。
 
 共同 domain 名稱與架構決策請先閱讀 [Domain glossary 與系統脈絡](CONTEXT.md) 及 [Architecture Decision Records](docs/adr/README.md)。
 
@@ -8,7 +8,7 @@
 
 - **自動語言檢測**：自動識別輸入文字的語言，並選擇適當的目標語言進行翻譯
 - **多語言翻譯**：支持多種語言之間的翻譯，包括中文、英文、日文、韓文等
-- **圖片文字識別**：使用 OCR 技術識別圖片中的文字並翻譯
+- **圖片翻譯**：把圖片中的文字翻成使用者的目標語言，直接回傳翻譯後的圖片（由圖片翻譯服務產生）
 - **處理中提示**：一對一聊天室執行文字或圖片翻譯時顯示 bounded LINE loading animation；群組與命令安全略過
 - **翻譯結果操作**：支援複製譯文、改用常用目標語言及具冪等保護的重新翻譯 Quick Reply
 - **用戶偏好設定**：允許用戶在對話中搜尋、指定 OpenRouter 模型與默認翻譯語言
@@ -20,7 +20,7 @@
 - **後端框架**：Spring Boot 4.1（Java 17+）
 - **數據庫**：MongoDB
 - **翻譯引擎**：OpenRouter Chat Completions API
-- **OCR 技術**：Google Cloud Vision API
+- **圖片翻譯**：`services/image-translator`（Python，與機器人同一個容器，Java 以 loopback HTTP 呼叫；Vision OCR、Claude 與圖片模型都在這個服務裡）
 - **消息平台**：LINE Messaging API（LINE Bot SDK for Java 10.1）
 - **架構文件**：[Domain glossary 與系統脈絡](CONTEXT.md)、[Architecture Decision Records](docs/adr/README.md)
 
@@ -71,15 +71,19 @@ OPEN_ROUTE_API_URL=https://openrouter.ai/api/v1
 # 啟動完成後在背景預先載入 OpenRouter 模型清單，第一次查詢不必等候；設為 false 則維持首次查詢時才載入
 OPEN_ROUTE_CATALOG_WARMUP=true
 
-# Google Cloud Vision API 配置 (OCR)
-# 指向 Google service account JSON；正式環境改由 GOOGLE_CREDENTIALS_JSON secret 傳入（見 deployment-guide.md）
-GOOGLE_APPLICATION_CREDENTIALS=./linebot.json
-GOOGLE_VISION_TIMEOUT_MS=60000
+# 圖片翻譯服務（services/image-translator，與機器人同一個容器）
+# 服務位址與共用令牌；令牌由容器 entrypoint 產生，正式環境一定有值。IMAGE_TRANSLATOR_ENABLED=false 讓機器人不再呼叫它
+IMAGE_TRANSLATOR_URL=http://127.0.0.1:4041
+IMAGE_TRANSLATOR_TOKEN=your_shared_service_token
+# 機器人等待一次圖片翻譯的時間（ISO 8601）；服務自己的期限是 210 秒
+IMAGE_TRANSLATOR_TIMEOUT=PT4M
+# Vision、Anthropic 與 OpenRouter 的金鑰（GOOGLE_APPLICATION_CREDENTIALS、ANTHROPIC_API_KEY、OPEN_ROUTE_API_KEY）由服務自己讀取，見 services/image-translator/README.md
 
 # 應用程式配置
+# 圖片翻譯的總開關（沿用 OCR_ENABLED 這個名稱；管理員可用 /admin config ocr 動態切換）
 OCR_ENABLED=true
-# 翻譯圖片後是否再附上辨識文字、譯文與快速操作（管理員可用 /admin config image-text 動態切換）
-IMAGE_TEXT_REPLY_ENABLED=true
+# 翻譯圖片後是否再附上辨識文字、譯文與快速操作（預設 false：只回傳圖片；管理員可用 /admin config image-text 動態切換）
+IMAGE_TEXT_REPLY_ENABLED=false
 
 # 可選 MinIO 圖片儲存；停用或不可用時圖片翻譯仍可繼續
 MINIO_ENABLED=true
@@ -150,7 +154,11 @@ java -jar target/linebot-translator-0.0.1-SNAPSHOT.jar
 
 ### 圖片翻譯
 
-- 直接將包含文字的圖片發送給機器人，它會自動識別並翻譯圖中的文字
+- 直接將包含文字的圖片發送給機器人，它會把圖中的文字翻成你的目標語言（`/外文翻譯 [語言]` 的設定），並**只回傳翻譯後的圖片**。
+- 機器人下載並檢查圖片、存下原圖，再呼叫圖片翻譯服務（Mode A 先試，不夠好時 Mode B 再試一次，最久約 4 分鐘）。服務判定圖片可用但不完美時（`tier: warned`），圖片後面多一則提醒：`⚠️ 圖片翻譯可能有遺漏或錯字，數字請以原圖為準`。
+- 服務認為圖片不夠好（`text_only`）時改回文字：`圖片無法完整翻譯，以下是文字翻譯：` 加上譯文。圖上沒有字回「未能識別到圖片中的文字」；本月額度用完回「本月圖片翻譯額度已用完，請下個月再試。」；服務不可用或逾時回「圖片翻譯服務暫時無法使用，請稍後再試。」。
+- 管理員可用 `/admin config ocr [on|off]` 開關圖片翻譯，`/admin stats` 會顯示本月圖片翻譯費用的估計。
+- 這一版移除了 Java 端的 Vision OCR、區塊切分與覆寫圖片的渲染（`ImageTranslationOverlayRenderer` 等）與它們的設定（`IMAGE_TRANSLATION_OVERLAY_ENABLED`、`*_MASK_RATIO`、`*_LOW_CONFIDENCE_THRESHOLD`、`*_ORIENTATION_RETRY_ENABLED`、`GOOGLE_VISION_TIMEOUT_MS`）。
 
 ### 翻譯結果操作
 
@@ -184,7 +192,7 @@ java -jar target/linebot-translator-0.0.1-SNAPSHOT.jar
 - `/admin add [用戶 ID]` - 新增管理員（保存於 MongoDB，重啟後仍有效）
 - `/admin remove [用戶 ID]` - 移除管理員（保存於 MongoDB，無法移除最後一位管理員）
 - `/admin config model [完整模型 slug]` - 設置全域 OpenRouter 默認模型
-- `/admin config image-text [on|off]` - 切換翻譯圖片後是否附上辨識文字、譯文與快速操作（預設 on，部署預設值 `IMAGE_TEXT_REPLY_ENABLED`）
+- `/admin config image-text [on|off]` - 切換翻譯圖片後是否附上辨識文字、譯文與快速操作（預設 off，只回傳圖片；部署預設值 `IMAGE_TEXT_REPLY_ENABLED`）
 
 ## 貢獻與支持
 

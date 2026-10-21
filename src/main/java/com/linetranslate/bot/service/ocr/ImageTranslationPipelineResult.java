@@ -1,52 +1,45 @@
 package com.linetranslate.bot.service.ocr;
 
 import com.linetranslate.bot.service.storage.ImageStorageResult;
-import com.linetranslate.bot.service.translation.TranslationWorkflowResult;
 
+/**
+ * What the image-translator service made of one picture, ready to be put into a LINE reply: the
+ * stored translated picture (when there is one to send), whether it carries the "may have gaps"
+ * warning, and the texts with the id of the {@code TranslationRecord} that was saved for them.
+ *
+ * @param renderedImage the translated picture in storage; {@link ImageStorageResult#notStored()} when
+ *                      the reply is the translated text alone
+ * @param warned        the service judged the picture usable but not clean ({@code tier: warned})
+ */
 public record ImageTranslationPipelineResult(
         ImageTranslationContext context,
-        TranslationWorkflowResult translation,
         ImageStorageResult renderedImage,
-        int lowConfidenceBlockCount,
-        ImageOverlayDisposition overlayDisposition,
-        OverlayDegradationSummary degradation) {
-
-    public ImageTranslationPipelineResult(
-            ImageTranslationContext context,
-            TranslationWorkflowResult translation) {
-        this(context, translation, ImageStorageResult.notStored(), 0, ImageOverlayDisposition.UNAVAILABLE,
-                OverlayDegradationSummary.none());
-    }
-
-    public ImageTranslationPipelineResult(
-            ImageTranslationContext context,
-            TranslationWorkflowResult translation,
-            ImageStorageResult renderedImage,
-            int lowConfidenceBlockCount) {
-        this(context, translation, renderedImage, lowConfidenceBlockCount,
-                renderedImage != null && renderedImage.stored()
-                        ? ImageOverlayDisposition.GENERATED : ImageOverlayDisposition.UNAVAILABLE,
-                OverlayDegradationSummary.single(OverlayDegradationReason.LOW_CONFIDENCE,
-                        lowConfidenceBlockCount));
-    }
-
-    public ImageTranslationPipelineResult(
-            ImageTranslationContext context, TranslationWorkflowResult translation,
-            ImageStorageResult renderedImage, int lowConfidenceBlockCount,
-            ImageOverlayDisposition overlayDisposition) {
-        this(context, translation, renderedImage, lowConfidenceBlockCount, overlayDisposition,
-                OverlayDegradationSummary.single(OverlayDegradationReason.LOW_CONFIDENCE,
-                        lowConfidenceBlockCount));
-    }
+        boolean warned,
+        Text text) {
 
     public ImageTranslationPipelineResult {
-        if (context == null || translation == null) {
-            throw new IllegalArgumentException("Image translation result requires context and translation");
+        if (context == null || text == null) {
+            throw new IllegalArgumentException("Image translation result requires context and text");
         }
         renderedImage = renderedImage == null ? ImageStorageResult.notStored() : renderedImage;
-        lowConfidenceBlockCount = Math.max(0, lowConfidenceBlockCount);
-        overlayDisposition = overlayDisposition == null ? ImageOverlayDisposition.UNAVAILABLE : overlayDisposition;
-        degradation = degradation == null ? OverlayDegradationSummary.none() : degradation;
-        lowConfidenceBlockCount = degradation.count(OverlayDegradationReason.LOW_CONFIDENCE);
+    }
+
+    /**
+     * The recognised and the translated text of the picture. {@code recordId} is null when the record
+     * could not be saved; the languages are the ones the service reported and the one that was asked for.
+     */
+    public record Text(
+            String recognizedText,
+            String translatedText,
+            String sourceLanguage,
+            String targetLanguage,
+            String recordId,
+            String stylePresetId,
+            String stylePromptVersion) {
+
+        public Text {
+            recognizedText = recognizedText == null ? "" : recognizedText;
+            translatedText = translatedText == null ? "" : translatedText;
+        }
     }
 }

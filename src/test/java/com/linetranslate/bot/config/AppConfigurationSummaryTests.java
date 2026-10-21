@@ -25,8 +25,25 @@ class AppConfigurationSummaryTests {
                 indicator(Health.up().build()));
 
         assertThat(summary.statusSummary()).isEqualTo(
-                "LINE=configured, MongoDB=unavailable, MinIO=degraded, OCR=disabled, "
+                "LINE=configured, MongoDB=unavailable, MinIO=degraded, ImageTranslator=disabled, "
                         + "OpenRouter=configured");
+    }
+
+    @Test
+    void theImageTranslatorIsReadyWhenItAnswersAndDegradedWhenItDoesNot() {
+        assertThat(summaryWith(Health.up().build()).statusSummary()).contains("ImageTranslator=ready");
+        assertThat(summaryWith(Health.down().build()).statusSummary()).contains("ImageTranslator=degraded");
+    }
+
+    private AppConfigurationSummary summaryWith(Health imageTranslator) {
+        return new AppConfigurationSummary(
+                4040,
+                mock(Environment.class),
+                indicator(Health.up().build()),
+                indicator(Health.up().build()),
+                indicator(Health.up().build()),
+                indicator(imageTranslator),
+                indicator(Health.up().build()));
     }
 
     private HealthIndicator indicator(Health health) {

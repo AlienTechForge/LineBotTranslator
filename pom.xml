@@ -18,6 +18,7 @@
 		<java.version>17</java.version>
 		<line.bot.sdk.version>10.2.0</line.bot.sdk.version>
 		<guava.version>33.7.2-jre</guava.version>
+		<okhttp.pinned.version>5.5.0</okhttp.pinned.version>
 	</properties>
 
 	<dependencies>
@@ -69,7 +70,7 @@
 		<dependency>
 			<groupId>com.squareup.okhttp3</groupId>
 			<artifactId>okhttp-jvm</artifactId>
-			<version>5.5.0</version>
+			<version>${okhttp.pinned.version}</version>
 		</dependency>
 
 		<!-- JSON 處理 -->
@@ -89,18 +90,11 @@
 				</exclusion>
 			</exclusions>
 		</dependency>
-		<!-- gRPC 1.80 and MinIO require APIs absent from language-detector's Guava 18. -->
+		<!-- MinIO requires APIs absent from language-detector's Guava 18. -->
 		<dependency>
 			<groupId>com.google.guava</groupId>
 			<artifactId>guava</artifactId>
 			<version>${guava.version}</version>
-		</dependency>
-
-		<!-- Google Cloud Vision API (用於 OCR) -->
-		<dependency>
-			<groupId>com.google.cloud</groupId>
-			<artifactId>google-cloud-vision</artifactId>
-			<version>3.97.0</version>
 		</dependency>
 
 		<!-- 圖片處理 -->
@@ -144,6 +138,13 @@
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-restclient-test</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<!-- A local stand-in for the image-translator service; same version as okhttp-jvm. -->
+		<dependency>
+			<groupId>com.squareup.okhttp3</groupId>
+			<artifactId>mockwebserver</artifactId>
+			<version>${okhttp.pinned.version}</version>
 			<scope>test</scope>
 		</dependency>
 	</dependencies>

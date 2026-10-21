@@ -67,7 +67,7 @@ public record RuntimeSettings(
             String updatedBy,
             Source source) {
         this(defaultTargetLanguageForChinese, defaultTargetLanguageForOthers,
-                openRouterDefaultModel, ocrEnabled, false, true, schemaVersion, revision,
+                openRouterDefaultModel, ocrEnabled, false, false, schemaVersion, revision,
                 updatedAt, updatedBy, source);
     }
 
@@ -84,7 +84,7 @@ public record RuntimeSettings(
             String updatedBy,
             Source source) {
         this(defaultTargetLanguageForChinese, defaultTargetLanguageForOthers,
-                openRouterDefaultModel, ocrEnabled, shortUrlEnabled, true, schemaVersion,
+                openRouterDefaultModel, ocrEnabled, shortUrlEnabled, false, schemaVersion,
                 revision, updatedAt, updatedBy, source);
     }
 

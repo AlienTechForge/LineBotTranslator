@@ -9,6 +9,7 @@ import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.health.actuate.endpoint.HealthEndpointGroups;
 import org.springframework.boot.resttestclient.TestRestTemplate;
 import org.springframework.boot.resttestclient.autoconfigure.AutoConfigureTestRestTemplate;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -30,6 +31,9 @@ class HealthEndpointIntegrationTests {
 
     @Autowired
     private TestRestTemplate restTemplate;
+
+    @Autowired
+    private HealthEndpointGroups groups;
 
     @MockitoBean
     private MinioStorageService minioStorageService;
@@ -66,9 +70,28 @@ class HealthEndpointIntegrationTests {
         assertComponentStatus(response, "lineConfiguration", "UP");
         assertComponentStatus(response, "mongo", "UP");
         assertComponentStatus(response, "minio", "UP");
-        assertComponentStatus(response, "ocrConfiguration", "DISABLED");
         assertComponentStatus(response, "openRouterConfiguration", "UP");
         assertNoDetails(response.getBody());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void theImageTranslatorIsNotPartOfReadinessSoADeadServiceNeverStopsTextMessages() {
+        ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
+                "/actuator/health/readiness",
+                HttpMethod.GET,
+                null,
+                new ParameterizedTypeReference<>() { });
+
+        assertThat((Map<String, Object>) response.getBody().get("components"))
+                .doesNotContainKeys("imageTranslator", "ocrConfiguration");
+    }
+
+    @Test
+    void theImageTranslatorIsAMemberOfTheLivenessGroupOnly() {
+        assertThat(groups.get("liveness").isMember("imageTranslator")).isTrue();
+        assertThat(groups.get("readiness").isMember("imageTranslator")).isFalse();
+        assertThat(groups.get("readiness").isMember("ocrConfiguration")).isFalse();
     }
 
     @SuppressWarnings("unchecked")
