@@ -54,44 +54,48 @@ class CiQualityGateContractTests {
                 .contains("target/surefire-reports/")
                 .contains("target/failsafe-reports/")
                 .contains("target/image-translation-replay/")
-                .contains("Verify production renderer runtime")
+                .contains("Verify production image runtime")
                 .contains("fc-match \"Noto Sans CJK TC\"");
     }
 
     @Test
-    void deploymentPassesFailClosedOverlayPolicyIntoRuntimeContainer() throws IOException {
-        String workflow = Files.readString(Path.of(".github", "workflows", "ci-cd.yml"));
-        String deployScript = Files.readString(Path.of("scripts", "deploy.sh"));
+    void deploymentNoLongerPassesTheOverlayOnlySettingsAndPassesTheImageTranslatorSettings() throws IOException {
+        Set<String> overlayOnlySettings = Set.of(
+                "IMAGE_TRANSLATION_LOW_CONFIDENCE_THRESHOLD", "IMAGE_TRANSLATION_OVERLAY_ENABLED",
+                "IMAGE_TRANSLATION_MAX_REGION_AREA_RATIO", "IMAGE_TRANSLATION_MAX_TOTAL_MASK_RATIO",
+                "IMAGE_TRANSLATION_POSTER_MAX_TOTAL_MASK_RATIO", "IMAGE_TRANSLATION_ORIENTATION_RETRY_ENABLED");
 
-        assertThat(workflow)
-                .contains("IMAGE_TRANSLATION_OVERLAY_ENABLED:")
-                .contains("IMAGE_TRANSLATION_MAX_REGION_AREA_RATIO:")
-                .contains("IMAGE_TRANSLATION_MAX_TOTAL_MASK_RATIO:")
-                .contains("IMAGE_TRANSLATION_POSTER_MAX_TOTAL_MASK_RATIO:")
-                .contains("IMAGE_TRANSLATION_ORIENTATION_RETRY_ENABLED: ${{ vars.IMAGE_TRANSLATION_ORIENTATION_RETRY_ENABLED || 'false' }}");
-        assertThat(deployScript)
-                .contains("IMAGE_TRANSLATION_OVERLAY_ENABLED")
-                .contains("IMAGE_TRANSLATION_MAX_REGION_AREA_RATIO")
-                .contains("IMAGE_TRANSLATION_MAX_TOTAL_MASK_RATIO")
-                .contains("IMAGE_TRANSLATION_POSTER_MAX_TOTAL_MASK_RATIO")
-                .contains("IMAGE_TRANSLATION_ORIENTATION_RETRY_ENABLED");
+        assertThat(runtimeKeys(Files.readString(Path.of("scripts", "deploy.sh"))))
+                .as("runtime_keys in scripts/deploy.sh")
+                .doesNotContainAnyElementsOf(overlayOnlySettings)
+                .contains("ANTHROPIC_API_KEY", "IMAGE_TRANSLATOR_TIMEOUT", "OPENROUTER_MONTHLY_BUDGET_USD",
+                        "ANTHROPIC_MONTHLY_BUDGET_USD", "SEND_MIN_USABILITY");
+        for (String workflowFile : List.of("ci-cd.yml", "rotate-mongodb-credential.yml")) {
+            assertThat(deployStepEnvironment(workflowFile))
+                    .as(workflowFile)
+                    .doesNotContainKeys(overlayOnlySettings.toArray(String[]::new))
+                    // A secret passed through unchanged: an unset secret becomes an empty value.
+                    .containsEntry("ANTHROPIC_API_KEY", "${{ secrets.ANTHROPIC_API_KEY }}")
+                    .containsEntry("IMAGE_TRANSLATOR_TIMEOUT", "${{ vars.IMAGE_TRANSLATOR_TIMEOUT || 'PT4M' }}")
+                    .containsEntry("OPENROUTER_MONTHLY_BUDGET_USD",
+                            "${{ vars.OPENROUTER_MONTHLY_BUDGET_USD || '15' }}")
+                    .containsEntry("ANTHROPIC_MONTHLY_BUDGET_USD",
+                            "${{ vars.ANTHROPIC_MONTHLY_BUDGET_USD || '80' }}")
+                    .containsEntry("SEND_MIN_USABILITY", "${{ vars.SEND_MIN_USABILITY || '0.60' }}");
+        }
     }
 
     @Test
-    void theOrientationRetryIsOffEverywhereItIsConfiguredByDefault() throws IOException {
-        assertThat(Files.readString(Path.of("src", "main", "resources", "application.properties")))
-                .contains("app.image-translation.orientation-retry-enabled="
-                        + "${IMAGE_TRANSLATION_ORIENTATION_RETRY_ENABLED:false}");
-        assertThat(Files.readString(Path.of(".env.example")))
-                .contains("IMAGE_TRANSLATION_ORIENTATION_RETRY_ENABLED=false");
-        for (String workflow : List.of("ci-cd.yml", "rotate-mongodb-credential.yml")) {
-            assertThat(Files.readString(Path.of(".github", "workflows", workflow)))
-                    .as(workflow)
-                    .contains("IMAGE_TRANSLATION_ORIENTATION_RETRY_ENABLED: "
-                            + "${{ vars.IMAGE_TRANSLATION_ORIENTATION_RETRY_ENABLED || 'false' }}");
+    void theOrientationRetryVariableIsNoLongerConfiguredInTheDeploymentFiles() throws IOException {
+        for (Path file : List.of(
+                Path.of(".github", "workflows", "ci-cd.yml"),
+                Path.of(".github", "workflows", "rotate-mongodb-credential.yml"),
+                Path.of("scripts", "deploy.sh"),
+                Path.of("deployment-guide.md"))) {
+            assertThat(Files.readString(file))
+                    .as(file.toString())
+                    .doesNotContain("IMAGE_TRANSLATION_ORIENTATION_RETRY_ENABLED");
         }
-        assertThat(Files.readString(Path.of("deployment-guide.md")))
-                .contains("`IMAGE_TRANSLATION_ORIENTATION_RETRY_ENABLED` | `false`");
     }
 
     @Test
@@ -153,20 +157,22 @@ class CiQualityGateContractTests {
         String workflow = Files.readString(Path.of(".github", "workflows", "ci-cd.yml"));
         String deployScript = Files.readString(Path.of("scripts", "deploy.sh"));
         String dockerfile = Files.readString(Path.of("Dockerfile"));
+        String entrypoint = Files.readString(Path.of("docker", "entrypoint.sh"));
 
         assertThat(workflow)
                 .contains("IMAGE_PROXY_CONTENT_CACHE_MAX_BYTES: "
                         + "${{ vars.IMAGE_PROXY_CONTENT_CACHE_MAX_BYTES || '67108864' }}")
                 .contains("JAVA_TOOL_OPTIONS: ${{ vars.JAVA_TOOL_OPTIONS || "
-                        + "'-XX:MaxRAMPercentage=75.0 -XX:+ExitOnOutOfMemoryError' }}")
+                        + "'-XX:MaxRAMPercentage=60.0 -XX:+ExitOnOutOfMemoryError' }}")
                 .doesNotContain("IMAGE_PROXY_CONTENT_CACHE_ENTRIES");
         assertThat(deployScript)
                 .contains("IMAGE_PROXY_CONTENT_CACHE_MAX_BYTES")
                 .contains("JAVA_TOOL_OPTIONS")
                 .doesNotContain("IMAGE_PROXY_CONTENT_CACHE_ENTRIES");
         assertThat(dockerfile)
-                .contains("JAVA_TOOL_OPTIONS=\"-XX:MaxRAMPercentage=75.0 -XX:+ExitOnOutOfMemoryError\"")
-                .contains("ENTRYPOINT [\"java\", \"-jar\", \"/app/app.jar\"]");
+                .contains("JAVA_TOOL_OPTIONS=\"-XX:MaxRAMPercentage=60.0 -XX:+ExitOnOutOfMemoryError\"")
+                .contains("ENTRYPOINT [\"/app/entrypoint.sh\"]");
+        assertThat(entrypoint).contains("java -jar /app/app.jar");
     }
 
     @Test

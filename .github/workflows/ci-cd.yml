@@ -160,6 +160,11 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Install the fonts the production image has
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends fonts-noto-cjk fonts-noto-core fonts-dejavu-core
+
       - name: Run image-translator tests
         run: pytest -q
 
