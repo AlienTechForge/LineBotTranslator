@@ -290,7 +290,7 @@ def test_the_batch_manifest_is_published_last_with_the_url_of_every_job_manifest
     assert store.puts[-1] == batch_key
 
     m = manifest_at(store, batch_key)
-    assert m["schema_version"] == 3 and m["kind"] == "batch" and m["batch_id"] == batch_id and m["mock"] is False
+    assert m["schema_version"] == 4 and m["kind"] == "batch" and m["batch_id"] == batch_id and m["mock"] is False
     assert m["bucket"] == "line-bot" and m["prefix"] == f"overlay-lab/batch-{batch_id}"
     assert m["manifest"]["key"] == batch_key and m["manifest"]["url"] == batch["publish"]["manifest_url"]
     assert m["manifest"]["url"] == f"https://s3.azndev.com/line-bot/{batch_key}?X-Amz-Expires=604800&X-Amz-Signature=mock"
@@ -310,7 +310,7 @@ def test_the_batch_manifest_is_published_last_with_the_url_of_every_job_manifest
 
     # the job manifests are schema 3 too, and know their batch
     job_manifest = manifest_at(store, job_manifests[0])
-    assert job_manifest["schema_version"] == 3 and job_manifest["batch_id"] == batch_id and job_manifest["image_index"] == 1
+    assert job_manifest["schema_version"] == 4 and job_manifest["batch_id"] == batch_id and job_manifest["image_index"] == 1
     # the local copy is served for the page
     assert client.get(f"/api/batches/{batch_id}/manifest").json()["batch_id"] == batch_id
 
@@ -469,7 +469,7 @@ def test_the_batch_manifest_lists_the_distinct_languages_and_every_job_its_own(m
     r = post_batch(client, IMAGES[:3], NAMES[:3], target_langs=["en", "zh-TW", "en"])
     batch = wait_batch(client, r.json()["batch_id"])
     m = manifest_at(store, f"overlay-lab/batch-{batch['batch_id']}/manifest.json")
-    assert m["schema_version"] == 3 and m["target_language"] == ["en", "zh-TW"]
+    assert m["schema_version"] == 4 and m["target_language"] == ["en", "zh-TW"]
     assert [j["target_language"] for j in m["jobs"]] == ["en", "zh-TW", "en"]
     assert [row["target_lang"] for row in m["summary"]] == ["en", "zh-TW", "en"]
     for entry, job in zip(m["jobs"], batch["jobs"]):  # the job manifests stay single-language

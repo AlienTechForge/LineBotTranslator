@@ -22,7 +22,11 @@ name: overlay-lab
 
 services:
   lab:
-    build: .
+    build:
+      context: .
+      args:  # the LaMa model is downloaded while the image is built (see Dockerfile); a changed URL needs its checksum, or an empty one
+        INPAINT_MODEL_URL: "${INPAINT_MODEL_URL:-https://huggingface.co/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx}"
+        INPAINT_MODEL_SHA256: "${INPAINT_MODEL_SHA256-1faef5301d78db7dda502fe59966957ec4b79dd64e16f03ed96913c7a4eb68d6}"
     image: overlay-lab:local
     container_name: overlay-lab
     restart: unless-stopped
@@ -35,12 +39,20 @@ services:
       SERVICE_TOKEN: "${SERVICE_TOKEN:-}"
       LAB_MOCK: "${LAB_MOCK:-0}"
       LAB_DATA_DIR: /app/data
-      LAB_INK_FRACTION: "${LAB_INK_FRACTION:-0.40}"
+      LAB_INK_FRACTION: "${LAB_INK_FRACTION:-0.15}"
       GOOGLE_APPLICATION_CREDENTIALS: "${GOOGLE_APPLICATION_CREDENTIALS:-/run/secrets/linebot.json}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
       CLAUDE_MODEL: "${CLAUDE_MODEL:-claude-opus-5-5}"
       CLAUDE_JUDGE_MODEL: "${CLAUDE_JUDGE_MODEL:-claude-sonnet-5-5}"
       MODE_A_RETRY: "${MODE_A_RETRY:-1}"
+      # Mode C (geometric layout + text-only translation) and the eraser
+      CLAUDE_TRANSLATE_MODEL: "${CLAUDE_TRANSLATE_MODEL:-}"
+      MODE_C_IMAGE_CONTEXT: "${MODE_C_IMAGE_CONTEXT:-1}"
+      MODE_C_CHUNK_UNITS: "${MODE_C_CHUNK_UNITS:-50}"
+      INPAINT_MODEL: "${INPAINT_MODEL:-lama}"  # the lab opts in; telea = the OpenCV call the lab always made
+      INPAINT_MODEL_PATH: "${INPAINT_MODEL_PATH:-/app/models/lama_fp32.onnx}"  # baked into the image at build time
+      INPAINT_MODEL_URL: "${INPAINT_MODEL_URL:-https://huggingface.co/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx}"
+      INPAINT_MODEL_SHA256: "${INPAINT_MODEL_SHA256:-}"
       # the production API (/v1): policy, budgets, retention
       OPENROUTER_MONTHLY_BUDGET_USD: "${OPENROUTER_MONTHLY_BUDGET_USD:-15}"
       ANTHROPIC_MONTHLY_BUDGET_USD: "${ANTHROPIC_MONTHLY_BUDGET_USD:-80}"

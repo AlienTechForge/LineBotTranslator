@@ -210,7 +210,7 @@ def test_everything_is_uploaded_under_prefix_job_id_name_with_a_manifest_of_pres
     assert fake.objects[("line-bot", prefix + "B2_m_b_r1_a1_verify.json")]["content_type"] == "application/json"
 
     m = manifest_of(fake, job)
-    assert m["job_id"] == job_id and m["target_language"] == "en" and m["schema_version"] == 3
+    assert m["job_id"] == job_id and m["target_language"] == "en" and m["schema_version"] == 4
     assert m["batch_id"] is None and m["image_index"] == 1  # a job submitted on its own is no batch
     assert m["bucket"] == "line-bot" and m["prefix"] == f"overlay-lab/{job_id}"
     assert m["url_expiry_hours"] == 168 and m["urls_expire_at"] > m["published_at"] >= m["created_at"]
@@ -355,7 +355,7 @@ def test_mock_mode_uses_the_in_memory_fake_and_still_produces_the_manifest(monke
         assert prefix + name in keys, name
     assert prefix + "A.png" not in keys  # round 5: every Mode A attempt has its own files
     m = json.loads(publish.mock_client().objects[("line-bot", prefix + "manifest.json")]["data"])
-    assert m["schema_version"] == 3 and m["mock"] is True and m["mode_a"]["translated_count"] == 3
+    assert m["schema_version"] == 4 and m["mock"] is True and m["mode_a"]["translated_count"] == 3
     assert m["mode_a"]["units"]["name"] == "A_a1_units.json" and m["mode_a"]["image"]["name"] == "A_a1.png"
     assert m["mode_a"]["tokens"] == {"input": 2345, "output": 612} and m["mode_a"]["verdict"] == "pass"
     assert m["mode_a"]["cost_anthropic_usd"] == pytest.approx((2345 * 4 + 612 * 20) / 1e6 + (3400 * 2 + 420 * 10) / 1e6)

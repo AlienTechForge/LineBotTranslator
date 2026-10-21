@@ -34,6 +34,13 @@ DEFAULT_MIN_ROTATED_COLUMN_PX = 16.0  # a vertical column narrower than this is 
 DEFAULT_OPENROUTER_MONTHLY_BUDGET_USD = 15.0  # cash; 0 = unlimited
 DEFAULT_ANTHROPIC_MONTHLY_BUDGET_USD = 80.0  # 0 = unlimited
 
+# Round 8: Mode C (geometric layout + text-only translation) and the trained inpainter
+DEFAULT_MODE_C_CHUNK_UNITS = 50  # a list with more units than this is translated in chunks of at most this size
+INPAINT_MODELS = ("telea", "lama")
+DEFAULT_INPAINT_MODEL = "telea"  # nothing changes for anyone who does not opt in (the lab compose sets lama)
+INPAINT_MODEL_FILE = "lama_fp32.onnx"
+DEFAULT_INPAINT_MODEL_URL = "https://huggingface.co/Carve/LaMa-ONNX/resolve/main/" + INPAINT_MODEL_FILE
+
 # language code -> English name used in prompts
 LANGUAGES: dict[str, str] = {
     "en": "English",
@@ -126,6 +133,18 @@ class Settings:
     mode_a_min_glyph_px: float = DEFAULT_MODE_A_MIN_GLYPH_PX
     openrouter_monthly_budget_usd: float = DEFAULT_OPENROUTER_MONTHLY_BUDGET_USD
     anthropic_monthly_budget_usd: float = DEFAULT_ANTHROPIC_MONTHLY_BUDGET_USD
+    claude_translate_model: str = ""  # CLAUDE_TRANSLATE_MODEL: the Mode C translator ("" = the planner model, CLAUDE_MODEL)
+    mode_c_image_context: bool = True  # MODE_C_IMAGE_CONTEXT: attach the downscaled picture to every translation call
+    mode_c_chunk_units: int = DEFAULT_MODE_C_CHUNK_UNITS  # MODE_C_CHUNK_UNITS
+    inpaint_model: str = DEFAULT_INPAINT_MODEL  # INPAINT_MODEL: telea | lama
+    inpaint_model_path: str = ""  # INPAINT_MODEL_PATH ("" = <LAB_DATA_DIR>/models/lama_fp32.onnx)
+    inpaint_model_url: str = DEFAULT_INPAINT_MODEL_URL  # INPAINT_MODEL_URL
+    inpaint_model_sha256: str = ""  # INPAINT_MODEL_SHA256 (optional: checked after the download)
+
+    @property
+    def translate_model(self) -> str:
+        """The model of the Mode C translation calls: CLAUDE_TRANSLATE_MODEL, else the value of CLAUDE_MODEL."""
+        return self.claude_translate_model or self.claude_model
 
 
 def _env(name: str, default: str = "") -> str:
@@ -235,13 +254,17 @@ def get_settings() -> Settings:
         port = DEFAULT_PORT
     if not 1 <= port <= 65535:
         port = DEFAULT_PORT
+    inpaint = _env("INPAINT_MODEL", DEFAULT_INPAINT_MODEL).lower()
+    if inpaint not in INPAINT_MODELS:
+        inpaint = DEFAULT_INPAINT_MODEL
+    data_dir = Path(_env("LAB_DATA_DIR", "./data"))
     return Settings(
         claude_model=_env("CLAUDE_MODEL", DEFAULT_CLAUDE_MODEL),
         openrouter_image_model=_env("OPENROUTER_IMAGE_MODEL", DEFAULT_IMAGE_MODEL),
         openrouter_image_api=api,
         lab_token=_env("LAB_TOKEN"),
         mock=_env("LAB_MOCK") == "1",
-        data_dir=Path(_env("LAB_DATA_DIR", "./data")),
+        data_dir=data_dir,
         port=port,
         claude_judge_model=_env("CLAUDE_JUDGE_MODEL", DEFAULT_JUDGE_MODEL),
         mode_a_retry=_flag("MODE_A_RETRY", True),
@@ -258,4 +281,11 @@ def get_settings() -> Settings:
         anthropic_monthly_budget_usd=_number(
             "ANTHROPIC_MONTHLY_BUDGET_USD", DEFAULT_ANTHROPIC_MONTHLY_BUDGET_USD, low=0.0
         ),
+        claude_translate_model=_env("CLAUDE_TRANSLATE_MODEL"),
+        mode_c_image_context=_flag("MODE_C_IMAGE_CONTEXT", True),
+        mode_c_chunk_units=int(_number("MODE_C_CHUNK_UNITS", DEFAULT_MODE_C_CHUNK_UNITS, low=1.0, high=1000.0)),
+        inpaint_model=inpaint,
+        inpaint_model_path=_env("INPAINT_MODEL_PATH") or str(data_dir / "models" / INPAINT_MODEL_FILE),
+        inpaint_model_url=_env("INPAINT_MODEL_URL", DEFAULT_INPAINT_MODEL_URL),
+        inpaint_model_sha256=_env("INPAINT_MODEL_SHA256").lower(),
     )

@@ -331,7 +331,7 @@ def test_mock_four_image_batch_end_to_end_is_offline_publishes_and_logs_nothing_
     assert f"overlay-lab/batch-{batch_id}/manifest.json" in keys
     assert all(f"overlay-lab/{job_id}/manifest.json" in keys for job_id in batch["job_ids"])
     manifest = json.loads(publish.mock_client().objects[("line-bot", f"overlay-lab/batch-{batch_id}/manifest.json")]["data"])
-    assert manifest["schema_version"] == 3 and len(manifest["jobs"]) == 4 and all(j["manifest"] for j in manifest["jobs"])
+    assert manifest["schema_version"] == 4 and len(manifest["jobs"]) == 4 and all(j["manifest"] for j in manifest["jobs"])
 
     # the log: counts and ids only, no OCR text, no translation, no file name, no secret, no image data
     logged = " ".join(rec.getMessage() for rec in caplog.records if rec.name.startswith("lab."))  # the lab's own loggers

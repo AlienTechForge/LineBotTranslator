@@ -82,6 +82,7 @@ def ocr_words(image_bytes: bytes, width: int, height: int) -> OcrResult:
     words: list[Word] = []
     page_w, page_h = width, height
     para_index = 0
+    block_index = 0
     annotation = response.full_text_annotation
     pages = annotation.pages if annotation else []
     for page_no, page in enumerate(pages):
@@ -113,12 +114,14 @@ def ocr_words(image_bytes: bytes, width: int, height: int) -> OcrResult:
                             confidence=float(word.confidence),
                             brk=brk,
                             para=para_index,
+                            block=block_index,
                             detected_languages=own,
                             lang=own[0][0] if own else para_lang,
                             height=round(polygon_height(vertices[:4]), 2),
                         )
                     )
                 para_index += 1
+            block_index += 1
     if (page_w, page_h) != (width, height):
         log.warning(
             "stage=vision page size %dx%d differs from the image size %dx%d",

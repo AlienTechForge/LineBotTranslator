@@ -1,4 +1,4 @@
-"""Background jobs: Mode A (optional) next to up to four Mode B models, then publish the result.
+"""Background jobs: Mode A and Mode C (optional) next to up to four Mode B models, then publish the result.
 
 One job = one uploaded image; up to four jobs make a batch (`start_batch`: one submission, one
 job per image, one batch manifest once every job has finished and published). Every Mode B model
@@ -9,7 +9,8 @@ runs `runs` times (1-3); every (model, run) pair is a unit of its own in its own
         -> verify.choose_attempt picks the attempt that is shown as the result
 
 Mode A runs the same check on its output and retries once with the judge's findings
-(pipeline_a.run_mode_a).
+(pipeline_a.run_mode_a). Mode C (round 8: layout from the OCR geometry, text-only translation) runs the same
+check and does not retry (pipeline_c.run_mode_c).
 
 Units are independent (own attempts, retry, verification and judge). Two process-wide limits keep
 a batch from flooding the providers: at most MAX_CONCURRENT_GENERATIONS image generations (here)
@@ -32,7 +33,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from . import batch, judge, openrouter, pipeline_a, publish, verify, vision
+from . import batch, inpaint, judge, openrouter, pipeline_a, pipeline_c, publish, verify, vision
 from .config import MAX_CONCURRENT_GENERATIONS, MAX_RUNS, get_settings
 from .imaging import LoadedImage, bytes_for_vision
 from .redaction import SECRET_ENV, describe_error, redact  # noqa: F401 - re-exported
@@ -93,7 +94,7 @@ def _refresh(job: dict) -> None:
         else:
             job["mode_b"]["status"] = "error" if all(s == "error" for s in states) else "done"
     job["mode_b"]["summary"] = batch.summarise_runs(results) if results else []
-    parts = [job["mode_a"]["status"]] + [r["status"] for r in results]
+    parts = [job["mode_a"]["status"], (job.get("mode_c") or {}).get("status", "skipped")] + [r["status"] for r in results]
     running = any(s in LIVE for s in parts)
     job["status"] = "running" if running else "done"
     if not running and not job.get("finished_at"):
@@ -156,6 +157,9 @@ class JobStore:
     # the writers keep mutating their own dicts after storing them, so the store gets a copy
     def set_mode_a(self, job_id: str, data: dict) -> None:
         self.update(job_id, lambda job: job.__setitem__("mode_a", copy.deepcopy(data)))
+
+    def set_mode_c(self, job_id: str, data: dict) -> None:
+        self.update(job_id, lambda job: job.__setitem__("mode_c", copy.deepcopy(data)))
 
     def set_model(self, job_id: str, index: int, data: dict) -> None:
         self.update(job_id, lambda job: job["mode_b"]["results"].__setitem__(index, copy.deepcopy(data)))
@@ -304,6 +308,30 @@ def _mode_a(
         log.warning("mode A failed for job %s: %s", job_id, type(exc).__name__)  # the message may quote image text
         result = {"status": "error", "error": describe_error(exc)}
     store.set_mode_a(job_id, result)
+
+
+# ---------------------------------------------------------------- Mode C
+
+
+def _mode_c(
+    store: JobStore, job_id: str, image: LoadedImage, lang: str, job_dir: Path, source: SourceOcr, opts: dict
+) -> None:
+    store.set_mode_c(job_id, {"status": "running", "error": None})
+    try:
+        check = None
+        if opts["verify"]:
+
+            def check(png: bytes, size: tuple[int, int]) -> dict:
+                return check_output(source, image, png, size, lang, opts, structure_checks=False)  # drawn in place
+
+        result = pipeline_c.run_mode_c(
+            image, lang, job_dir, source, check=check, meta={"job_id": job_id, "target_lang": lang}
+        )
+        result.update(status="done", error=None)
+    except Exception as exc:  # noqa: BLE001 - shown in Mode C's error box only
+        log.warning("mode C failed for job %s: %s", job_id, type(exc).__name__)  # the message may quote image text
+        result = {"status": "error", "error": describe_error(exc)}
+    store.set_mode_c(job_id, result)
 
 
 # ---------------------------------------------------------------- Mode B, one model
@@ -568,6 +596,7 @@ def start_job(
     batch_id: str | None = None,
     index: int = 1,
     name: str = "",
+    run_c: bool = False,
 ) -> str:
     settings = get_settings()
     runs = max(1, min(MAX_RUNS, int(runs)))
@@ -600,6 +629,7 @@ def start_job(
             "target_lang": lang,
             "mode_a": run_a,
             "mode_b": run_b,
+            "mode_c": run_c,
             "image_models": models,
             "output_size": output_size,
             "verify": verify_on,
@@ -608,11 +638,14 @@ def start_job(
             "judge": judge_on,
             "judge_model": settings.claude_judge_model,
             "claude_model": settings.claude_model,
+            "translate_model": settings.translate_model,
+            "inpaint_model": inpaint.effective_model(),
             "mode_a_retry": retry_a,
             "mock": settings.mock,
         },
         "image": {"url": f"files/{job_id}/{original}", "width": image.width, "height": image.height, "name": name},
         "mode_a": {"status": "pending" if run_a else "skipped", "error": None},
+        "mode_c": {"status": "pending" if run_c else "skipped", "error": None},
         "mode_b": {
             "status": "pending" if models else "skipped",
             "error": None,
@@ -638,20 +671,22 @@ def start_job(
     }
     store.put(job, job_dir)
     log.info(
-        "job=%s batch=%s started lang=%s a=%s b=%s models=%d runs=%d size=%s verify=%s judge=%s image=%dx%d",
-        job_id, batch_id or "-", lang, run_a, run_b, len(models), runs, output_size or "default", verify_on, judge_on,
-        image.width, image.height,
+        "job=%s batch=%s started lang=%s a=%s b=%s c=%s models=%d runs=%d size=%s verify=%s judge=%s image=%dx%d",
+        job_id, batch_id or "-", lang, run_a, run_b, run_c, len(models), runs, output_size or "default", verify_on,
+        judge_on, image.width, image.height,
     )  # fmt: skip
 
     source = SourceOcr(image)
 
     def runner() -> None:
         try:
-            workers = len(models) * runs + 2  # one thread per unit; generations queue on _GENERATION_SLOTS
+            workers = len(models) * runs + 3  # one thread per unit; generations queue on _GENERATION_SLOTS
             with ThreadPoolExecutor(max_workers=workers, thread_name_prefix=f"job-{job_id}") as pool:
                 if run_a:
                     pool.submit(_mode_a, store, job_id, image, lang, job_dir, source, opts)
-                elif models and verify_on:
+                if run_c:
+                    pool.submit(_mode_c, store, job_id, image, lang, job_dir, source, opts)
+                if not (run_a or run_c) and models and verify_on:
                     pool.submit(source.prefetch)  # overlaps with the (slow) image generation
                 for k in range(1, runs + 1):  # run-major: every model's first run starts before any second run
                     for mi, model in enumerate(models):
@@ -663,6 +698,8 @@ def start_job(
             def fail_live(job: dict) -> None:
                 if job["mode_a"]["status"] in LIVE:
                     job["mode_a"] = {"status": "error", "error": "the job runner crashed"}
+                if (job.get("mode_c") or {}).get("status") in LIVE:
+                    job["mode_c"] = {"status": "error", "error": "the job runner crashed"}
                 for r in job["mode_b"]["results"]:
                     if r["status"] in LIVE:
                         r.update(status="error", error="the job runner crashed")
@@ -693,6 +730,7 @@ def start_batch(
     judge_on: bool = True,
     mode_a_retry: bool | None = None,
     langs: list[str] | None = None,
+    run_c: bool = False,
 ) -> tuple[str, list[str]]:
     """One job per (image, name), all with the same options, and one batch that publishes its manifest last.
 
@@ -708,7 +746,7 @@ def start_batch(
     job_ids = [
         start_job(
             store, image, chosen[i - 1], run_a, run_b, models, verify_on, verify_details, output_size, runs, judge_on,
-            mode_a_retry=mode_a_retry, batch_id=batch_id, index=i, name=name,
+            mode_a_retry=mode_a_retry, batch_id=batch_id, index=i, name=name, run_c=run_c,
         )
         for i, (image, name) in enumerate(images, start=1)
     ]  # fmt: skip

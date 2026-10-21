@@ -24,6 +24,7 @@ INK = (25, 25, 25)
 RED = (170, 35, 35)
 BLUE = (25, 60, 140)
 ROTATION_DEG = 15  # clockwise, visual
+LINE_BREAK = "LINE_BREAK"  # Vision's name for the break that ends a paragraph (its last word carries it)
 
 
 @dataclass
@@ -57,10 +58,11 @@ def _build() -> Fixture:
     spec = resolve_font(False, bold=False)
     words: list[Word] = []
 
-    def add(text: str, polygon) -> None:
+    def add(text: str, polygon, para: int, last: bool) -> None:
+        """One canned word. Consecutive words of one mock line share a paragraph (and a block); the last one ends the line."""
         lang = "zh" if any(ord(ch) > 0x2E80 for ch in text) else "en"
         words.append(Word(id=f"w{len(words) + 1:04d}", text=text, polygon=[(float(x), float(y)) for x, y in polygon],
-                          confidence=0.98, brk="SPACE", para=len({w.para for w in words}), lang=lang))  # fmt: skip
+                          confidence=0.98, brk=LINE_BREAK if last else "SPACE", para=para, block=para, lang=lang))  # fmt: skip
 
     # 1) horizontal title, three words
     font = load_font(spec, 34)
@@ -68,20 +70,20 @@ def _build() -> Fixture:
     for text in ("TONKATSU", "SET", "MENU"):
         box = draw.textbbox((x, 40), text, font=font)
         draw.text((x, 40), text, font=font, fill=INK)
-        add(text, _rect_polygon(*box))
+        add(text, _rect_polygon(*box), 0, text == "MENU")
         x = box[2] + font.getlength(" ")
 
     # 2) a price that must be kept
     pfont = load_font(spec, 30)
     box = draw.textbbox((430, 44), "NT$120", font=pfont)
     draw.text((430, 44), "NT$120", font=pfont, fill=RED)
-    add("NT$120", _rect_polygon(*box))
+    add("NT$120", _rect_polygon(*box), 1, True)
 
     # 3) a vertical column of five CJK-like glyphs, upright
     cell, cx, cy = 40, 556, 120
     for i in range(5):
         _pseudo_glyph(draw, cx, cy + i * cell, cell, INK)
-    add("紅燒肉飯店", _rect_polygon(cx, cy, cx + cell, cy + 5 * cell, pad=4))
+    add("紅燒肉飯店", _rect_polygon(cx, cy, cx + cell, cy + 5 * cell, pad=4), 2, True)
 
     # 4) a line turned 15 degrees clockwise, two words
     tfont = load_font(spec, 30)
@@ -104,7 +106,7 @@ def _build() -> Fixture:
         for p in poly:
             rx, ry = _rotate_point(p, c_in, ROTATION_DEG)
             out.append((px + c_out[0] + (rx - c_in[0]), py + c_out[1] + (ry - c_in[1])))
-        add(text, out)
+        add(text, out, 3, text == "SPECIAL")
     return Fixture(img, words)
 
 

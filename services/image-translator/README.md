@@ -221,7 +221,7 @@
 
 ## Mock 模式
 
-`LAB_MOCK=1` 讓 `/v1` 也完全離線：Vision、規劃、judge 與影像模型都是罐頭答案（Mode B 直接回傳輸入圖；judge 一律 usability 1.0），所以 Java 端可以對著它開發與測試。`policy=both` 的 mock 請求會跑 A 與 B；預算檔照寫、費用算 0。罐頭答案永遠是 `status: image`、`tier: clean`（`a_then_b` 時 `reason: a_pass`），要測其他 `status` 請用單元測試的腳本化結果。mock 不套用「字太小」規則（罐頭字框隨上傳圖縮放；`source.median_glyph_px` 照樣算出來）。
+`LAB_MOCK=1` 讓 `/v1` 也完全離線：Vision、規劃、judge 與影像模型都是罐頭答案（Mode B 直接回傳輸入圖；judge 一律 usability 1.0），所以 Java 端可以對著它開發與測試。`policy=both` 的 mock 請求會跑 A 與 B；預算檔照寫、費用算 0。罐頭答案永遠是 `status: image`、`tier: clean`（`a_then_b` 時 `reason: a_pass`），要測其他 `status` 請用單元測試的腳本化結果。lab 的 Mode C 在 mock 下也完全離線：版面照樣用 mock 的字（它們有合理的 `para`／`block`／`brk`）做幾何分析，譯文是「`[目標語言碼] 原文`」，`keep` 規則照用，擦除用 Telea。mock 不套用「字太小」規則（罐頭字框隨上傳圖縮放；`source.median_glyph_px` 照樣算出來）。
 
 ```bash
 cd services/image-translator
@@ -247,12 +247,13 @@ curl -s -H 'X-Service-Token: dev-token' -F image=@sample.png -F target_lang=zh-T
 以下是 lab 本身的說明（第 2–6 輪的內容仍然有效，只是路徑在 `/lab` 底下）。
 
 
-頁面一次最多收 **4 張圖（一個批次）**，**每張圖可以各自選目標語言**（選好檔案後每張圖多一列語言選單，預設是批次的語言）。送出後最上面是**批次彙總表**（每張圖 × Mode／模型一列：語言、判定、可用度、Anthropic 額度費用、OpenRouter 現金費用、時間），下面每張圖一個區塊，區塊內是一排並排的欄位：**原圖｜Mode A｜Mode B 的每個模型（每次 run）各一欄**（欄位多時橫向捲動）。
+頁面一次最多收 **4 張圖（一個批次）**，**每張圖可以各自選目標語言**（選好檔案後每張圖多一列語言選單，預設是批次的語言）。送出後最上面是**批次彙總表**（每張圖 × Mode／模型一列：語言、判定、可用度、Anthropic 額度費用、OpenRouter 現金費用、時間），下面每張圖一個區塊，區塊內是一排並排的欄位：**原圖｜Mode A｜Mode C｜Mode B 的每個模型（每次 run）各一欄**（欄位多時橫向捲動）。
 
 - **Mode B（影像模型）**：整張圖丟給 OpenRouter 上有「圖片輸出」能力的模型，要它「把所有文字換成譯文，其餘不動」。可以一次勾選最多 4 個模型平行跑，每個模型還能**連跑 1–3 次**來算通過率。頁面預設勾 `google/gemini-3-pro-image`（Pro）；Flash 等其他模型照舊可多選。
 - **Mode A（hybrid，第 5 輪升級後預設也開）**：Google Vision 只給「每個字的框」→ Claude（看圖 + 看字清單）決定哪些字屬於同一個翻譯單位、翻譯、給 `short`（短版）、對齊、粗細、重要性 → 我們的程式用字框算幾何，**逐 unit 判斷背景**：平坦就填色、否則 OpenCV inpaint，且擦除範圍受**顏色護欄**限制（不會長進旁邊的黑色格子或表格線）→ 排版先求「可讀」（短版、往旁邊的空位長、直排的拉丁字轉 90 度）→ Pillow 畫回去。Claude 的用量由訂閱額度支付，所以 Mode A 的費用只算在「Anthropic（額度）」。
+- **Mode C（第 8 輪，幾何版面 + 純文字翻譯）**：版面（行、欄、極性、合併、保留）由 Vision 的段落與字框幾何決定，不呼叫模型；Claude 只翻譯文字，擦字可以用 LaMa。和 Mode A 同樣的輸出、同一個 judge，沒有重試；見「Mode C」與「擦字模型（LaMa）」。
 - **審查（judge，第 5 輪改成看圖）**：每張輸出（Mode B 與 Mode A 同一套 prompt、同一種紀錄）都由 Claude **同時看原圖與輸出圖**，回報可用度 `usability`、完成度 `coverage`、亂碼／讀不出來、表格列重複或漏掉、被改的數字、沒翻的文字、翻錯的文字。判定（`pass` 或 `numbers+garbled` 這種）**完全來自 judge**；OCR 的數字與殘留檢查降為「OCR 警告」。判定不是 `pass` 時**自動重試一次**（Mode B 重畫一次、Mode A 再請 Claude 規劃一次），兩次的結果都留著。
-- **給審閱者的連結**：每個 job 跑完後，所有圖片與 JSON 會在背景上傳到你的 MinIO（每張圖一個 manifest），**整個批次都上傳完後再多一份批次 manifest**，頁面上有對應的連結，審閱者不用開頁面也能抓到結果。
+- **給審閱者的連結**：每個 job 跑完後（Mode A、Mode C、Mode B 的所有圖片與 JSON），會在背景上傳到你的 MinIO（每張圖一個 manifest），**整個批次都上傳完後再多一份批次 manifest**，頁面上有對應的連結，審閱者不用開頁面也能抓到結果。
 
 沒有針對任何單張圖的特殊規則：分組、方向、角色、對齊、粗細都是 Claude 看圖判斷，幾何與繪製是通用程式。
 
@@ -327,7 +328,7 @@ LAB_MOCK=1 python -m app          # 或設好環境變數後直接 python -m app
 pytest -q                         # 單元測試 + mock 端到端（全部離線）
 ```
 
-> CI（`.github/workflows/ci-cd.yml` 的 `Image translator tests`）用 Python 3.12 安裝 `requirements.txt` 並跑 `pytest -q`；本機 3.12 與 3.13 都可以。`requirements-runtime.txt` 是正式映像安裝的執行期套件（不含 `pytest`），`requirements.txt` 是它加上 `pytest`。
+> CI（`.github/workflows/ci-cd.yml` 的 `Image translator tests`）用 Python 3.12 安裝 `requirements.txt` 並跑 `pytest -q`；本機 3.12 與 3.13 都可以。`requirements-runtime.txt` 是正式映像安裝的執行期套件（不含 `pytest`），`requirements.txt` 是它加上 `pytest`。 `requirements-inpaint.txt`（第 8 輪）是 `requirements-runtime.txt` 加上 `onnxruntime`，只給要用 LaMa 的環境（lab 的 `Dockerfile` 會裝；正式映像與 CI 的 pytest 都不裝，測試用假的 ONNX session）。
 
 ## 憑證怎麼給
 
@@ -393,10 +394,17 @@ docker inspect linebot-translator --format '{{range .Config.Env}}{{println .}}{{
 | --- | --- | --- |
 | `GOOGLE_APPLICATION_CREDENTIALS` | compose：`/run/secrets/linebot.json` | Vision 服務帳戶 JSON 的路徑（容器內）。正式 bot 用的是同一個變數名稱。 |
 | `VISION_CREDENTIALS_FILE` | 空 | 方法 2 才用：主機上的 JSON 路徑，掛到 `/secrets/vision.json`。 |
-| `ANTHROPIC_API_KEY` | 無 | Mode A 的規劃與視覺 judge 需要。沒有的話 Mode A 失敗、judge 顯示 `unavailable`（不影響生成與 OCR 警告）。 |
+| `ANTHROPIC_API_KEY` | 無 | Mode A 的規劃、Mode C 的翻譯與視覺 judge 需要。沒有的話 Mode A、Mode C 失敗、judge 顯示 `unavailable`（不影響生成與 OCR 警告）。 |
 | `CLAUDE_MODEL` | `claude-opus-5-5` | Mode A 規劃用的模型（程式與 `.env.example` 的預設是 `claude-opus-5-5`；擁有者目前的 `.env` 設的是 `claude-sonnet-5-5`）。價目表只有 `claude-opus-5-5`（4 / 20 USD per 百萬 tokens）、`claude-sonnet-5-5`（2 / 10）、`claude-haiku-5-5`（0.10 / 0.50）；其他型號只顯示 tokens。 |
 | `CLAUDE_JUDGE_MODEL` | `claude-sonnet-5-5` | 視覺 judge 用的模型（每次嘗試一次呼叫，見「視覺審查」）。價目表同上，其他型號只顯示 tokens、不估費用。 |
 | `MODE_A_RETRY` | `1` | Mode A 的判定不是 `pass` 時，帶著 judge 的發現再請 Claude 規劃一次（頁面有同名的勾選框，可以逐次覆蓋）。`0` 關掉。 |
+| `CLAUDE_TRANSLATE_MODEL` | 空（用 `CLAUDE_MODEL` 的值） | Mode C 翻譯用的模型（只送文字，Sonnet 或 Haiku 通常就夠）；價目表同 `CLAUDE_MODEL`。見「Mode C」。 |
+| `MODE_C_IMAGE_CONTEXT` | `1` | Mode C 的每次翻譯呼叫都附上縮小的整張圖（長邊最多 1024 px 的 JPEG）當上下文；`0` = 只送文字。 |
+| `MODE_C_CHUNK_UNITS` | `50` | Mode C 的清單超過這麼多個 unit 時切成每塊最多這麼多個，平行翻譯。 |
+| `INPAINT_MODEL` | `telea`（lab 的 compose 預設 `lama`） | 擦字用 `telea`（OpenCV）或 `lama`（ONNX Runtime，需要 `requirements-inpaint.txt` 與模型檔）。見「擦字模型（LaMa）」。 |
+| `INPAINT_MODEL_PATH` | `<LAB_DATA_DIR>/models/lama_fp32.onnx`（lab 映像 `/app/models/lama_fp32.onnx`） | LaMa 模型檔；不存在時第一次用到會下載。 |
+| `INPAINT_MODEL_URL` | `https://huggingface.co/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx` | 模型的下載網址（約 198 MiB，Apache-2.0）。 |
+| `INPAINT_MODEL_SHA256` | 空 | 選填，下載完成後檢查的 SHA-256。 |
 | `OPENROUTER_API_KEY` / `OPEN_ROUTE_API_KEY` | 無 | Mode B 必填，兩個名稱擇一。 |
 | `OPENROUTER_IMAGE_MODEL` | `google/gemini-3-pro-image` | 頁面模型多選預設勾選的那一個（第 5 輪由 `google/gemini-2.5-flash-image` 改成 Pro）；沒指定 `image_models` 的 API 呼叫也用它。清單會列出 OpenRouter 上所有「輸出含圖片」的模型（快取 10 分鐘）。 |
 | `OPENROUTER_IMAGE_API` | `auto` | `auto`：依模型挑順序（見下方「API 路徑」）；`chat` / `images`：所有模型都只走那一條。 |
@@ -423,7 +431,7 @@ docker inspect linebot-translator --format '{{range .Config.Env}}{{println .}}{{
 | `MIN_ROTATED_COLUMN_PX` | `16` | 目標語言不是中日韓時，欄寬（字高）小於它的直排 unit 保持原樣（`skipped: column too narrow`）。 |
 | `LAB_MOCK` | `0` | `1` = 不打任何網路（`/v1` 也是），改用內建 fixture（Mode B 直接回傳輸入圖，Vision 用內建字框，Claude 與 judge 用罐頭答案，上傳改用記憶體假物件）。 |
 | `LAB_DATA_DIR` | `./data` | 上傳與輸出（`<job-id>/`、`batch-<batch-id>/` 底下）、`/v1` 的記錄（`v1/<request_id>/`）與預算檔（`budget.json`）；容器內固定 `/app/data`。 |
-| `LAB_INK_FRACTION` | `0.40` | 取文字顏色時，用字框內「離背景最遠」的這個比例的像素。細小的字顏色會偏淡，調小（例如 `0.2`）會比較深。 |
+| `LAB_INK_FRACTION` | `0.15` | 取文字顏色時，用字框內「離背景最遠」的這個比例的像素的中位數（第 8 輪起預設 0.15，只取筆畫的核心；以前是 0.40，抗鋸齒的邊緣會把黑字拉成灰色）。調大會比較淡，調小會比較深。 |
 | `LAB_FONT_CJK`、`LAB_FONT_CJK_BOLD`、`LAB_FONT_LATIN`、`LAB_FONT_LATIN_BOLD` | 自動尋找 | 選填，指定字型檔。自動尋找的順序：拉丁字 Noto Sans → DejaVu Sans → Liberation／FreeSans；中日韓 Noto Sans CJK。 |
 
 安全：lab 頁面只給你自己用。每張上傳上限 20 MB，只收 jpg / png / webp，輸出只從 `LAB_DATA_DIR/<job-id>/` 提供；uvicorn 的 access log 已關閉（網址可能帶 `?token=`）；log 不會出現圖片內容、金鑰、OCR 文字、譯文、檔名或簽名連結（連結含存取金鑰 ID 與簽章，只留在頁面、`result.json` 與 manifest）。
@@ -631,6 +639,10 @@ Your previous attempt at this same image failed an automatic check. Redo the who
 - **第 7 輪**：自己的字框比全組字高中位數小的 unit，用「高度（直排是寬度）等於全組中位數、中心不變」的框排版，才能達到共同字級；unit 報告記 `frame_height_from_group` 與 `group_frame_height`。
 - 沒有 `group` 的 unit 完全不受影響。unit 報告多了 `group`、`group_size`、`group_weight`、`group_size_broken`（也在 `A_a<j>_units.json` 裡）；頁面的 unit 表有一欄，Mode A 欄有一行「群組」。
 
+### 文字顏色（`colors.py`，第 8 輪改了）
+
+譯文的顏色取自原圖字框裡「離擦除後背景最遠」的那一批像素的中位數。第 5–7 輪取最遠的 40%，會把抗鋸齒的邊緣像素（半黑半白的灰）一起算進去，黑色的標題變成中灰色（第一張真實菜單的觀察）。第 8 輪起取 **`INK_CORE_FRACTION`（0.15）**，也就是筆畫的核心；`LAB_INK_FRACTION` 仍然可以覆蓋（預設值現在是 `0.15`，README、`.env.example`、`docker-compose.yml` 都寫 0.15）。20 px 的黑字在白底上估計出的顏色離黑色在 24（RGB 距離）以內，白字在黑底上同樣，中灰色的字仍是灰色（不會被吸成黑色）；對比低於 `MIN_CONTRAST`（60）時照舊退回黑／白。這個改動兩個 Mode 都有，包括 `/v1` 的 Mode A。
+
 ### Claude 規劃（`claude_units.py`）
 
 模型還是**絕不輸出座標**。每個 unit 的欄位（schema 都必填，`validate_units` 仍然嚴格：多餘欄位、未知 word id、重複 id、列舉值錯誤都會被拒絕）新增了四個：
@@ -697,6 +709,115 @@ Return only the JSON object that matches the schema.
 
 第二次呼叫失敗時沿用第一次並顯示 `retry_error`。環境變數 `MODE_A_RETRY`（預設 `1`）決定頁面勾選框的預設，API 的表單欄位 `mode_a_retry` 可以逐次覆蓋；沒有 judge 判定（judge 關掉、不可用）時不會重試。
 
+## Mode C（第 8 輪：幾何版面 + 純文字翻譯）
+
+**為什麼**：第一張真實的正式機圖片（1478×1108 的豬排菜單，字高中位數 21 px）花了 143 秒、只得 0.60 分。Claude 規劃用了 132 秒、寫了 18k output tokens 才排好 135 個 unit，還把黑底白字的單字母標籤 `L`／`M`／`H` 和旁邊的 `Light`／`Middle`／`Heavy` 併成同一個 unit，渲染器於是把黑色橫條擦掉、在上面畫 輕／中／重，原本單字的位置反而留白；Telea 在反光的紙上留下灰色方塊與鬼影；標題也從黑色變成中灰色。
+
+Google 的圖片翻譯和 Mode A 有同樣五個階段（找字與讀字、翻譯、擦除與填補、排版、合成），但版面分析用**幾何**（OCR 引擎的行、段、區塊、欄），翻譯是**每個區塊一次純文字模型呼叫**，擦除用**訓練過的修補模型**。Mode C 就是 Mode A 把這三個階段換掉；渲染器、judge 與 lab 都照舊。**Mode C 只在 lab（`mode_c=1`），`/v1` 與 `app/policy.py` 完全沒變**：正式環境照舊只跑 Mode A 與 Mode B，等擁有者在真實圖片上比過 A、B、C 再決定要不要切換。
+
+| 階段 | Mode A | Mode C |
+| --- | --- | --- |
+| 找字、讀字 | Google Vision（`vision.ocr_words`） | 同一個（`Word` 多了 `block`；與 Mode A、Mode B 的檢查共用同一次呼叫） |
+| 分成 unit | Claude 看圖與字清單規劃（上萬 tokens 的 JSON） | `segment.segment_units`：行、欄、極性、合併、保留、群組，**不呼叫模型** |
+| 翻譯 | 同一次規劃呼叫（連 `short`、`align`、`weight`、`importance`、`group` 一起給） | `claude_text.translate_units`：只送文字，一行一個 unit，回 `{id, translation, keep, short}` |
+| 擦除 | flat 填色或 inpaint（`INPAINT_MODEL`） | 同一個（`erase.erase_units`），含殘留檢查 |
+| 排版、畫字 | `pipeline_a.render_units` | 同一個函式（沒改） |
+| judge | 同一個（`rows` 不計） | 同一個（`rows` 不計，`structure_checks=False`） |
+| 重試 | 判定不是 `pass` 時再規劃一次 | **沒有**：unit 不是模型給的，把 judge 的發現再丟給翻譯呼叫改變不了版面 |
+| 檔案 | `A_a<j>.png`、`A_a<j>_erased.png`、`A_a<j>_units.json`、`A_a<j>_verify.json` | `C_a1.png`、`C_a1_erased.png`、`C_a1_units.json`、`C_a1_verify.json` |
+
+`pipeline_c.run_mode_c(image, lang, out_dir, source_ocr=None, *, check=None, meta=None, on_translate=None)` 回傳的 dict 和 `run_mode_a` 同形（`elapsed_ms`、`vision_ms`、`claude_ms`、`erase_ms`、`render_ms`、`judge_ms`、`word_count`、`unit_count`、`translated_count`、`tokens`、`cost_usd`、`model`、`warnings`、`attempts`（一次嘗試）、`units`、`verdict`、`verification`…），另外有 `segment_ms`、`segment`（`SegmentReport`）、`claude_calls`、`chunk_sizes`。`on_translate(call)` 在翻譯回來、還沒畫任何東西時就被呼叫，所以畫圖失敗時譯文與費用不會不見。
+
+### 版面規則（`segment.py`）
+
+`segment_units(ocr, rgb, lang) -> (units, SegmentReport)` 用 Vision 已經給的層級（`Word.para`、`Word.block`、`Word.brk`）和字框底下的像素，造出和以前 planner 一樣的 `ClaudeUnit`，所以 `render_units` 不用改。規則依序如下，每個常數都有名字（測試檢查值）：
+
+1. **行**：在一個段落（`block`、`para`）裡，一行結束於 `brk` 是 `LINE_BREAK` 或 `EOL_SURE_SPACE` 的字（`HYPHEN` 不結束，下一行接上去，中間不加空白）；另外下一個字的中心離這一行基線超過 `LINE_SPLIT_RATIO`（0.6）× 字高時也另起一行（Vision 有時會把兩行讀成一行）。閱讀方向由幾何決定：又高又窄的中日韓字疊成一欄是 `vertical_rl`（欄由右到左），基線偏離水平超過 `ROTATED_MIN_DEG`（5 度）是 `rotated`。字高用的是字框「垂直於閱讀方向」的長度，所以窄的字（`1`、`l`）不會讓字高變成 4 px。
+2. **欄**：一行裡兩個字的水平間隙大於 `COLUMN_GAP_RATIO`（2.0）× 這一行的字高就切開（`•Light   about10min   ¥1,180` 切成三個 unit）。
+3. **極性**：每個字取字框底下的像素（主色 = 背景，離主色超過 `erase.INK_DISTANCE` = 40 的像素 = 墨水），分成 `dark_on_light` 或 `light_on_dark`（沒有墨水像素的是 `unknown`，不參與）。極性和這一行多數（以字框面積加權）不同的字，單獨切成自己的 unit（黑底白字的 `L` 不再和 `•Light` 併在一起）。unit 報告記 `polarity`。
+4. **多行併成一個 unit**：同一段落裡**沒有被規則 2、3 切開**的相鄰兩行，在字高相差不超過 `LINE_HEIGHT_TOLERANCE`（25%）、有共同的對齊（左、中、右邊緣其中一個，和段落框的差不超過 `ALIGN_TOLERANCE_RATIO`（0.3）× 字高）、而且行距（兩行之間的空隙）小於 `LINE_GAP_RATIO`（1.0）× 字高時併成一個多行 unit；否則各自一個 unit（大標題底下比較小的副標題是兩個 unit）。直排的欄不併；沒有 `para` 資訊的字也不併。
+5. **保留**（不翻譯、不擦除）：unit 的文字符合 `KEEP_PATTERNS` 之一時 `keep=true`、`notes` 寫 `keep: <種類>`、動作是 `kept`。種類：`price`（`¥1,180`、`$12.50`、`NT$120`、`120円`、`¥1,180~`）、`number`（`01`、`300`、`1,100`）、`quantity`（`200g`、`300ml`、`10min`、`5%`）、`datetime`（`10:00-22:00`、`2024/10/21`）、`code`（`No.3`、`A-12`、`#12`）、`letter`（單一拉丁字母或數字，例如 `L`）、`url`、`email`、`phone`、`punctuation`（沒有任何字母數字，例如 `•`、`★★★`）。全形字先經 NFKC 折成半形再比對，整個 unit 的文字都要符合（`about10min` 不符合，會被翻譯）。`render_units` 本來就不碰 `keep` 的 unit：它的字不進任何擦除遮罩，還受 `protect` 保護，不會被鄰居的膨脹吃掉，所以不需要新的旗標；報告的 `action` 是 `kept`、`skip_reason` 是 `keep=true`。
+6. **群組**：`b{block}-h{round(字高 / GROUP_BUCKET_PX)}`（`GROUP_BUCKET_PX` = 4）：同一個區塊、字高相近的 unit 共用字級與粗細（既有的 group 機制）。
+7. **對齊、角色、重要性**：`align` 由行的邊緣對段落框決定（單行的段落改對區塊框，都決定不了就是 `left`）；`role` 在字高大於全頁字高中位數的 `HEADING_RATIO`（1.5）倍時是 `heading`，價格是 `price`，數字、數量、代碼是 `number`，其他 `other`；`importance` 在字高小於中位數的 `MINOR_RATIO`（0.6）倍時是 `minor`；`weight` 一律 `regular`（粗不粗由渲染器的筆畫估計決定，和以前一樣）。
+8. **閱讀順序**：區塊由上而下、由左而右排，再加一個簡單的分欄測試：兩個區塊垂直方向重疊、水平方向不重疊時，左邊的先（`order_boxes`）。unit 清單就是這個順序（以後的文字備援也用它）。
+9. **`source_text`**：用既有的接字規則——中日韓（與泰文等不分詞的文字）前後不加空白，拉丁字之間加一個空白，結尾標點貼著前一個字，開頭括號貼著後一個字，`HYPHEN` 斷行直接接起來（`join_words`）。
+
+`SegmentReport`（`result["segment"]`、`C_a1_units.json` 的 `segment`、頁面的 Mode C 欄）：`words`、`paragraphs`、`lines`、`units`、`kept`、`polarity_splits`、`column_splits`、`merges`、`vertical_units`、`page_median_px`、`source_lang`、`target_lang`、`constants`，以及 `reasons[]`（每個 unit 一筆：`id`、字數、行數、`block`、`para`、`polarity`、`keep`、`align`、`glyph_px`、`reasons`：為什麼被切開、併起來、保留）。每個 unit 的報告另有 `polarity` 與 `keep_kind`。頁面的 Mode C 欄有「版面」一行（字 → 段 → 行 → unit，以及各種切與併的次數）和 units 表的「版面（極性、行、理由）」一欄。
+
+### 純文字翻譯（`claude_text.py`）
+
+`translate_units(units, image, lang, source_lang) -> TextCall`：把**不是 `keep`** 的 unit 編號成清單（`[id] 文字`，一行一個，id 是 unit 在清單裡的位置，1 號就是 `u01`），連同縮小的整張圖（長邊最多 `TEXT_IMAGE_SIDE` = 1024 px 的 JPEG；`MODE_C_IMAGE_CONTEXT=0` 時不附圖）送給 Claude，要求 JSON `{items: [{id, translation, keep, short}]}`。呼叫走既有的 `claude_units.create_message`（同一個 server-side fallback 階梯、同一個 `CLAUDE_SLOTS` 並行上限、同一份價目表與費用估計），模型是 `CLAUDE_TRANSLATE_MODEL`（沒設就是 `CLAUDE_MODEL` 的值），`max_tokens` 8000，`effort: medium`。
+
+- **分塊**：超過 `MODE_C_CHUNK_UNITS`（50）個 unit 的清單切成每塊最多那麼多個，各塊平行（執行緒，受 `CLAUDE_SLOTS` 限制）呼叫；每塊都附同一張圖與一行「這是同一張圖的較長清單的第 k 塊，id 通篇編號」。結果依 id 合併；某個 id 沒有答案時，那個 unit 保持 `keep`（`notes: no translation returned`）並在警告區列出（只有 `u07` 這樣的編號，沒有文字）；某一塊整個失敗但其他塊成功時，失敗那一塊的 unit 同樣保持 `keep` 並說明；全部失敗才是 Mode C 的錯誤。各塊之間沒有共用詞彙表（它們是平行的），所以超過 50 個 unit 的菜單，同一個詞在不同塊可能譯得不一樣。
+- **`short`**：模型只在譯文比原文長超過 `SHORT_RATIO`（1.4）倍時才該給（一個中日韓字算兩個拉丁字元）；程式再檢查一次：不合這個規則，或 `short` 沒有比譯文短，就丟掉。
+- **`keep`**：專有名詞、品牌名、店名、產品代碼由模型標 `keep: true`（譯文改回原文）；價格、數字、代碼等已經由規則 5 保留，不會送出去。
+- 沒有東西可翻（全部都是 `keep`）時不呼叫。log 與錯誤訊息裡沒有圖片或文字。
+- **mock**（`LAB_MOCK=1`）：完全離線，譯文是「`[目標語言碼] 原文`」，`keep` 規則照用，tokens 與費用用字數估算。
+
+完整的 system prompt（只定義在 `app/claude_text.py` 的 `SYSTEM_PROMPT`，測試會檢查下面這份與程式碼一致）：
+
+```
+You translate text that was cut out of one photo or scan: a menu, poster, sign, receipt or document. You get the picture and a numbered list. Each line is "[id] text": the text of one piece of the picture, in reading order. Our code has already found where every piece sits; it erases the original text and draws your translation in the same place.
+
+Translate every item into the target language and return one entry per item with the same id. Never skip, merge or reorder items.
+- The list is one menu or document. Keep terms consistent across the whole list: the same dish, ingredient, size or label always gets the same translation. Use the picture to understand what a word means; the text can contain OCR mistakes.
+- Proper names, brand names, shop names and product codes stay as they are: set keep to true and copy the text unchanged into translation.
+- Keep numbers, units and currency symbols exactly as written.
+- Keep each translation about as short as its original. No explanations, notes, quotes or alternatives inside translation.
+- short: leave it empty unless the translation is longer than 1.4 times the original (count a Chinese, Japanese or Korean character as 2 Latin letters). Then give a shorter wording of the same item.
+
+Return only the JSON object that matches the schema.
+```
+
+user 訊息：`Target language: <名稱> (<碼>)`、已知來源語言時一行 `Source language: …`（Vision 對每個字的語言猜測，取字數最多的）、分塊時那一行說明，最後是 `Items:` 和清單。
+
+### Mode C 在頁面、API 與 manifest 裡
+
+- 頁面：表單多一個勾選框「Mode C（幾何版面 + 純文字翻譯）」（預設勾；欄位 `mode_c`），至少要選一個 Mode；每張圖多一欄 Mode C（原圖｜Mode A｜Mode C｜Mode B…），欄位內容和 Mode A 一樣（輸出圖、只擦除版、units 表、judge 面板、各階段耗時、tokens、費用），另有「版面」一行、擦字器一行與每個 unit 的版面理由；原圖欄可以分別疊上 Mode A、Mode C 的 unit 框；批次彙總表每張圖多一列 `Mode C · <翻譯模型>`（只有 Anthropic 費用）。
+- API：`POST /lab/api/jobs` 與 `/lab/api/batches` 多了表單欄位 `mode_c`（`1`/`0`，預設 `0`；三個 Mode 都沒選回 400）；job 紀錄多了 `mode_c`（和 `mode_a` 同形：`status`、`error`、結果欄位…），沒跑時是 `{"status": "skipped", "error": null}`；`params` 多了 `mode_c`、`translate_model`、`inpaint_model`。第 8 輪以前存下來的 job 沒有 `mode_c`，頁面與彙總表都當它是 `skipped`。
+- manifest `schema_version: 4`：見「給審閱者的連結（MinIO）」。
+
+### Mode C 做不到的事
+
+- **不看語意**：同一個 Vision 段落裡的不同項目（沒有空行隔開的菜單，一行一品）如果字高、對齊、行距都符合規則 4，會被併成一個多行 unit，譯文的換行不一定對得上原本的行；相反地被 Vision 切到兩個區塊的一個句子也不會接起來。Mode A 看圖分組的這部分比較聰明，代價是上面的 132 秒。
+- **極性靠像素**：很小或很淡的反白字（墨水像素太少）是 `unknown`，不會被切出來。
+- **群組靠字高**：同一排字因為有沒有下伸字（`g`、`y`）字框高度差 4 px 以上時，會被分到兩組，字級各自統一。
+- **直排**只認「又高又窄的中日韓字」與「疊在一起的單字」，一律 `vertical_rl`（欄由右到左）；`vertical_lr` 不會出現。
+- **`weight` 一律 `regular`**，粗體只靠筆畫估計；譯文長短只能靠 `short` 與 1.4 倍規則，模型看不到框的大小。
+- 沒有重試；翻譯分塊之間沒有共用詞彙表。
+- 擦除與畫字就是 Mode A 的：平坦背景填色、其他用修補器（見「擦字模型」）、排版先求可讀、太小的次要 unit 保持原樣。
+
+## 擦字模型（LaMa，第 8 輪）
+
+Mode A 與 Mode C 的擦除都經過 `inpaint.py` 的同一個介面 `inpaint(rgb, mask, *, model) -> rgb`，有兩個實作：
+
+- **`telea`**：以前的 OpenCV Telea（一次 `cv2.inpaint`），**預設**，什麼都不用裝，沒有 opt-in 的人看到的結果和以前完全一樣；
+- **`lama`**：LaMa（ONNX Runtime）。Telea 在反光的紙上留下灰色方塊與鬼影，LaMa 是訓練過的修補模型。**需要 opt-in**：`INPAINT_MODEL=lama`（lab 的 `docker-compose.yml` 預設就是 `lama`；`/v1` 所在的正式映像沒有設，仍是 Telea）。
+
+| 變數 | 預設 | 說明 |
+| --- | --- | --- |
+| `INPAINT_MODEL` | `telea` | `telea` 或 `lama`（其他值當 `telea`）。compose 預設 `lama`。`LAB_MOCK=1` 一律用 Telea（mock 完全離線，不會載入或下載模型）。 |
+| `INPAINT_MODEL_PATH` | `<LAB_DATA_DIR>/models/lama_fp32.onnx` | 模型檔的位置。lab 映像在建置時把模型下載到 `/app/models/lama_fp32.onnx`，Dockerfile 與 compose 都把這個變數指過去。 |
+| `INPAINT_MODEL_URL` | `https://huggingface.co/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx` | 檔案不存在時下載的網址（也是映像建置的 build arg）。 |
+| `INPAINT_MODEL_SHA256` | 空 | 選填；設了就在**下載完成後**檢查（不一致就刪掉暫存檔、退回 Telea）。映像建置時 compose 預設檢查預設網址那個檔案的雜湊。 |
+
+**模型**：[Carve/LaMa-ONNX](https://huggingface.co/Carve/LaMa-ONNX) 的 `lama_fp32.onnx`（原版 big-lama 的 ONNX 匯出，Apache-2.0）。第 8 輪撰寫時用 HEAD 與實際下載驗證過：網址回 302 再回 200，**208,044,816 bytes（約 198 MiB）**，SHA-256 `1faef5301d78db7dda502fe59966957ec4b79dd64e16f03ed96913c7a4eb68d6`；輸入 `image`（`[batch, 3, 512, 512]`，float，0–1）和 `mask`（`[batch, 1, 512, 512]`，0 或 1，1 = 要補的洞），輸出 `output`（`[batch, 3, 512, 512]`，0–255）。**輸入尺寸固定 512×512**（匯出時的限制，模型卡說明）。模型**不在 repository 裡**，測試也不下載：測試用假的 ONNX session。
+
+**安裝**：`onnxruntime` 只在 `requirements-inpaint.txt`（`onnxruntime==1.31.0`，加上 `requirements-runtime.txt`），不在 `requirements-runtime.txt`（根目錄的正式 Dockerfile 只裝那個）、也不在 CI 的 pytest。lab 的 `Dockerfile` 裝它，並在建置時用 `app/modelfetch.py`（只用標準函式庫）下載模型到 `/app/models`；`modelfetch.py` 先單獨複製進去，改程式不會重新下載 200 MB。不用 Docker 時：`pip install -r requirements-inpaint.txt`，第一次用到時自動下載到 `INPAINT_MODEL_PATH`（一把鎖、寫到暫存檔、檢查 `Content-Length`、通過才原子改名，所以不會留下半個檔案）。
+
+**怎麼用（裁切，不是整張圖）**：
+
+1. 要補的 unit 的遮罩連成**叢集**：每個連通的遮罩往外加 `INPAINT_MARGIN_PX`（32 px）的邊，加了邊的框碰在一起的就是同一個叢集（一份菜單變成少數幾個叢集，角落裡孤立的價格牌自己一個）；
+2. 每個叢集連同 32 px 的邊裁出來。模型輸入尺寸固定時（推薦的 512×512 匯出）：叢集放得進去，就以叢集為中心取**圖上真實的** 512×512 範圍（不是補邊，LaMa 看得到周圍的紙）；放不進去就等比例縮小到放得進去，再補邊到 512×512。動態尺寸的匯出：補到 8 的倍數，長邊超過 `INPAINT_MAX_SIDE`（1024）就先縮小。補邊用鏡射，補的區域不算洞；
+3. 範圍內**所有**要擦的遮罩都是洞（模型看不到鄰居即將被擦掉的字），輸出縮回原尺寸；
+4. **只有這個叢集遮罩底下（加上 `FEATHER_SIGMA` 1.5 的羽化，約 4 px）的像素取自模型**，其他像素逐位元不動，所以縮放來回不會把圖的其他部分變糊。
+
+`erase.erase_units` 呼叫這個介面，所以 Mode A 拿到同一個修補器。**退回 Telea**：缺 `onnxruntime`、模型檔不存在又下載不了、檔案壞掉、或某個叢集推論失敗時，該叢集（缺套件／模型時是全部）改用 Telea，unit 報告的 `inpaint` 寫 `telea (lama unavailable: <例外類別名>)`（成功是 `lama`，Telea 是 `telea`），Mode 的提醒區多一行；載入失敗會記住 5 分鐘（`RETRY_AFTER_S`），不會每個 job 都重新下載 200 MB。同時進行的推論最多 2 個（`MAX_CONCURRENT_INFERENCES`）。
+
+**殘留檢查**（任何擦除之後，flat 或 inpaint，兩個 Mode 都有）：每個 unit 在擦除範圍內，離「周圍的紙」超過 `INK_DISTANCE`（40）的像素佔比必須不超過 `RESIDUE_MAX_SHARE`（0.03）。「周圍的紙」是用環帶（`RING_PX`）裡和紙色接近的像素擬合出來的一個平面（每個通道 `a + b·x + c·y`），所以漸層、反光不會被誤判成殘留；紙本身雜訊很大時，距離放寬成環帶典型偏差的 `RESIDUE_NOISE_K`（3）倍。超過時：遮罩膨脹 `RESIDUE_DILATE_PX`（2 px）再擦一次；還是超過：這個 unit **還原成原圖的像素**（連羽化的邊），報告 `skipped: erase residue`，並列入警告——寧可看得到原文，也不要灰色髒斑。unit 報告的 `erase_residue`（最後一次的佔比）、`erase_passes`（1 或 2）、`inpaint` 都看得到。
+
+**時間**：LaMa 在 CPU 上跑得慢。這個開發沙盒（4 核）量到：第一次載入模型約 30 秒，之後每次 512×512 推論約 4–6 秒；1478×1108 的合成頁（兩個叢集）含載入共約 39 秒，Telea 同一頁約 0.6 秒。擁有者的伺服器沒有量過，叢集越多越久（每個叢集一次推論）。Mode C 的省時（沒有 132 秒的規劃）有一部分會被這裡花掉。
+
 ## 怎麼讀結果
 
 每個欄位上方有耗時；Mode A 另外拆成各階段。
@@ -720,6 +841,8 @@ Return only the JSON object that matches the schema.
 - 原圖欄下的「疊上 Mode A 的 unit 框」：藍＝翻譯、綠＝保留（`keep`）、灰＝略過；用來一眼檢查 Claude 的分組對不對。
 - 「Mode A 每個 unit」表：每個 unit 的動作、角色、重要性、**擦除方法**、**用字（full／short）**、字級（與可讀比例）、往旁邊長了多少；「Mode A units（JSON）」面板是完整欄位：`id`、`word_ids`、`source_text`、`translation`、`short`、`direction`（`horizontal` / `vertical_rl` / `vertical_lr`）、`rotated`、`role`、`align`、`weight`、`importance`、`group`、`keep`、`notes`；幾何 `frame`、`bbox`、`angle`、`size`、`glyph_h`；結果 `action`（`translated` / `kept` / `skipped`，後者含原因）、`font_size`、`layout`（`horizontal` / `vertical_cjk` / `vertical_latin`）、`lines`、`fitted`、`readable`、`overflowed`、`truncated`、`bold`、`text_used`、`text_color`、`bg_color`、`ink_bbox`、`erase_*`（含第 6 輪的 `erase_reason`、`erase_fill`、`erase_ring_*`、`erase_extension`）、`grow`、`lane`、`group_size`、`group_weight`、`group_size_broken`。`overflowed: true` 表示 10 px 還是放不進框，字會往框下方（或直排的欄尾）多出最多 30%，超過的部分以 `…` 截斷。
 
+**Mode C 欄**（第 8 輪）：標題、判定徽章、各階段耗時（`Vision`、`segment（版面，不呼叫模型）`、`Claude 翻譯（純文字）`及呼叫次數、`erase / render`、`審查耗時`）、tokens 與費用（翻譯 + judge）、`units`、**`版面`**（字 → 段 → 行 → unit，保留幾個、欄位切開、極性切開、多行合併、直排各幾次）、`擦除方法`、**`擦字器`**（`lama` 幾個、`telea` 幾個、`telea (lama unavailable: …)` 幾個）、**`殘留而還原`**（擦了兩次還是有殘留、已還原成原文的 unit 數）。「Mode C 每個 unit」表和 Mode A 的一樣，多了「擦字器 / 殘留」（擦字器、殘留佔比、擦了幾次）和「版面（極性、行、理由）」兩欄，後者說明這個 unit 為什麼被切開、併起來或保留。原圖欄可以分別疊上 Mode A 與 Mode C 的 unit 框，兩種分法一眼就能比。
+
 **比較時建議看**：批次彙總表的判定與可用度、judge 列出的問題（看圖，不是看 OCR）、版面與字體是否保留、顏色、直排／旋轉頁面的處理、輸出尺寸、兩種費用與耗時，以及模型有沒有改動不該動的圖形或文字。
 
 ## 給審閱者的連結（MinIO）
@@ -730,19 +853,20 @@ Return only the JSON object that matches the schema.
 | --- | --- |
 | `original.<ext>` | 送出時的原圖 |
 | `A_a<j>.png`、`A_a<j>_erased.png`、`A_a<j>_units.json`、`A_a<j>_verify.json` | Mode A 第 j 次嘗試（1 或 2）的結果圖、只擦除圖、units 與驗證（有勾 Mode A 才有） |
+| `C_a1.png`、`C_a1_erased.png`、`C_a1_units.json`、`C_a1_verify.json` | Mode C 的結果圖、只擦除圖、units（含 `segment`）與驗證（有勾 Mode C 才有；沒有重試，所以只有第 1 次嘗試） |
 | `B<n>_<模型>_r<k>_a1.png`、`..._a2.png` | Mode B 第 n 個模型第 k 次 run 的第 1、第 2 次嘗試的圖 |
 | `B<n>_<模型>_r<k>_a<j>_verify.json` | 該次嘗試的驗證結果（含 judge 的完整紀錄與 OCR 警告） |
 | `manifest.json` | 這個 job 的 metadata 與**每個物件的簽名 GET 網址** |
 
-**批次的 manifest**：一個批次的每個 job 都跑完、也上傳完之後，才上傳 `<MINIO_PREFIX>/batch-<batch-id>/manifest.json`（`schema_version: 3`，`kind: "batch"`）：`batch_id`、各時間、`target_language`（**清單**：這個批次用到的語言，不重複、依第一次出現的順序，例如 `["en", "zh-TW"]`，第 6 輪由字串改成清單）、`options`（Mode、模型清單、輸出尺寸、`runs`、`judge`、`judge_model`、`claude_model`、`mode_a_retry`）、`jobs[]`（每張圖一筆：`index`、`job_id`、`image_name`、`target_language`（這張圖自己的語言）、尺寸、`status`、`publish_status`、**那個 job manifest 的簽名網址** `manifest`，沒上傳成功的是 `null` 並在 `warnings` 說明）、`summary[]`（和頁面彙總表同樣的列）、`totals`（兩種費用的總和與 pass 的列數）、`warnings`，以及 manifest 自己的 `manifest.url`。上傳失敗不會讓批次或任何 job 失敗。
+**批次的 manifest**：一個批次的每個 job 都跑完、也上傳完之後，才上傳 `<MINIO_PREFIX>/batch-<batch-id>/manifest.json`（`schema_version: 4`，`kind: "batch"`）：`batch_id`、各時間、`target_language`（**清單**：這個批次用到的語言，不重複、依第一次出現的順序，例如 `["en", "zh-TW"]`，第 6 輪由字串改成清單）、`options`（Mode、模型清單、輸出尺寸、`runs`、`judge`、`judge_model`、`claude_model`、`mode_a_retry`，第 8 輪起還有 `mode_c`、`translate_model`、`inpaint_model`）、`jobs[]`（每張圖一筆：`index`、`job_id`、`image_name`、`target_language`（這張圖自己的語言）、尺寸、`status`、`publish_status`、**那個 job manifest 的簽名網址** `manifest`，沒上傳成功的是 `null` 並在 `warnings` 說明）、`summary[]`（和頁面彙總表同樣的列）、`totals`（兩種費用的總和與 pass 的列數）、`warnings`，以及 manifest 自己的 `manifest.url`。上傳失敗不會讓批次或任何 job 失敗。
 
-**job 的 `manifest.json`**（`schema_version: 3`）有：`job_id`、`batch_id`、`image_index`、各時間、`target_language`（這個 job 自己的語言，仍是單一字串）、`options`（模型清單、輸出尺寸、是否驗證、`runs`、`judge`、`judge_model`、`mode_a_retry`…）、`original`，`mode_a`（判定、`usability`、`coverage`、費用拆成 `cost_usd`／`judge_cost_usd`／`cost_anthropic_usd`／`cost_openrouter_usd`、`attempts[]`：每次嘗試的圖、擦除圖、units、驗證 JSON 的連結、判定、judge 紀錄、擦除方法與 `short` 的統計、重試時多送的段落…），`mode_b[]`（**每個模型一筆**），`objects[]`（`name`、`key`、`bytes`、`content_type`、`url`），`warnings`，以及 manifest 自己的 `manifest.url`。單一物件上傳失敗不會讓 job 失敗：那個物件在 manifest 裡只有 `error`、沒有 `url`，並出現在頁面的「提醒」裡。
+**job 的 `manifest.json`**（`schema_version: 4`）有：`job_id`、`batch_id`、`image_index`、各時間、`target_language`（這個 job 自己的語言，仍是單一字串）、`options`（模型清單、輸出尺寸、是否驗證、`runs`、`judge`、`judge_model`、`mode_a_retry`…）、`original`，`mode_a`（判定、`usability`、`coverage`、費用拆成 `cost_usd`／`judge_cost_usd`／`cost_anthropic_usd`／`cost_openrouter_usd`、`attempts[]`：每次嘗試的圖、擦除圖、units、驗證 JSON 的連結、判定、judge 紀錄、擦除方法與 `short` 的統計、重試時多送的段落…），`mode_c`（第 8 輪；沒跑是 `null`，欄位和 `mode_a` 相同，`attempts[]` 只有一次，另有 `segment_ms`、`claude_calls`、`chunk_sizes`、`segment`：版面的計數，不含每個 unit 的理由），`mode_b[]`（**每個模型一筆**），`objects[]`（`name`、`key`、`bytes`、`content_type`、`url`），`warnings`，以及 manifest 自己的 `manifest.url`。單一物件上傳失敗不會讓 job 失敗：那個物件在 manifest 裡只有 `error`、沒有 `url`，並出現在頁面的「提醒」裡。
 
 `mode_b[]` 的每一筆：`model`、`route_preference`、`resolution_requested`、`runs_requested`，
 - `summary`：`runs_done`、`runs_failed`、`passes`、`pass_rate`、`verdicts[]`、`mean_total_cost_usd`、`total_cost_usd`、`mean_elapsed_ms`、`best_run`、`best_verdict`、`best_image`（最佳 run 的圖與連結）；
 - `runs[]`（**所有** run，每次一筆）：`run`、`status`、`error`、`api_used`、`verdict`、`failed_checks`、`usability`、`coverage`、`selected_attempt`、`elapsed_ms`、`judge_ms`、`usage`、`cost_usd`（生成）、`judge_cost_usd`、`cost_openrouter_usd`、`cost_anthropic_usd`、`total_cost_usd`、採用的圖 `image`，以及 `attempts[]`：每次嘗試的圖、驗證 JSON、`verdict`、`failed_checks`、`usability`、`coverage`、`judge`（`status`、`error`、`model`、`usability`、`coverage`、`legibility_issues`、`structure_issues`、`altered_numbers`、`untranslated`、`mistranslated`、`summary`、tokens、`cost_usd`）、`ocr_warnings`（警告代碼與缺少的數字、殘留的字）、路徑、尺寸、耗時、tokens、費用、送出的 prompt。
 
-schema 1（第 3 輪）是每個模型一筆；schema 2 在中間多了 `runs[]`；**schema 3（第 5 輪）改了判定欄位、Mode A 的 attempts、費用拆分，並多了批次 manifest**。第 6 輪沒有升 schema：job manifest 的欄位意思沒變，批次 manifest 的 `target_language` 從字串變成清單（批次 manifest 從第 5 輪才有；只有一種語言時是只有一個元素的清單），請照清單讀。
+schema 1（第 3 輪）是每個模型一筆；schema 2 在中間多了 `runs[]`；**schema 3（第 5 輪）改了判定欄位、Mode A 的 attempts、費用拆分，並多了批次 manifest**；**schema 4（第 8 輪）多了 `mode_c`、`options.mode_c`／`translate_model`／`inpaint_model` 與 `C_a1*` 檔案，其餘欄位的意思沒變**。第 6 輪沒有升 schema：job manifest 的欄位意思沒變，批次 manifest 的 `target_language` 從字串變成清單（批次 manifest 從第 5 輪才有；只有一種語言時是只有一個元素的清單），請照清單讀。
 
 頁面在每張圖的區塊顯示那個 job 的 manifest 簽名網址（連結有效 `MINIO_URL_EXPIRY_HOURS` 小時，預設 168 = 7 天），旁邊有「複製」鈕；上傳還在跑時顯示「上傳到 MinIO 中…」，沒設定時顯示缺哪些變數；批次 manifest 的連結在彙總表下方。同一個網址也在 `GET /api/jobs/<job-id>` 的 `publish.manifest_url` 與 `GET /api/batches/<batch-id>` 的 `publish.manifest_url`（log 裡只記上傳了幾個物件，不記連結）。manifest 也會留一份在本機（`LAB_DATA_DIR/<job-id>/manifest.json`、`LAB_DATA_DIR/batch-<batch-id>/manifest.json`）。
 
@@ -769,7 +893,7 @@ lab 的 API（路徑現在在 `/lab` 底下：`POST /lab/api/batches`、`POST /l
 | `files`（批次）／`file`（單張） | 必填 | jpg / png / webp；批次 1–4 個 `files`，每個各自受 20 MB 與格式限制 |
 | `target_lang` | `en` | `config.LANGUAGES` 裡的碼（見「語言」；lab 不收表外的碼）；批次的預設語言 |
 | `target_langs`（只有批次） | 空 | 每個檔案一個語言（第 6 輪）：欄位可重複，依 `files` 的順序；沒有、或比檔案少時剩下的用 `target_lang`，空字串也是 `target_lang`；比檔案多或不是支援的語言回 400 |
-| `mode_b` / `mode_a` | `0` / `0` | 至少選一個；頁面預設兩個都勾 |
+| `mode_b` / `mode_a` / `mode_c` | `0` / `0` / `0` | 至少選一個（三個都沒選回 400）；頁面預設三個都勾。`mode_c`（第 8 輪）= Mode C：幾何版面 + 純文字翻譯 |
 | `image_models` | `OPENROUTER_IMAGE_MODEL`（`google/gemini-3-pro-image`） | 最多 4 個；欄位可重複，或用逗號分隔。舊的單一欄位 `image_model` 仍可用 |
 | `output_size` | `2K` | `default`（不送 `resolution`，用供應商自己的尺寸）、`1K`、`2K`、`4K`，只套用在 images 路徑。沒填，或填空字串，都是 `2K` |
 | `verify` | `1` | `0` = 不驗證、不審查、不重試（頁面沒有這個開關，一律開著） |
@@ -786,6 +910,7 @@ lab 的 API（路徑現在在 `/lab` 底下：`POST /lab/api/batches`、`POST /l
 - 每個 Mode B run = 1 次影像生成（判定不是 `pass` 會再多 1 次）+ 每次嘗試 1 次 judge。生成費用取決於模型與尺寸（OpenRouter 文件提到 images 路徑的定價可能依解析度分級，所以選大尺寸通常更貴），回應沒有帶 cost 的模型只顯示 tokens。**費用 = 圖片數 × 模型數 × 每個模型連跑的次數 × 每個 run 的 1–2 次嘗試**：4 張圖、4 個模型各跑 3 次最壞是 96 次生成，請小心。
 - **judge** = 每次嘗試 1 次 Claude 呼叫（預設 `claude-sonnet-5-5`，2 / 10 USD 每百萬 tokens；`effort: medium`；兩張圖各約 1.6k tokens 加上 prompt 與 OCR 行），粗估 0.01–0.03 USD（**估計不是實測**）。不想付這筆錢就取消勾選「視覺審查」（或 `judge=0`），代價是沒有判定（`unverified`）。
 - **Mode A** = 1 次 Vision `document_text_detection`（與 Mode B 的來源圖 OCR 共用，不會重複打）+ 1 次 Claude 規劃（圖 + 字清單，輸出 JSON）+ 1 次 judge；判定不是 `pass` 時再加 1 次規劃與 1 次 judge。超過 10% 的字沒進任何 unit 時，還會多 1 次覆蓋補翻（只送沒列的字，再加圖；同樣占 Claude 並行名額）。規劃用 `effort: high`，思考 tokens 計入輸出，所以字多的圖可能比想像貴；實際數字以頁面顯示的 tokens 與估計費用為準（估計只依價目表，沒算快取與長上下文加價）。
+- **Mode C** = 1 次 Vision（共用）+ 1 次 Claude 純文字翻譯（超過 `MODE_C_CHUNK_UNITS` 個 unit 時每塊 1 次；每次附一張長邊 1024 px 的 JPEG，`effort: medium`，輸出只有每個 unit 一小段 JSON）+ 1 次 judge，沒有重試；只有 Anthropic 費用。版面是幾何，不花錢；LaMa 在自己的 CPU 上跑，不花錢但花時間。
 - 驗證的 OCR 警告 = 每個 job 1 次來源圖 Vision（共用）+ 每張輸出圖（每次嘗試）1 次 Vision（依 Google 當時的計價）。
 - 每次按「開始」，選了的圖、模型、次數與 Mode 都會各打一次付費 API。沒有快取；自動重試最多每個 run、每個 Mode A 各一次。
 - **並行與 429**：不管選了幾張圖、幾個模型、連跑幾次，同時進行中的圖片生成最多 4 個、Claude 呼叫最多 4 個（都跨 job 共用），其餘排隊；Vision 與 OCR 不受限制。OpenRouter 回 429 時等 20 秒再試同一個請求一次，再 429 就算這個 run 失敗（不會被改走另一條 API 路徑掩蓋）。
@@ -820,10 +945,25 @@ lab 的 API（路徑現在在 `/lab` 底下：`POST /lab/api/batches`、`POST /l
 - **直排拉丁字**：窄於 `MIN_ROTATED_COLUMN_PX` 的欄不再畫（`skipped: column too narrow`）。`render.render_unit(..., column_px=None)`。
 - `config.LANGUAGES` 從 6 種變成 24 種；`fonts.CJK_FACE` 多了 `zh-HK`，`fonts.is_cjk_lang`、`fonts.resolve_script_font`、`fonts.font_notes` 是新的；`verify.TARGET_SCRIPTS` 補了新語言的文字。OpenRouter 的 `X-Title` 從 `LineBotTranslator overlay-lab` 改成 `LineBotTranslator image-translator`。
 
+## 第 8 輪的變更（與第 7 輪不相容之處）
+
+這一輪只動 `services/image-translator/`；根目錄的 `Dockerfile`、`docker/`、`scripts/`、`.github/`、Java，以及 `app/policy.py`、`app/v1.py` 的行為都沒動：正式環境照舊跑 Mode A 與 Mode B，Mode C 只在 lab，讓擁有者先在真實圖片上比較 A、B、C。
+
+- **Mode C**（幾何版面 + 純文字翻譯，見上）：`segment.py`、`claude_text.py`、`pipeline_c.py`；lab 多了勾選框與欄位 `mode_c`、job 的 `mode_c`、彙總表的 `Mode C` 列。`jobs.start_job(..., run_c=False)`、`jobs.start_batch(..., run_c=False)` 是新的關鍵字參數；`main.Options` 多了 `mode_c`；沒有任何 Mode 回 400 的訊息變成 `select at least one of Mode A, Mode B and Mode C`。批次彙總表每張圖的列順序是 Mode A、Mode C、各 Mode B 模型。
+- **`Word.block`**（Vision 的區塊編號，和 `para` 一樣）；mock 的字也有合理的 `para`／`block`／`brk`（同一行的字共用段落，每行最後一個字是 `LINE_BREAK`）。其他 OCR 行為不變。
+- **擦字模型（LaMa）**（見上）：`inpaint.py`、`modelfetch.py`、`requirements-inpaint.txt`，變數 `INPAINT_MODEL`、`INPAINT_MODEL_PATH`、`INPAINT_MODEL_URL`、`INPAINT_MODEL_SHA256`。`erase.erase_units(rgb, units, protect_masks=None, *, model=None)` 呼叫修補器，`EraseResult` 多了 `engines`、`residue`、`passes`、`restored`。`erase.INPAINT_RADIUS` 仍在（現在是 `inpaint.TELEA_RADIUS`），`erase.inpaint_all` 仍是純 Telea。
+- **殘留檢查**（兩個 Mode、flat 與 inpaint 都有）：`RESIDUE_MAX_SHARE` 0.03、`RESIDUE_DILATE_PX` 2、`RESIDUE_NOISE_K` 3。unit 多了 `skipped: erase residue` 這個結果；報告多了 `inpaint`、`erase_residue`、`erase_passes`。**這也影響 `/v1` 的 Mode A**（沒有 opt-in 的開關）：以前留下髒斑的 unit 現在會還原成原文，不再畫譯文。
+- **文字顏色**：`colors.INK_FRACTION`（0.40）改名成 `INK_CORE_FRACTION` 並改成 0.15；`LAB_INK_FRACTION` 的預設值變成 0.15。也影響 `/v1` 的 Mode A。
+- **manifest `schema_version: 4`**（job 與批次）：job manifest 多了 `mode_c`（沒跑是 `null`，欄位和 `mode_a` 相同，另有 `segment_ms`、`claude_calls`、`chunk_sizes`、`segment`（計數，不含 `reasons`）），`options` 多了 `mode_c`、`translate_model`、`inpaint_model`，`objects` 多了 `C_a1*` 檔案；批次 manifest 的 `options` 同樣多了這三個，`summary[]` 多了 `mode: "C"` 的列。其餘欄位的意思沒變。
+- **`/lab/api/jobs` 與 `/lab/api/batches`** 多了 `mode_c`；job 的 `params` 多了 `mode_c`、`translate_model`、`inpaint_model`。
+- **lab 頁面**：Mode C 欄、擦字器一行、「殘留而還原」一行、units 表多了「擦字器 / 殘留」欄（Mode C 另有「版面」欄）、原圖欄可以分別疊上 Mode A 與 Mode C 的 unit 框。
+
+**這一輪沒有驗證的**（只經過離線測試、假的 ONNX session 與 `LAB_MOCK=1` 端到端；不要把它們當成已經在真實圖片上證明過的事）：真實的 Google Vision 層級（`para`／`block`／`brk`）餵給規則 1–8 的結果；真實的 Claude 翻譯（提示詞、`keep` 與 `short` 的行為、分塊後的詞彙一致性、費用）；LaMa 在真實照片上的修補品質、殘留檢查的門檻（0.03、2 px、3 倍）在真實照片上會不會誤殺；模型在擁有者伺服器上的推論時間與記憶體；Docker 映像的建置（這個環境沒有 Docker daemon，只驗證了 `docker compose config` 與 `modelfetch.py` 的下載指令）；Mode C 在「一個 Vision 段落裡有好幾個項目」的菜單上的表現。
+
 ## 這個工具「不是」什麼
 
 - **lab 本身不是正式版**：沒有佇列與限流、沒有使用者隔離（MinIO 只用來交付結果）；圖片與結果會留在 `./data/`，自己清。正式的路徑是 `/v1`（令牌、預算、保留期限、只留記錄與一張圖）。服務本身仍然沒有 LINE、沒有 MongoDB：那是 Java bot 的事。
-- **inpaint 是 OpenCV Telea，不是生成式模型**：只用在框內或環帶不平坦、或兩者不同色的 unit；漸層、照片、複雜紋理上的大面積文字會糊、會留下痕跡。環帶與框內同意的平坦背景用填色，不是 inpaint。
+- **inpaint 預設是 OpenCV Telea，不是生成式模型**：只用在框內或環帶不平坦、或兩者不同色的 unit；漸層、照片、複雜紋理上的大面積文字會糊、會留下痕跡。環帶與框內同意的平坦背景用填色，不是 inpaint。第 8 輪可以 opt-in 改用 LaMa（`INPAINT_MODEL=lama`，見「擦字模型（LaMa）」）：它是訓練過的修補模型，但在 CPU 上慢，輸入固定 512×512 所以大叢集會被縮小再縮回來，而且沒有在真實照片上驗證過。
 - Mode A 的譯文只用一種顏色、一種字型家族（拉丁字 Noto Sans／DejaVu Sans，中日韓 Noto Sans CJK）畫，不會還原原本的字型；字體粗細靠 planner 的 `weight` 與筆畫粗細估計。
 - 判定是 LLM 看圖的結果，不是人眼：judge 可能誤報或漏報（嚴格程度沒有在真實圖片上校準過），小字與手寫字讀得比 OCR 好但不是 100%；OCR 警告更不可靠，只當提示；通過率只有 1–3 次的樣本。
 - 整張圖會被送到 Anthropic（Mode A 的規劃、judge：**縮到長邊 1568 px 的原圖與輸出圖**，加上來源的 OCR 文字行）、OpenRouter / 其後的模型供應商（Mode B）與 Google Vision，也會（設了 MinIO 時）上傳到你的 MinIO，含圖上的所有個資，請自行評估。
@@ -836,6 +976,10 @@ lab 的 API（路徑現在在 `/lab` 底下：`POST /lab/api/batches`、`POST /l
 - Mode A：`Claude hit max_tokens=32000 before finishing the JSON (the call produced N output tokens)`：這張圖的 unit 多到 32000 tokens 也寫不完；重試時這會讓第二次嘗試失敗、沿用第一次（頁面顯示 `retry_error`）。字很多的圖可以改用較小的模型或拆圖。
 - Mode A 的提醒區出現「the coverage pass failed」：覆蓋補翻那一次呼叫失敗，沒進 unit 的字照舊保持原樣，其餘結果不受影響。
 - Mode A：`Claude refused ...`：模型安全分類器拒絕，頁面會顯示類別；預設已開 server-side fallback。
+- Mode C：提醒區出現 `N unit(s) got no translation and stay as they are`：翻譯呼叫沒有回那幾個 id（或某一塊失敗），那些 unit 保持原樣；看 log 的 `stage=claude-text`（`chunks=`、`missing=`）。`part 2 of 3 failed (...)` 表示那一塊的 API 呼叫失敗。
+- Mode C 的 unit 被切得太碎、或不同項目併在一起：看 Mode C 欄 units 表的「版面」一欄（`column split`、`polarity split`、`merged line`）和 `segment` 計數；門檻是 `segment.py` 的常數（`COLUMN_GAP_RATIO` 等），不是環境變數。
+- 擦字器欄出現 `telea (lama unavailable: ModuleNotFoundError)`：映像或環境沒裝 `onnxruntime`（`pip install -r requirements-inpaint.txt`）；`ModelDownloadError`：模型檔不在 `INPAINT_MODEL_PATH` 又下載不了（網路、`INPAINT_MODEL_URL`）；`ChecksumMismatch`：下載的檔案和 `INPAINT_MODEL_SHA256` 不一致。失敗會記住 5 分鐘，修好之後重啟服務最快。
+- `skipped: erase residue`：擦了兩次還是有東西留在原處（灰色髒斑、鬼影），這個 unit 保持原文（寧可看得到原文也不要髒斑）；看 unit 的 `erase_residue`（佔比）、`inpaint`（哪個擦字器）與 `erase_reason`。門檻是 `erase.py` 的常數（`RESIDUE_MAX_SHARE`、`RESIDUE_DILATE_PX`、`RESIDUE_NOISE_K`）。
 - Mode B：`the model returned no image (it said: ...)`：該模型沒有輸出圖片，換一個模型，或把 `OPENROUTER_IMAGE_API` 設成 `images` / `chat` 試另一條路。
 - 判定是 `unverified`：judge 不可用（沒設 `ANTHROPIC_API_KEY`、Claude API 錯誤、被拒絕、JSON 不合 schema）、被關掉，或沒有輸出圖；頁面會寫原因。這不影響生成與 OCR 警告，只是這次沒有判定也不會重試；補好金鑰後重跑。
 - 判定不是 `pass` 但圖看起來沒問題：看 judge 的問題清單與 `where`（它指出的區域）。judge 可能誤報；以眼睛為準，必要時把 `CLAUDE_JUDGE_MODEL` 換成別的型號比較。

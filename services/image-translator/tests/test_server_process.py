@@ -117,3 +117,56 @@ def test_the_server_process_answers_over_real_http_in_mock_mode(tmp_path):
     assert "stage=v1 request=proc-both status=image" in output  # the access log is off, the stage lines are on
     for needle in ("TONKATSU", "Pork Cutlet", TOKEN, "GET /healthz", "POST /v1/translations"):
         assert needle not in output, needle
+
+
+def test_a_three_image_batch_with_modes_a_b_and_c_runs_over_real_http_and_publishes_to_the_fake(tmp_path):
+    port = free_port()
+    lab_token = "process-lab-token"
+    env = {
+        **os.environ, "LAB_MOCK": "1", "PORT": str(port), "LAB_DATA_DIR": str(tmp_path / "data"), "LAB_TOKEN": lab_token,
+        "SERVICE_TOKEN": "", "PYTHONUNBUFFERED": "1",
+    }  # fmt: skip
+    for name in ("BIND_HOST", "LAB_PORT"):
+        env.pop(name, None)
+    proc = subprocess.Popen([sys.executable, "-m", "app"], cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    base = f"http://127.0.0.1:{port}"
+    try:
+        deadline = time.time() + 60
+        while True:
+            try:
+                urllib.request.urlopen(base + "/healthz", timeout=2).read()
+                break
+            except (urllib.error.URLError, ConnectionError, OSError):
+                assert proc.poll() is None, "the server exited"
+                assert time.time() < deadline, "the server did not start"
+                time.sleep(0.2)
+        headers = {"X-Lab-Token": lab_token}
+        with httpx2.Client(timeout=60) as client:
+            files = [("files", (f"menu{i}.png", png(), "image/png")) for i in (1, 2, 3)]
+            data = {"target_lang": "zh-TW", "mode_a": "1", "mode_b": "1", "mode_c": "1", "image_models": "mock/image-model", "verify": "1"}
+            r = client.post(base + "/lab/api/batches", headers=headers, files=files, data=data)
+            assert r.status_code == 200, r.text
+            batch_id = r.json()["batch_id"]
+            deadline = time.time() + 120
+            while True:
+                doc = client.get(base + f"/lab/api/batches/{batch_id}", headers=headers).json()
+                if doc["status"] == "done" and doc["publish"]["status"] in ("done", "skipped", "error"):
+                    break
+                assert time.time() < deadline, "the batch did not finish"
+                time.sleep(0.2)
+            assert doc["publish"]["status"] == "done" and doc["publish"]["mock"] is True  # the in-memory fake took the manifest
+            assert sorted((row["image_index"], row["mode"]) for row in doc["summary"]) == [(i, m) for i in (1, 2, 3) for m in "ABC"]
+            assert all(row["status"] == "done" and row["verdict"] == "pass" for row in doc["summary"])
+            assert all(job["mode_c"]["status"] == "done" and job["publish"]["status"] == "done" for job in doc["jobs"])
+            shown = client.get(base + f"/lab/files/{doc['jobs'][0]['job_id']}/C_a1.png", headers=headers)
+            assert shown.status_code == 200 and shown.content[:8] == b"\x89PNG\r\n\x1a\n"
+    finally:
+        proc.terminate()
+        try:
+            output = proc.communicate(timeout=20)[0].decode("utf-8", "replace")
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            output = proc.communicate()[0].decode("utf-8", "replace")
+    assert "stage=segment" in output and "stage=mode-c-done" in output and "stage=claude-text" in output
+    for needle in ("TONKATSU", "LUNCH", "NT$120", "紅燒肉", "[zh-TW]", lab_token, "X-Amz-Signature", "mock-minio"):
+        assert needle not in output, needle  # no OCR text, no translation, no token, no link in the log
