@@ -390,12 +390,45 @@ def test_a_checksum_that_does_not_match_is_its_own_error(tmp_path):
     modelfetch.ensure("https://models.example/m", tmp_path / "m", sha256="", opener=lambda u, t: Response(MODEL))  # none set: not checked
 
 
-def test_a_network_error_becomes_a_download_error_and_other_schemes_are_refused(tmp_path):
-    def boom(url, timeout):
-        raise TimeoutError("slow")
+def test_a_network_error_that_clears_up_is_retried_and_the_file_arrives(tmp_path, monkeypatch):
+    monkeypatch.setattr(modelfetch, "RETRY_DELAYS", (0.0,))
+    attempts = []
 
-    with pytest.raises(modelfetch.ModelDownloadError, match="TimeoutError"):
+    def flaky(url, timeout):
+        attempts.append(url)
+        if len(attempts) == 1:
+            raise ConnectionResetError("reset")
+        return Response(MODEL)
+
+    path = modelfetch.ensure("https://models.example/m", tmp_path / "m", hashlib.sha256(MODEL).hexdigest(), opener=flaky)
+    assert path.read_bytes() == MODEL and len(attempts) == 2
+
+
+def test_a_checksum_mismatch_is_not_retried(tmp_path, monkeypatch):
+    monkeypatch.setattr(modelfetch, "RETRY_DELAYS", (0.0, 0.0))
+    attempts = []
+
+    def opener(url, timeout):
+        attempts.append(url)
+        return Response(MODEL)
+
+    with pytest.raises(modelfetch.ChecksumMismatch):
+        modelfetch.ensure("https://models.example/m", tmp_path / "m", sha256="1" * 64, opener=opener)
+    assert len(attempts) == 1
+
+
+def test_a_network_error_becomes_a_download_error_and_other_schemes_are_refused(tmp_path, monkeypatch):
+    monkeypatch.setattr(modelfetch, "RETRY_DELAYS", (0.0, 0.0))
+    calls = []
+
+    def boom(url, timeout):
+        calls.append(url)
+        raise TimeoutError("slow mirror")
+
+    with pytest.raises(modelfetch.ModelDownloadError, match="TimeoutError while downloading the model: slow mirror"):
         modelfetch.ensure("https://models.example/m", tmp_path / "m", opener=boom)
+    assert len(calls) == 3  # two retries after the first failure
+    assert not list(tmp_path.iterdir())  # no .part file left behind
     with pytest.raises(modelfetch.ModelDownloadError, match="https://"):
         modelfetch.ensure("file:///etc/passwd", tmp_path / "m", opener=lambda u, t: pytest.fail("never opened"))
     assert list(tmp_path.iterdir()) == []

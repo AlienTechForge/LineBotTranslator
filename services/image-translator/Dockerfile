@@ -20,10 +20,18 @@ RUN pip install -r requirements.txt -r requirements-inpaint.txt
 # The LaMa model (about 200 MB, Carve/LaMa-ONNX, Apache-2.0) is downloaded at build time into /app/models and is not
 # part of the repository. modelfetch.py is copied alone, ahead of the app, so that a code change does not download
 # it again. The checksum is that of the file named by the default URL: pass INPAINT_MODEL_SHA256= (empty) with another URL.
+# INPAINT_MODEL_FETCH=0 skips the download (docker-compose.yml does: it mounts ./models instead, and the service
+# downloads the file into it on first use). A download that fails does not fail the build either: the service
+# downloads on first use, or falls back to Telea and says so in the unit report.
 ARG INPAINT_MODEL_URL=https://huggingface.co/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx
 ARG INPAINT_MODEL_SHA256=1faef5301d78db7dda502fe59966957ec4b79dd64e16f03ed96913c7a4eb68d6
+ARG INPAINT_MODEL_FETCH=1
 COPY app/modelfetch.py /tmp/modelfetch.py
-RUN python /tmp/modelfetch.py "$INPAINT_MODEL_URL" /app/models/lama_fp32.onnx "$INPAINT_MODEL_SHA256" \
+RUN mkdir -p /app/models \
+    && if [ "$INPAINT_MODEL_FETCH" = "1" ]; then \
+         python /tmp/modelfetch.py "$INPAINT_MODEL_URL" /app/models/lama_fp32.onnx "$INPAINT_MODEL_SHA256" \
+         || echo "WARNING: the LaMa model was not downloaded at build time; the service will download it on first use or fall back to Telea" >&2; \
+       fi \
     && rm /tmp/modelfetch.py
 
 COPY pytest.ini .

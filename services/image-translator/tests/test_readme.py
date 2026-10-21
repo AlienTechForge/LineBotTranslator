@@ -362,6 +362,12 @@ def test_the_dockerfile_installs_onnxruntime_and_bakes_the_model_in_while_the_pr
     assert "COPY app/modelfetch.py /tmp/modelfetch.py" in dockerfile and "/app/models/lama_fp32.onnx" in dockerfile
     assert dockerfile.index("modelfetch.py") < dockerfile.index("COPY app ./app")  # the layer survives a code change
     assert "INPAINT_MODEL_PATH=/app/models/lama_fp32.onnx" in dockerfile and "INPAINT_MODEL_PATH" in compose
+    # the download never fails the build, can be skipped, and compose keeps the file on the host instead
+    assert "ARG INPAINT_MODEL_FETCH=1" in dockerfile and '"$INPAINT_MODEL_FETCH" = "1"' in dockerfile
+    assert "|| echo \"WARNING: the LaMa model was not downloaded at build time" in dockerfile
+    assert 'INPAINT_MODEL_FETCH: "${INPAINT_MODEL_FETCH:-0}"' in compose and "- ./models:/app/models" in compose
+    assert "models" in read(".dockerignore").split() and "models/" in read(".gitignore").split()
+    assert "INPAINT_MODEL_FETCH" in read(".env.example") and "models/lama_fp32.onnx" in read("README.md")
     sha = re.search(r"ARG INPAINT_MODEL_SHA256=([0-9a-f]{64})", dockerfile).group(1)
     assert sha in compose and sha in read("README.md")  # the build checks the file the README describes
     assert "INPAINT_MODEL_URL:" in compose and "args:" in compose
