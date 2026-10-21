@@ -16,6 +16,7 @@ import logging
 import os
 import sys
 import threading
+import time
 import urllib.request
 from pathlib import Path
 from typing import Callable
@@ -26,6 +27,7 @@ CHUNK_BYTES = 1024 * 1024
 TIMEOUT_S = 120.0  # per socket operation, not for the whole download
 MIN_MODEL_BYTES = 1024 * 1024  # anything smaller is an error page, not a model
 USER_AGENT = "image-translator-modelfetch/1"
+RETRY_DELAYS = (1.0, 3.0)  # a network error is retried after these pauses (so three attempts in all)
 
 _LOCK = threading.Lock()
 
@@ -68,39 +70,47 @@ def ensure(url: str, dest: str | os.PathLike, sha256: str = "", *, opener: Opene
             raise ModelDownloadError("the model URL must start with https:// (or http://)")
         path.parent.mkdir(parents=True, exist_ok=True)
         part = path.with_name(f"{path.name}.part-{os.getpid()}")
-        digest = hashlib.sha256()
-        total = 0
-        try:
-            with (opener or _urlopen)(url, TIMEOUT_S) as response, open(part, "wb") as out:
-                expected = None
-                try:
-                    expected = int(response.headers.get("Content-Length") or 0) or None
-                except (AttributeError, TypeError, ValueError):
-                    expected = None
-                while True:
-                    chunk = response.read(CHUNK_BYTES)
-                    if not chunk:
-                        break
-                    out.write(chunk)
-                    digest.update(chunk)
-                    total += len(chunk)
-            if expected is not None and total != expected:
-                raise ModelDownloadError(f"the download stopped after {total} of {expected} bytes")
-            if total < MIN_MODEL_BYTES:
-                raise ModelDownloadError(f"the download is only {total} bytes: not a model file")
-            wanted = sha256.strip().lower()
-            if wanted and digest.hexdigest() != wanted:
-                raise ChecksumMismatch("the downloaded file does not match INPAINT_MODEL_SHA256")
-            os.replace(part, path)
-        except ModelDownloadError:
-            raise
-        except Exception as exc:  # noqa: BLE001 - urllib / socket / OS errors all mean "no model"
-            raise ModelDownloadError(f"{type(exc).__name__} while downloading the model") from exc
-        finally:
+        for attempt in range(len(RETRY_DELAYS) + 1):
+            digest = hashlib.sha256()
+            total = 0
             try:
-                part.unlink()
-            except OSError:
-                pass
+                with (opener or _urlopen)(url, TIMEOUT_S) as response, open(part, "wb") as out:
+                    expected = None
+                    try:
+                        expected = int(response.headers.get("Content-Length") or 0) or None
+                    except (AttributeError, TypeError, ValueError):
+                        expected = None
+                    while True:
+                        chunk = response.read(CHUNK_BYTES)
+                        if not chunk:
+                            break
+                        out.write(chunk)
+                        digest.update(chunk)
+                        total += len(chunk)
+                if expected is not None and total != expected:
+                    raise ModelDownloadError(f"the download stopped after {total} of {expected} bytes")
+                if total < MIN_MODEL_BYTES:
+                    raise ModelDownloadError(f"the download is only {total} bytes: not a model file")
+                wanted = sha256.strip().lower()
+                if wanted and digest.hexdigest() != wanted:
+                    raise ChecksumMismatch("the downloaded file does not match INPAINT_MODEL_SHA256")
+                os.replace(part, path)
+            except ModelDownloadError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - urllib / socket / OS errors all mean "no model" (after the retries)
+                if attempt < len(RETRY_DELAYS):
+                    log.warning("stage=modelfetch attempt %d failed (%s), retrying", attempt + 1, type(exc).__name__)
+                    time.sleep(RETRY_DELAYS[attempt])
+                    continue
+                # the cause is part of the message: a build log or a unit report must say whether it was DNS, a
+                # certificate or a refused connection (the URL is not a secret)
+                raise ModelDownloadError(f"{type(exc).__name__} while downloading the model: {exc}") from exc
+            finally:
+                try:
+                    part.unlink()
+                except OSError:
+                    pass
+            break
         log.info("stage=modelfetch file=%s bytes=%d", path.name, total)
         return path
 

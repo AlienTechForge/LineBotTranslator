@@ -24,9 +24,12 @@ services:
   lab:
     build:
       context: .
-      args:  # the LaMa model is downloaded while the image is built (see Dockerfile); a changed URL needs its checksum, or an empty one
+      args:  # the LaMa model: with INPAINT_MODEL_FETCH=1 it is downloaded while the image is built (see Dockerfile); the
+        # default 0 leaves it to the service, which downloads the file into ./models (mounted below) on first use, once.
+        # A changed URL needs its checksum, or an empty one.
         INPAINT_MODEL_URL: "${INPAINT_MODEL_URL:-https://huggingface.co/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx}"
         INPAINT_MODEL_SHA256: "${INPAINT_MODEL_SHA256-1faef5301d78db7dda502fe59966957ec4b79dd64e16f03ed96913c7a4eb68d6}"
+        INPAINT_MODEL_FETCH: "${INPAINT_MODEL_FETCH:-0}"
     image: overlay-lab:local
     container_name: overlay-lab
     restart: unless-stopped
@@ -81,6 +84,9 @@ services:
       # - ${VISION_CREDENTIALS_FILE:?set VISION_CREDENTIALS_FILE}:/secrets/vision.json:ro
       # uploads and generated images (root-owned on the host); delete the folder to clean up
       - ./data:/app/data
+      # the LaMa model file (INPAINT_MODEL_PATH=/app/models/lama_fp32.onnx): downloaded here on first use and kept
+      # across rebuilds; when the server cannot reach Hugging Face, download it elsewhere and copy it into ./models
+      - ./models:/app/models
 
 # (1) must exist already (created by scripts/deploy.sh); delete this block for method (2)
 volumes:

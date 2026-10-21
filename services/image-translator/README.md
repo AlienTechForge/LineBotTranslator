@@ -803,7 +803,7 @@ Mode A 與 Mode C 的擦除都經過 `inpaint.py` 的同一個介面 `inpaint(rg
 
 **模型**：[Carve/LaMa-ONNX](https://huggingface.co/Carve/LaMa-ONNX) 的 `lama_fp32.onnx`（原版 big-lama 的 ONNX 匯出，Apache-2.0）。第 8 輪撰寫時用 HEAD 與實際下載驗證過：網址回 302 再回 200，**208,044,816 bytes（約 198 MiB）**，SHA-256 `1faef5301d78db7dda502fe59966957ec4b79dd64e16f03ed96913c7a4eb68d6`；輸入 `image`（`[batch, 3, 512, 512]`，float，0–1）和 `mask`（`[batch, 1, 512, 512]`，0 或 1，1 = 要補的洞），輸出 `output`（`[batch, 3, 512, 512]`，0–255）。**輸入尺寸固定 512×512**（匯出時的限制，模型卡說明）。模型**不在 repository 裡**，測試也不下載：測試用假的 ONNX session。
 
-**安裝**：`onnxruntime` 只在 `requirements-inpaint.txt`（`onnxruntime==1.31.0`，加上 `requirements-runtime.txt`），不在 `requirements-runtime.txt`（根目錄的正式 Dockerfile 只裝那個）、也不在 CI 的 pytest。lab 的 `Dockerfile` 裝它，並在建置時用 `app/modelfetch.py`（只用標準函式庫）下載模型到 `/app/models`；`modelfetch.py` 先單獨複製進去，改程式不會重新下載 200 MB。不用 Docker 時：`pip install -r requirements-inpaint.txt`，第一次用到時自動下載到 `INPAINT_MODEL_PATH`（一把鎖、寫到暫存檔、檢查 `Content-Length`、通過才原子改名，所以不會留下半個檔案）。
+**安裝**：`onnxruntime` 只在 `requirements-inpaint.txt`（`onnxruntime==1.31.0`，加上 `requirements-runtime.txt`），不在 `requirements-runtime.txt`（根目錄的正式 Dockerfile 只裝那個）、也不在 CI 的 pytest。lab 的 `Dockerfile` 裝它；模型檔由 `app/modelfetch.py`（只用標準函式庫）下載到 `/app/models`，有三種拿法：**（預設）第一次用到時下載**：compose 把 `./models` 掛到 `/app/models`，服務第一次跑 LaMa 時下載到那裡（約 198 MiB，網路錯誤會重試兩次），重建映像不用再下載；**手動放檔**：伺服器連不到 Hugging Face 時，在別台電腦下載後複製到 `services/image-translator/models/lama_fp32.onnx`；**建置時烘進映像**：`INPAINT_MODEL_FETCH=1 docker compose build`（Dockerfile 的預設就是 1；下載失敗只印警告、不讓建置失敗，服務會在第一次用到時再試）。`modelfetch.py` 先單獨複製進去，改程式不會重新下載 200 MB。不用 Docker 時：`pip install -r requirements-inpaint.txt`，第一次用到時自動下載到 `INPAINT_MODEL_PATH`（一把鎖、寫到暫存檔、檢查 `Content-Length`、通過才原子改名，所以不會留下半個檔案）。
 
 **怎麼用（裁切，不是整張圖）**：
 
@@ -993,6 +993,7 @@ lab 的 API（路徑現在在 `/lab` 底下：`POST /lab/api/batches`、`POST /l
 - `/v1` 一直是 503：沒設 `SERVICE_TOKEN`（`reason: service_token_missing`）。401 是沒帶 `X-Service-Token`、403 是令牌不對；令牌只收標頭。`/healthz` 不需要令牌。
 - `/v1` 回 `status: error`、`reason: anthropic_budget`：本月 Anthropic 預算用完了（看 `budget`，或 `GET /healthz`）；下個日曆月（Asia/Taipei）自動歸零，或調高 `ANTHROPIC_MONTHLY_BUDGET_USD`（0 = 不設上限）。`openrouter_budget` 只會讓 Mode B 被跳過。
 - `/v1` 一直回 `text_only`／`below_threshold`：看 `judge.summary` 與 `attempts`；`unverified` 是 judge 沒有答案（金鑰、API 錯誤）。
+- 建置或第一次跑 LaMa 時出現 `model download failed: URLError while downloading the model: ...`：冒號後面是原因（`Name or service not known` 是 DNS、`CERTIFICATE_VERIFY_FAILED` 是憑證、`Connection refused` 是被擋）。先在主機上試 `curl -sIL https://huggingface.co/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx | head`；主機連得到而容器連不到，多半是 Docker 的 DNS 或 proxy 設定。都連不到就在別台電腦下載檔案，放到 `services/image-translator/models/lama_fp32.onnx`（compose 掛載的資料夾）。拿不到模型時 lab 仍能跑：擦字退回 Telea，unit 報告寫 `telea (lama unavailable: ModelDownloadError)`。
 - `/v1` 的 `reason` 是 `small_text`、或 `attempts` 裡 A 是 `skipped: small_text`：來源字太小（`source.median_glyph_px` 低於 `MODE_A_MIN_GLYPH_PX`），Mode B 先跑而且成功，Mode A 沒有跑，這是設計。覺得門檻不對就看 log 的 `glyph_px=` 並調 `MODE_A_MIN_GLYPH_PX`（`0` = 永遠先跑 A）。字太小、B 又沒做出能送的圖、之後沒時間跑 A 時是 `status: error`（`below_threshold`／`unverified`／`b_failed`），因為沒有規劃就沒有譯文可以改傳。
 - 圖上直排的欄沒翻譯、`skipped: column too narrow`：拉丁目標語言的圖裡窄於 `MIN_ROTATED_COLUMN_PX` 的欄保持原樣，這是刻意的（轉 90 度的小字讀不出來）；真的要畫就調小 `MIN_ROTATED_COLUMN_PX`。
 - 泰文／阿拉伯文出現方塊：`warnings` 會寫缺哪個 Noto 字型；Docker 映像裝了 `fonts-noto-core` 就有。阿拉伯文與希伯來文沒有 shaping／bidi，圖多半是錯的。
