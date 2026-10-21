@@ -20,7 +20,7 @@ TOKEN = "service-secret-token"
 HEADERS = {"X-Service-Token": TOKEN}
 SCHEMA_KEYS = [
     "request_id", "schema_version", "target_lang", "status", "tier", "reason", "mode", "verdict", "usability", "coverage",
-    "image", "text", "judge", "costs", "budget", "timings_ms", "attempts", "warnings",
+    "image", "source", "text", "judge", "costs", "budget", "timings_ms", "attempts", "warnings",
 ]  # fmt: skip
 
 
@@ -136,6 +136,9 @@ def test_a_mock_translation_returns_the_whole_document(client):
     assert body["usability"] == 1.0 and body["coverage"] == 1.0
     assert body["image"]["path"] == "/v1/translations/job-1/image.png" and (body["image"]["width"], body["image"]["height"]) == (640, 480)
     assert set(body["text"]) == {"source_language", "recognized_text", "translated_text"} and body["text"]["translated_text"]
+    assert list(body["source"]) == ["width", "height", "words", "median_glyph_px"]
+    assert (body["source"]["width"], body["source"]["height"]) == (640, 480) and body["source"]["words"] > 0
+    assert body["source"]["median_glyph_px"] > 12  # the canned words of a 640x480 picture are big enough for Mode A
     assert set(body["judge"]) == {"summary", "altered_numbers", "untranslated_major", "legibility_major"}
     assert body["costs"] == {"anthropic_usd": 0.0, "openrouter_usd": 0.0, "total_usd": 0.0}
     assert set(body["timings_ms"]) == {"ocr", "mode_a", "mode_b", "judge", "total"} and body["timings_ms"]["total"] >= 0
@@ -441,6 +444,58 @@ def test_nothing_from_the_image_or_the_tokens_reaches_the_log(client, caplog):
     assert "stage=v1 request=log-1 status=image" in text  # what is logged: the status and counts
     for needle in ("TONKATSU", "Pork Cutlet", "NT$120", "LUNCH", TOKEN, "紅燒肉", "Braised pork"):
         assert needle not in text, needle
+
+
+def test_the_v1_line_carries_every_attempt_and_the_glyph_height(client, caplog):
+    with caplog.at_level(logging.INFO):
+        body = post(client, request_id="log-2", policy="both").json()
+    line = next(r.getMessage() for r in caplog.records if r.getMessage().startswith("stage=v1 request=log-2 "))
+    assert line.endswith(f" attempts=A:pass/1.00,B:pass/1.00 glyph_px={body['source']['median_glyph_px']:.1f}")
+    assert "attempts=A:pass/1.00,B:pass/1.00" in line and re.search(r" glyph_px=\d+\.\d$", line)
+    for needle in ("TONKATSU", "Pork Cutlet", "NT$120", "LUNCH", "紅燒肉", "Braised pork"):
+        assert needle not in line, needle
+
+
+def test_the_attempts_summary_has_the_mode_the_verdict_and_two_decimals():
+    rows = [
+        {"mode": "A", "verdict": "garbled+score", "usability": 0.1, "error": None, "skipped": None},
+        {"mode": "B", "verdict": "numbers+score", "usability": 0.6, "error": None, "skipped": None},
+    ]
+    assert v1.attempts_summary(rows) == "A:garbled+score/0.10,B:numbers+score/0.60"
+    both = [{"mode": "B", "verdict": "pass", "usability": 0.85}, {"mode": "A", "skipped": "small_text", "verdict": None, "usability": None}]
+    assert v1.attempts_summary(both) == "B:pass/0.85,A:skipped(small_text)"
+    failed = {"mode": "B", "verdict": None, "usability": None, "error": "OSError: TONKATSU in the message", "skipped": None}
+    assert v1.attempts_summary([failed]) == "B:error"  # never the message
+    assert v1.attempts_summary([{"mode": "A", "verdict": "unverified", "usability": None, "error": None, "skipped": None}]) == "A:unverified/-"
+    assert v1.attempts_summary([]) == "-"
+
+
+def test_a_log_line_without_ocr_has_a_dash_for_the_glyph_height(client, monkeypatch, caplog):
+    def fake_run(image, lang, policy_name, rid, deadline, **kw):
+        return policy.Outcome(
+            "error", "b_failed", attempts=[{"mode": "B", "verdict": None, "usability": None, "error": "OSError: x", "skipped": None}],
+            timings_ms={"total": 1},
+        )  # fmt: skip
+
+    monkeypatch.setattr(policy, "run", fake_run)
+    with caplog.at_level(logging.INFO):
+        body = post(client, request_id="log-3").json()
+    assert body["source"] is None
+    line = next(r.getMessage() for r in caplog.records if r.getMessage().startswith("stage=v1 request=log-3 "))
+    assert line.endswith(" attempts=B:error glyph_px=-")
+
+
+def test_a_tiny_mock_upload_is_not_tiny_text(client):
+    body = post(client, image=("a.png", png((64, 48)), "image/png")).json()  # the canned words shrink with the picture
+    assert body["source"]["median_glyph_px"] < 12  # they would count as tiny ...
+    assert (body["status"], body["reason"], body["mode"]) == ("image", "a_pass", "A")  # ... but the mock never takes the small_text path
+    assert [a["mode"] for a in body["attempts"]] == ["A"]
+
+
+def test_a_tiny_mock_upload_with_the_rule_off_or_on_gives_the_same_answer(make_client):
+    for env in ({"MODE_A_MIN_GLYPH_PX": "0"}, {"MODE_A_MIN_GLYPH_PX": "999"}):
+        body = post(make_client(**env), image=("a.png", png((64, 48)), "image/png")).json()
+        assert (body["reason"], body["mode"]) == ("a_pass", "A"), env
 
 
 # ---------------------------------------------------------------- the old root paths of the lab keep working

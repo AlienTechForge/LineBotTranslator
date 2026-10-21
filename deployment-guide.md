@@ -80,6 +80,7 @@ docker logs --tail 100 linebot-translator
 | `ANTHROPIC_MONTHLY_BUDGET_USD` | `80` | Anthropic 每月預算（USD）；`0` 不設上限；用完後 `/v1` 回 `status: error`、`reason: anthropic_budget` |
 | `SEND_MIN_USABILITY` | `0.60` | 最好的那張圖的 judge usability 低於這個值就不送圖，改傳譯文 |
 | `V1_DEADLINE_S` | `210` | 單一 `/v1/translations` 請求的整體時限（秒） |
+| `MODE_A_MIN_GLYPH_PX` | `12` | 來源字高中位數（px）低於它時 Mode B 先跑、Mode A 只在 B 沒做出能送的圖時補跑；`0` 關掉 |
 
 這些與 `OPEN_ROUTE_API_KEY`（image-translator 也用它呼叫 OpenRouter）、`GOOGLE_APPLICATION_CREDENTIALS`（部署腳本放進容器的 Vision 憑證）都是 Java 與 Python 共用的；服務的完整設定見 [`services/image-translator/README.md`](services/image-translator/README.md)。
 
@@ -177,7 +178,7 @@ Secrets 只作為容器環境變數傳入，不會寫入 image、Repository 或 
 | `HOST_PORT` | `4040` | 非 host network 時的宿主機 port |
 | `HEALTH_TIMEOUT_SECONDS` | `120` | 等待 readiness 的最長秒數 |
 | `JAVA_TOOL_OPTIONS` | `-XX:MaxRAMPercentage=60.0 -XX:+ExitOnOutOfMemoryError` | 容器 JVM 參數；覆寫時應保留 heap 上限與 OOM 結束設定，並為同一容器的 Python 程序留出記憶體 |
-| `IMAGE_TRANSLATOR_URL`、`IMAGE_TRANSLATOR_BIND`、`IMAGE_TRANSLATOR_TIMEOUT`、`CLAUDE_MODEL`、`CLAUDE_JUDGE_MODEL`、`OPENROUTER_IMAGE_MODEL`、`OPENROUTER_MONTHLY_BUDGET_USD`、`ANTHROPIC_MONTHLY_BUDGET_USD`、`SEND_MIN_USABILITY`、`V1_DEADLINE_S` | 見「單一容器」的設定表 | image-translator 與 Java 呼叫它的設定 |
+| `IMAGE_TRANSLATOR_URL`、`IMAGE_TRANSLATOR_BIND`、`IMAGE_TRANSLATOR_TIMEOUT`、`CLAUDE_MODEL`、`CLAUDE_JUDGE_MODEL`、`OPENROUTER_IMAGE_MODEL`、`OPENROUTER_MONTHLY_BUDGET_USD`、`ANTHROPIC_MONTHLY_BUDGET_USD`、`SEND_MIN_USABILITY`、`V1_DEADLINE_S`、`MODE_A_MIN_GLYPH_PX` | 見「單一容器」的設定表 | image-translator 與 Java 呼叫它的設定 |
 | `OPEN_ROUTE_MODEL_NAME` | `openai/gpt-4o-mini` | OpenRouter 全域預設模型 slug |
 | `OPEN_ROUTE_API_URL` | `https://openrouter.ai/api/v1` | OpenRouter API base URL |
 | `OPEN_ROUTE_HTTP_REFERER` | `https://github.com/AlienTechForge/LineBotTranslator` | 送往 OpenRouter 的 `HTTP-Referer` 標頭。未設定使用預設值；設為 `none`（不分大小寫）則不送出此標頭（空白變數與未設定相同，會回到預設值）。本機 `.env` 留空也不送出。 |

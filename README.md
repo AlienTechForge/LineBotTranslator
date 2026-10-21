@@ -154,6 +154,7 @@ GHCR 上只有一個 image（`ghcr.io/alientechforge/linebot-translator`），�
 | `OPENROUTER_IMAGE_MODEL` | `google/gemini-3-pro-image` | 影像模型 |
 | `OPENROUTER_MONTHLY_BUDGET_USD`、`ANTHROPIC_MONTHLY_BUDGET_USD` | `15`、`80` | 每月預算（USD），`0` 不設上限 |
 | `SEND_MIN_USABILITY`、`V1_DEADLINE_S` | `0.60`、`210` | 送圖的最低 usability；單一請求的整體時限（秒） |
+| `MODE_A_MIN_GLYPH_PX` | `12` | 來源字高中位數（px）低於它時 Mode B 先跑；`0` 關掉 |
 | `LAB_TOKEN` | 空 | `/lab` 診斷頁的令牌 |
 
 - **資料**：`budget.json`（本月預算用量）與請求記錄在 `/app/image-translator/data`，部署腳本把 Docker volume `linebot-image-translator-data` 掛在那裡；`docker-compose.yml` 用 `./image-translator-data`（先 `chown 10001:10001`）。

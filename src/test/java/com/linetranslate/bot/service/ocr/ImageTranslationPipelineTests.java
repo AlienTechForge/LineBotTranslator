@@ -15,6 +15,7 @@ import static org.mockito.Mockito.when;
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.time.Instant;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -41,6 +42,9 @@ import com.linetranslate.bot.service.storage.MinioStorageService;
 import com.linetranslate.bot.testing.ImageTranslatorFixtures;
 import com.linetranslate.bot.testing.UserPreferencesFixtures;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 
 /** The image flow with the service stubbed: what each answer of the service becomes. */
@@ -176,6 +180,50 @@ class ImageTranslationPipelineTests {
         pipeline.execute(new ImageTranslationRequest(other, "line-message-77", Instant.now()));
 
         verify(client).translate(any(), eq("image/jpeg"), eq(sent), eq("line-message-77"));
+    }
+
+    // ------------------------------------------------------------------ the log line
+
+    @Test
+    void theAttemptsSummaryNamesEveryTryWithoutAnyText() {
+        List<ImageTranslatorResult.Attempt> attempts = List.of(
+                new ImageTranslatorResult.Attempt("A", "garbled+score", 0.1, 0.03, 105000L, null, null, false),
+                new ImageTranslatorResult.Attempt("B", "numbers+score", 0.6, 0.05, 43000L, null, null, true),
+                new ImageTranslatorResult.Attempt("A", null, null, 0.0, null, null, "small_text", false),
+                new ImageTranslatorResult.Attempt("B", null, null, 0.0, 10L, "OSError: TONKATSU in the message", null, false),
+                new ImageTranslatorResult.Attempt("A", "unverified", null, 0.0, 5L, null, null, false));
+
+        assertThat(ImageTranslationPipeline.attemptsSummary(attempts)).isEqualTo(
+                "A:garbled_score/0.10,B:numbers_score/0.60,A:skipped(small_text),B:error,A:unverified/-");
+        assertThat(ImageTranslationPipeline.attemptsSummary(List.of())).isEqualTo("-");
+        assertThat(ImageTranslationPipeline.attemptsSummary(null)).isEqualTo("-");
+    }
+
+    @Test
+    void theAnsweredLineCarriesTheAttemptsAndNothingTheImageSaid() {
+        Logger logger = (Logger) org.slf4j.LoggerFactory.getLogger(ImageTranslationPipeline.class);
+        ListAppender<ILoggingEvent> logs = new ListAppender<>();
+        logs.start();
+        logger.addAppender(logs);
+        try {
+            lineImage("message-9", new byte[] {9}, "image/jpeg");
+            ImageTranslatorResult base = ImageTranslatorFixtures.imageResult("message-9", "warned", "B");
+            ImageTranslatorResult answer = new ImageTranslatorResult(base.requestId(), base.status(), base.tier(), "b_better",
+                    base.mode(), base.verdict(), base.usability(), base.coverage(), base.image(), base.text(), base.judge(),
+                    base.costs(), base.warnings(), List.of(
+                            new ImageTranslatorResult.Attempt("A", "garbled+score", 0.1, 0.03, 105000L, null, null, false),
+                            new ImageTranslatorResult.Attempt("B", "numbers+score", 0.6, 0.05, 43000L, null, null, true)));
+            when(client.translate(any(), anyString(), anyString(), anyString())).thenReturn(answer);
+
+            pipeline.execute(request("message-9"));
+
+            String line = logs.list.stream().map(ILoggingEvent::getFormattedMessage)
+                    .filter(message -> message.startsWith("Image translator answered")).findFirst().orElseThrow();
+            assertThat(line).endsWith("warnings=1, attempts=A:garbled_score/0.10,B:numbers_score/0.60");
+            assertThat(line).doesNotContain("TONKATSU").doesNotContain("炸豬排");
+        } finally {
+            logger.detachAppender(logs);
+        }
     }
 
     // ------------------------------------------------------------------ text only and the rest of the statuses

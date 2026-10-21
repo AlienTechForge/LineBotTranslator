@@ -28,6 +28,8 @@ DEFAULT_SEND_MIN_USABILITY = 0.60  # a picture below this judge usability is not
 DEFAULT_V1_DEADLINE_S = 210.0  # overall budget of one /v1/translations request, from its start
 DEFAULT_V1_RETENTION_MINUTES = 15.0  # how long a record and its picture stay available
 DEFAULT_MODE_B_MIN_REMAINING_S = 90.0  # Mode B is not started with less time than this left
+MODE_A_MIN_REMAINING_S = 120.0  # Mode A (after a Mode B that sent nothing) is not started with this much time or less left
+DEFAULT_MODE_A_MIN_GLYPH_PX = 12.0  # a median source glyph height below this skips Mode A first (0 = never)
 DEFAULT_MIN_ROTATED_COLUMN_PX = 16.0  # a vertical column narrower than this is not drawn rotated for a Latin target
 DEFAULT_OPENROUTER_MONTHLY_BUDGET_USD = 15.0  # cash; 0 = unlimited
 DEFAULT_ANTHROPIC_MONTHLY_BUDGET_USD = 80.0  # 0 = unlimited
@@ -121,6 +123,7 @@ class Settings:
     v1_deadline_s: float = DEFAULT_V1_DEADLINE_S
     v1_retention_minutes: float = DEFAULT_V1_RETENTION_MINUTES
     mode_b_min_remaining_s: float = DEFAULT_MODE_B_MIN_REMAINING_S
+    mode_a_min_glyph_px: float = DEFAULT_MODE_A_MIN_GLYPH_PX
     openrouter_monthly_budget_usd: float = DEFAULT_OPENROUTER_MONTHLY_BUDGET_USD
     anthropic_monthly_budget_usd: float = DEFAULT_ANTHROPIC_MONTHLY_BUDGET_USD
 
@@ -248,6 +251,7 @@ def get_settings() -> Settings:
         v1_deadline_s=_number("V1_DEADLINE_S", DEFAULT_V1_DEADLINE_S, low=1.0),
         v1_retention_minutes=_number("V1_RETENTION_MINUTES", DEFAULT_V1_RETENTION_MINUTES, low=0.01),
         mode_b_min_remaining_s=_number("MODE_B_MIN_REMAINING_S", DEFAULT_MODE_B_MIN_REMAINING_S, low=0.0),
+        mode_a_min_glyph_px=_number("MODE_A_MIN_GLYPH_PX", DEFAULT_MODE_A_MIN_GLYPH_PX, low=0.0),
         openrouter_monthly_budget_usd=_number(
             "OPENROUTER_MONTHLY_BUDGET_USD", DEFAULT_OPENROUTER_MONTHLY_BUDGET_USD, low=0.0
         ),

@@ -5,6 +5,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.EnumMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
@@ -157,10 +158,10 @@ public class ImageTranslationPipeline {
         }
         long serviceMillis = elapsedMillis(stageStarted);
         log.info("Image translator answered: status={}, tier={}, reason={}, mode={}, verdict={}, usability={}, "
-                        + "costUsd={}, warnings={}",
+                        + "costUsd={}, warnings={}, attempts={}",
                 SafeLog.metadata(result.status()), SafeLog.metadata(result.tier()), SafeLog.metadata(result.reason()),
                 SafeLog.metadata(result.mode()), SafeLog.metadata(result.verdict()), result.usability(),
-                result.costs().totalUsd(), result.warnings().size());
+                result.costs().totalUsd(), result.warnings().size(), attemptsSummary(result.attempts()));
 
         ImageTranslationOutcome outcome = switch (result.status() == null ? "" : result.status()) {
             case ImageTranslatorResult.STATUS_NO_TEXT ->
@@ -332,6 +333,37 @@ public class ImageTranslationPipeline {
         unexpectedFailures.get(stage).increment();
         log.error("Image translation stage failed unexpectedly: stage={}, failure={}",
                 stage.tag(), SafeLog.failure(failure), SafeLog.redacted(failure));
+    }
+
+    /**
+     * One short word per attempt for the log: {@code A:garbled_score/0.10,B:numbers_score/0.60} (mode, verdict and
+     * usability with two decimals, {@code -} when unknown); {@code A:skipped(small_text)} for a mode that did not
+     * run and {@code B:error} for one that failed. Only the service's fixed words and numbers, each through
+     * {@link SafeLog#metadata} (so a {@code +} in a verdict reads {@code _}, as in the {@code verdict=} field); the
+     * error text is never included.
+     */
+    static String attemptsSummary(List<ImageTranslatorResult.Attempt> attempts) {
+        if (attempts == null || attempts.isEmpty()) {
+            return "-";
+        }
+        StringBuilder summary = new StringBuilder();
+        for (ImageTranslatorResult.Attempt attempt : attempts) {
+            if (!summary.isEmpty()) {
+                summary.append(',');
+            }
+            summary.append(SafeLog.metadata(attempt.mode())).append(':');
+            if (SafeLog.present(attempt.skipped())) {
+                summary.append("skipped(").append(SafeLog.metadata(attempt.skipped())).append(')');
+            } else if (SafeLog.present(attempt.error())) {
+                summary.append("error");
+            } else {
+                summary.append(SafeLog.present(attempt.verdict()) ? SafeLog.metadata(attempt.verdict()) : "-")
+                        .append('/')
+                        .append(attempt.usability() == null
+                                ? "-" : String.format(Locale.ROOT, "%.2f", attempt.usability()));
+            }
+        }
+        return summary.toString();
     }
 
     private static long elapsedMillis(long startedAt) {

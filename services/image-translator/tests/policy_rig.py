@@ -1,5 +1,6 @@
 """Scripted stand-ins for everything the production policy talks to (no network, no Vision, no OpenRouter, no Claude).
 
+`Rig(..., glyph_px=N)` sets the box height of its words (the "tiny text" rule of the policy reads it).
 `Rig` replaces `vision.ocr_words` (the source OCR), `judge.judge_output` (one record per picture), `pipeline_a.run_mode_a`
 (Mode A, scripted per call), `openrouter.run_image_model` (Mode B, scripted per call) and the policy's clock. Mode A's
 fake calls the `check` and `on_plan` the policy hands it, exactly like the real one, so the policy's own bookkeeping
@@ -34,7 +35,10 @@ def judged(usability: float = 0.95, **issues) -> dict:
 
 
 class Rig:
-    def __init__(self, monkeypatch, tmp_path, *, a=(), b=(), words=("TONKATSU", "SET"), ocr_error=None, now: float = 1000.0):
+    def __init__(
+        self, monkeypatch, tmp_path, *, a=(), b=(), words=("TONKATSU", "SET"), ocr_error=None, now: float = 1000.0,
+        glyph_px: float = 24.0,
+    ):  # fmt: skip
         monkeypatch.setenv("LAB_DATA_DIR", str(tmp_path / "data"))
         self.tmp = tmp_path
         self.now = now
@@ -45,7 +49,9 @@ class Rig:
         self.ocr_calls = 0
         self.judge_by_png: dict[bytes, dict] = {}
         self._counter = 0
-        self._ocr = ocr(*words, size=SIZE) if words else ocr(size=SIZE)
+        # a bare string is a word whose box is `glyph_px` tall (24 px by default: above MODE_A_MIN_GLYPH_PX, so Mode A goes first)
+        boxed = [(w, None, 0.9, glyph_px) if isinstance(w, str) else w for w in words]
+        self._ocr = ocr(*boxed, size=SIZE) if boxed else ocr(size=SIZE)
         self._ocr_error = ocr_error
         monkeypatch.setattr(vision, "ocr_words", self._vision)
         monkeypatch.setattr(judge, "judge_output", self._judge)
