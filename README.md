@@ -20,7 +20,7 @@
 - **後端框架**：Spring Boot 4.1（Java 17+）
 - **數據庫**：MongoDB
 - **翻譯引擎**：OpenRouter Chat Completions API
-- **圖片翻譯**：`services/image-translator`（Python，與機器人同一個容器，Java 以 loopback HTTP 呼叫；Vision OCR、Claude 與圖片模型都在這個服務裡）
+- **圖片翻譯服務**：[`services/image-translator/`](services/image-translator/README.md)（Python／FastAPI），與 Java bot 放在同一個 image、同一個容器，見下方「單一容器」；Vision OCR、Claude 與圖片模型都在這個服務裡，Java 以 loopback HTTP 呼叫
 - **消息平台**：LINE Messaging API（LINE Bot SDK for Java 10.1）
 - **架構文件**：[Domain glossary 與系統脈絡](CONTEXT.md)、[Architecture Decision Records](docs/adr/README.md)
 
@@ -138,6 +138,28 @@ java -jar target/linebot-translator-0.0.1-SNAPSHOT.jar
 ## 部署
 
 正式部署由 `.github/workflows/ci-cd.yml` 執行 Maven quality gate，建立並推送 immutable GHCR image，再由 self-hosted runner 執行 `scripts/deploy.sh`、readiness 檢查與失敗 rollback。也可在其他支援 Java 17 或 Docker 的環境自行部署。
+
+### 單一容器
+
+GHCR 上只有一個 image（`ghcr.io/alientechforge/linebot-translator`），伺服器上只有一個容器 `linebot-translator`，裡面有兩個程序：Java bot（`SERVER_PORT`，預設 4040）與 Python 圖片翻譯服務 image-translator（預設只綁 `127.0.0.1:4041`，Java 以 `IMAGE_TRANSLATOR_URL` 呼叫）。`/app/entrypoint.sh` 先啟動 image-translator 並等它的 `/healthz` 回應，再啟動 Java；任一個程序結束，另一個會被停止、整個容器結束並由 Docker 的 restart policy 重啟。令牌 `IMAGE_TRANSLATOR_TOKEN` 沒設定時每次啟動自動產生，兩個程序共用。`OCR_ENABLED=false` 時不啟動 image-translator。
+
+| 環境變數 | 預設 | 說明 |
+| --- | --- | --- |
+| `ANTHROPIC_API_KEY` | 無 | `OCR_ENABLED=true` 時必填；image-translator 的規劃與視覺 judge |
+| `IMAGE_TRANSLATOR_TOKEN` | 每次啟動產生 | Java 與 image-translator 共用的令牌（image-translator 內部叫 `SERVICE_TOKEN`） |
+| `IMAGE_TRANSLATOR_URL` | `http://127.0.0.1:4041` | Java 呼叫 image-translator 的位址 |
+| `IMAGE_TRANSLATOR_BIND` | `127.0.0.1` | image-translator 的綁定位址；`0.0.0.0` 會在 host network 的主機上公開 4041 埠 |
+| `IMAGE_TRANSLATOR_TIMEOUT` | `PT4M` | Java 等待 image-translator 回應的逾時 |
+| `CLAUDE_MODEL`、`CLAUDE_JUDGE_MODEL` | `claude-sonnet-5-5` | 規劃與視覺 judge 的模型 |
+| `OPENROUTER_IMAGE_MODEL` | `google/gemini-3-pro-image` | 影像模型 |
+| `OPENROUTER_MONTHLY_BUDGET_USD`、`ANTHROPIC_MONTHLY_BUDGET_USD` | `15`、`80` | 每月預算（USD），`0` 不設上限 |
+| `SEND_MIN_USABILITY`、`V1_DEADLINE_S` | `0.60`、`210` | 送圖的最低 usability；單一請求的整體時限（秒） |
+| `LAB_TOKEN` | 空 | `/lab` 診斷頁的令牌 |
+
+- **資料**：`budget.json`（本月預算用量）與請求記錄在 `/app/image-translator/data`，部署腳本把 Docker volume `linebot-image-translator-data` 掛在那裡；`docker-compose.yml` 用 `./image-translator-data`（先 `chown 10001:10001`）。
+- **兩個 health endpoint**：`http://127.0.0.1:4040/actuator/health/readiness`（bot）與 `http://127.0.0.1:4041/healthz`（image-translator，附本月預算數字）。容器的 `HEALTHCHECK` 兩個都檢查（`OCR_ENABLED=false` 時只檢查 bot）：`docker inspect --format '{{.State.Health.Status}}' linebot-translator`。
+- **lab 頁面**：`/lab` 與 `/v1` 在同一個 4041 埠。建議用 SSH 通道（`ssh -L 4041:127.0.0.1:4041 <伺服器>`，開 `http://127.0.0.1:4041/lab/`）；要直接從外面開就設 `IMAGE_TRANSLATOR_BIND=0.0.0.0` 與 `LAB_TOKEN`，並用防火牆限制來源。**host network 下這會直接公開 4041 埠。**
+- 完整說明（流程、設定表、記憶體、日誌前綴）見 [deployment-guide.md](deployment-guide.md)；服務本身見 [`services/image-translator/README.md`](services/image-translator/README.md)。
 
 維運日誌必須遵守 [日誌資料安全政策](docs/logging-data-policy.md)，不得記錄 credentials、使用者原文、OCR 結果、signed URL 或第三方 API payload。
 

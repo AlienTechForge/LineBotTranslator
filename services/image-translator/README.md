@@ -1,7 +1,7 @@
 # image-translator：LINE bot 的圖片翻譯服務
 
-> 流程：一則 LINE 圖片訊息 → Java bot 下載並檢查圖片 → 用 HTTP 呼叫這個服務（之後會跑在 Java 容器裡，只綁 `127.0.0.1`）→ 服務回傳翻好的圖片（或說它做不到）→ Java 存檔並傳給使用者。**回覆只有圖片。**
-> 這個目錄原本是 `tools/overlay-lab`（離線對照實驗）。第 7 輪起它是正式的圖片翻譯服務：`/v1` 是正式 API；原本的實驗頁面留在 `/lab`（用 `LAB_TOKEN` 保護），診斷用。這個 PR 只有 Python：Java bot、正式映像與部署腳本的接線是之後的 PR。
+> 流程：一則 LINE 圖片訊息 → Java bot 下載並檢查圖片 → 用 HTTP 呼叫這個服務（跑在 Java bot 的同一個容器裡，只綁 `127.0.0.1`；映像與啟動方式見 repository 根目錄的 `Dockerfile` 與 `docker/entrypoint.sh`）→ 服務回傳翻好的圖片（或說它做不到）→ Java 存檔並傳給使用者。**回覆只有圖片。**
+> 這個目錄原本是 `tools/overlay-lab`（離線對照實驗）。第 7 輪起它是正式的圖片翻譯服務：`/v1` 是正式 API；原本的實驗頁面留在 `/lab`（用 `LAB_TOKEN` 保護），診斷用。正式映像（與 Java bot 同一個容器）與部署腳本的接線在根目錄的 `Dockerfile`、`docker/`、`scripts/deploy.sh`；Java bot 呼叫它的部分是另一個 PR。
 
 目標語言大多是繁體中文（`zh-TW`），來源多半是外文圖片（菜單、海報、文件、招牌、手寫），但 bot 支援的任何語言組合都可能進來。
 
@@ -307,7 +307,7 @@ LAB_MOCK=1 python -m app          # 或設好環境變數後直接 python -m app
 pytest -q                         # 單元測試 + mock 端到端（全部離線）
 ```
 
-> 這個 repository 的 CI 是 Maven build，**不會測這個工具**。改動後請自己跑 `pytest -q`（Python 3.12 與 3.13 都可以）。
+> CI（`.github/workflows/ci-cd.yml` 的 `Image translator tests`）用 Python 3.12 安裝 `requirements.txt` 並跑 `pytest -q`；本機 3.12 與 3.13 都可以。`requirements-runtime.txt` 是正式映像安裝的執行期套件（不含 `pytest`），`requirements.txt` 是它加上 `pytest`。
 
 ## 憑證怎麼給
 
