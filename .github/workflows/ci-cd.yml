@@ -22,7 +22,7 @@ jobs:
   ci:
     name: Maven verify
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     services:
       mongodb:
         image: mongo:7
@@ -76,12 +76,52 @@ jobs:
       - name: Verify packaged application
         run: test -n "$(find target -maxdepth 1 -type f -name '*.jar' ! -name '*.original' -print -quit)"
 
-      - name: Verify production renderer runtime
+      - name: Verify production image runtime
+        timeout-minutes: 10
         run: |
-          docker build --tag linebot-translator:ci-renderer .
-          docker run --rm --entrypoint sh linebot-translator:ci-renderer -c \
-            'fc-match "Noto Sans CJK TC" | grep -qi "NotoSansCJK" && test -r /app/app.jar'
-          docker image rm linebot-translator:ci-renderer
+          docker build --tag linebot-translator:ci-runtime .
+          docker run --rm --entrypoint sh linebot-translator:ci-runtime -c \
+            'fc-match "Noto Sans CJK TC" | grep -qi "NotoSansCJK" && test -r /app/app.jar && test -x /app/entrypoint.sh'
+          # The Java half needs MongoDB and friends, so the smoke test starts only the Python half in mock mode.
+          docker run --rm --interactive --workdir /app/image-translator --entrypoint /opt/image-translator/bin/python \
+            --env LAB_MOCK=1 --env SERVICE_TOKEN=ci-smoke --env BIND_HOST=127.0.0.1 --env PORT=4041 \
+            linebot-translator:ci-runtime - <<'PY'
+          import io
+          import threading
+          import time
+          import urllib.request
+
+          import anthropic, cv2, fastapi, google.cloud.vision, httpx2, PIL, uvicorn
+          from PIL import Image
+
+          from app.main import app
+
+          server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=4041, log_level="warning", access_log=False))
+          threading.Thread(target=server.run, daemon=True).start()
+          base = "http://127.0.0.1:4041"
+          for _ in range(150):
+              try:
+                  health = urllib.request.urlopen(base + "/healthz", timeout=2).read()
+                  break
+              except OSError:
+                  time.sleep(0.2)
+          else:
+              raise SystemExit("the image-translator did not answer /healthz")
+          assert b'"status":"ok"' in health.replace(b" ", b""), health
+          picture = io.BytesIO()
+          Image.new("RGB", (640, 480), (245, 239, 224)).save(picture, "PNG")
+          with httpx2.Client(timeout=60) as client:
+              answer = client.post(
+                  base + "/v1/translations",
+                  headers={"X-Service-Token": "ci-smoke"},
+                  files={"image": ("smoke.png", picture.getvalue(), "image/png")},
+                  data={"target_lang": "zh-TW", "request_id": "ci-smoke"},
+              )
+          assert answer.status_code == 200, answer.text
+          assert answer.json()["status"] == "image", answer.text
+          print("image-translator smoke test passed")
+          PY
+          docker image rm linebot-translator:ci-runtime
 
       - name: Stop MinIO integration dependency
         if: always()
@@ -99,9 +139,33 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  image-translator:
+    name: Image translator tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: services/image-translator
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: services/image-translator/requirements*.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run image-translator tests
+        run: pytest -q
+
   publish:
     name: Publish image and deploy
-    needs: ci
+    needs: [ci, image-translator]
     if: >-
       github.event_name == 'push' ||
       github.event_name == 'workflow_dispatch'
@@ -188,6 +252,19 @@ jobs:
           GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
           OCR_ENABLED: ${{ vars.OCR_ENABLED || 'true' }}
           GOOGLE_VISION_TIMEOUT_MS: ${{ vars.GOOGLE_VISION_TIMEOUT_MS || '60000' }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL || 'claude-sonnet-5-5' }}
+          CLAUDE_JUDGE_MODEL: ${{ vars.CLAUDE_JUDGE_MODEL || 'claude-sonnet-5-5' }}
+          OPENROUTER_IMAGE_MODEL: ${{ vars.OPENROUTER_IMAGE_MODEL || 'google/gemini-3-pro-image' }}
+          OPENROUTER_MONTHLY_BUDGET_USD: ${{ vars.OPENROUTER_MONTHLY_BUDGET_USD || '15' }}
+          ANTHROPIC_MONTHLY_BUDGET_USD: ${{ vars.ANTHROPIC_MONTHLY_BUDGET_USD || '80' }}
+          SEND_MIN_USABILITY: ${{ vars.SEND_MIN_USABILITY || '0.60' }}
+          V1_DEADLINE_S: ${{ vars.V1_DEADLINE_S || '210' }}
+          IMAGE_TRANSLATOR_TOKEN: ${{ secrets.IMAGE_TRANSLATOR_TOKEN }}
+          IMAGE_TRANSLATOR_URL: ${{ vars.IMAGE_TRANSLATOR_URL || 'http://127.0.0.1:4041' }}
+          IMAGE_TRANSLATOR_TIMEOUT: ${{ vars.IMAGE_TRANSLATOR_TIMEOUT || 'PT4M' }}
+          IMAGE_TRANSLATOR_BIND: ${{ vars.IMAGE_TRANSLATOR_BIND || '127.0.0.1' }}
+          LAB_TOKEN: ${{ secrets.LAB_TOKEN }}
           ADMIN_USERS: ${{ secrets.ADMIN_USERS }}
           ADMIN_WEB_TOKEN: ${{ secrets.ADMIN_WEB_TOKEN }}
           MINIO_ENDPOINT: ${{ secrets.MINIO_ENDPOINT }}
@@ -204,12 +281,6 @@ jobs:
           IMAGE_TRANSLATION_MAX_FILE_SIZE_BYTES: ${{ vars.IMAGE_TRANSLATION_MAX_FILE_SIZE_BYTES || '10485760' }}
           IMAGE_TRANSLATION_MAX_DIMENSION: ${{ vars.IMAGE_TRANSLATION_MAX_DIMENSION || '4096' }}
           IMAGE_TRANSLATION_MAX_PIXELS: ${{ vars.IMAGE_TRANSLATION_MAX_PIXELS || '16000000' }}
-          IMAGE_TRANSLATION_LOW_CONFIDENCE_THRESHOLD: ${{ vars.IMAGE_TRANSLATION_LOW_CONFIDENCE_THRESHOLD || '0.60' }}
-          IMAGE_TRANSLATION_OVERLAY_ENABLED: ${{ vars.IMAGE_TRANSLATION_OVERLAY_ENABLED || 'true' }}
-          IMAGE_TRANSLATION_MAX_REGION_AREA_RATIO: ${{ vars.IMAGE_TRANSLATION_MAX_REGION_AREA_RATIO || '0.12' }}
-          IMAGE_TRANSLATION_MAX_TOTAL_MASK_RATIO: ${{ vars.IMAGE_TRANSLATION_MAX_TOTAL_MASK_RATIO || '0.35' }}
-          IMAGE_TRANSLATION_POSTER_MAX_TOTAL_MASK_RATIO: ${{ vars.IMAGE_TRANSLATION_POSTER_MAX_TOTAL_MASK_RATIO || '0.60' }}
-          IMAGE_TRANSLATION_ORIENTATION_RETRY_ENABLED: ${{ vars.IMAGE_TRANSLATION_ORIENTATION_RETRY_ENABLED || 'false' }}
           IMAGE_TRANSLATION_MAX_OUTPUT_BYTES: ${{ vars.IMAGE_TRANSLATION_MAX_OUTPUT_BYTES || '10485760' }}
           IMAGE_TRANSLATION_DELIVERY_TARGET_BYTES: ${{ vars.IMAGE_TRANSLATION_DELIVERY_TARGET_BYTES || '2097152' }}
           IMAGE_TRANSLATION_CLEANUP_INTERVAL: ${{ vars.IMAGE_TRANSLATION_CLEANUP_INTERVAL || 'PT1H' }}
@@ -229,7 +300,7 @@ jobs:
           LANGUAGE_DETECTION_USE_AI: ${{ vars.LANGUAGE_DETECTION_USE_AI || 'true' }}
           LANGUAGE_DETECTION_DEFAULT_CHINESE: ${{ vars.LANGUAGE_DETECTION_DEFAULT_CHINESE || 'zh-tw' }}
           APP_BROADCAST_TEST_MODE: ${{ vars.APP_BROADCAST_TEST_MODE || 'false' }}
-          JAVA_TOOL_OPTIONS: ${{ vars.JAVA_TOOL_OPTIONS || '-XX:MaxRAMPercentage=75.0 -XX:+ExitOnOutOfMemoryError' }}
+          JAVA_TOOL_OPTIONS: ${{ vars.JAVA_TOOL_OPTIONS || '-XX:MaxRAMPercentage=60.0 -XX:+ExitOnOutOfMemoryError' }}
         run: |
           chmod +x scripts/deploy.sh
           scripts/deploy.sh
