@@ -403,7 +403,14 @@ public class AdminService {
         long totalTranslations = translationRecordRepository.count();
         long imageTranslations = translationRecordRepository.countByIsImageTranslation(true);
         long textTranslations = totalTranslations - imageTranslations;
-        
+
+        // 圖片翻譯服務本月的費用（各筆紀錄上服務回報的金額加總，為估計值）
+        LocalDate monthStart = LocalDate.now().withDayOfMonth(1);
+        double imageCostUsd = translationRecordRepository
+                .sumImageCostByCreatedAtBetween(monthStart.atStartOfDay(), monthStart.plusMonths(1).atStartOfDay())
+                .map(TranslationRecordRepository.ImageCostSummary::totalUsd)
+                .orElse(0.0);
+
         // 獲取過去24小時的活躍用戶
         LocalDateTime yesterday = LocalDateTime.now().minusDays(1);
         long activeUsersLast24h = userProfileRepository.countByLastInteractionAtAfter(yesterday);
@@ -424,6 +431,8 @@ public class AdminService {
         stats.append("總翻譯次數: ").append(totalTranslations).append("\n");
         stats.append("  文字翻譯: ").append(textTranslations).append("\n");
         stats.append("  圖片翻譯: ").append(imageTranslations).append("\n");
+        stats.append("圖片翻譯費用（本月估計）: $")
+                .append(String.format(java.util.Locale.ROOT, "%.2f", imageCostUsd)).append("\n");
         stats.append("過去24小時活躍用戶: ").append(activeUsersLast24h).append("\n");
         stats.append("\nAI 提供商使用情況\n");
         stats.append("-------------------\n");
@@ -517,7 +526,7 @@ public class AdminService {
         configBuilder.append("【翻譯設定】\n");
         configBuilder.append("• 中文翻譯默認目標語言: ").append(runtime.defaultTargetLanguageForChinese()).append("\n");
         configBuilder.append("• 其他語言翻譯默認目標語言: ").append(runtime.defaultTargetLanguageForOthers()).append("\n");
-        configBuilder.append("• OCR 功能: ").append(runtime.ocrEnabled() ? "已啟用" : "已禁用").append("\n\n");
+        configBuilder.append("• 圖片翻譯功能（OCR 開關）: ").append(runtime.ocrEnabled() ? "已啟用" : "已禁用").append("\n\n");
         configBuilder.append("• 圖片短網址直接輸出: ")
                 .append(runtime.shortUrlEnabled() ? "已啟用" : "已禁用")
                 .append("\n");
@@ -591,7 +600,7 @@ public class AdminService {
     }
     
     /**
-     * 設置 OCR 功能開關
+     * 設置圖片翻譯功能開關（OCR_ENABLED / ocrEnabled）
      *
      * @param enabled 是否啟用 OCR
      * @return 操作結果訊息
@@ -600,7 +609,7 @@ public class AdminService {
         try {
             RuntimeSettings updated = runtimeSettingsModule.update(
                     RuntimeSettingKey.OCR_ENABLED, enabled, operatorId);
-            return "✅ 已" + (updated.ocrEnabled() ? "啟用" : "禁用") + " OCR 功能";
+            return "✅ 已" + (updated.ocrEnabled() ? "啟用" : "禁用") + "圖片翻譯功能（OCR 開關）";
         } catch (InvalidRuntimeSettingException failure) {
             return "❌ 無效的設定值，請確認格式與可用選項";
         } catch (RuntimeSettingsPersistenceException failure) {

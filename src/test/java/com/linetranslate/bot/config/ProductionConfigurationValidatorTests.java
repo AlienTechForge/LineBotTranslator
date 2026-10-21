@@ -115,6 +115,52 @@ class ProductionConfigurationValidatorTests {
                 .doesNotThrowAnyException();
     }
 
+    @Test
+    void requiresTheImageTranslatorUrlAndTokenWhileImageTranslationIsOn() {
+        MockEnvironment environment = completeEnvironment()
+                .withProperty("app.ocr.enabled", "true")
+                .withProperty("app.image-translator.url", "")
+                .withProperty("app.image-translator.token", " ");
+
+        assertThatThrownBy(() -> new ProductionConfigurationValidator(environment).validate())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("Missing required production configuration: "
+                        + "IMAGE_TRANSLATOR_URL, IMAGE_TRANSLATOR_TOKEN");
+    }
+
+    @Test
+    void reportsOnlyTheImageTranslatorTokenWhenTheUrlIsThere() {
+        MockEnvironment environment = completeEnvironment()
+                .withProperty("app.ocr.enabled", "true")
+                .withProperty("app.image-translator.url", "http://127.0.0.1:4041");
+
+        assertThatThrownBy(() -> new ProductionConfigurationValidator(environment).validate())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("Missing required production configuration: IMAGE_TRANSLATOR_TOKEN");
+    }
+
+    @Test
+    void acceptsAConfiguredImageTranslatorAndNeverPrintsItsToken() {
+        MockEnvironment environment = completeEnvironment()
+                .withProperty("app.ocr.enabled", "true")
+                .withProperty("app.image-translator.url", "http://127.0.0.1:4041")
+                .withProperty("app.image-translator.token", "generated-by-the-entrypoint");
+
+        assertThatCode(() -> new ProductionConfigurationValidator(environment).validate())
+                .doesNotThrowAnyException();
+    }
+
+    @Test
+    void doesNotRequireTheImageTranslatorWhenImageTranslationIsOffOrItsClientIsSwitchedOff() {
+        MockEnvironment ocrOff = completeEnvironment().withProperty("app.ocr.enabled", "false");
+        MockEnvironment clientOff = completeEnvironment()
+                .withProperty("app.ocr.enabled", "true")
+                .withProperty("app.image-translator.enabled", "false");
+
+        assertThatCode(() -> new ProductionConfigurationValidator(ocrOff).validate()).doesNotThrowAnyException();
+        assertThatCode(() -> new ProductionConfigurationValidator(clientOff).validate()).doesNotThrowAnyException();
+    }
+
     private static MockEnvironment completeEnvironment() {
         return new MockEnvironment()
                 .withProperty("line.bot.channel-token", "seeded-channel-token")

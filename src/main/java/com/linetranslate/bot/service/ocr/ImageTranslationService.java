@@ -11,11 +11,10 @@ import org.springframework.stereotype.Service;
 import com.linetranslate.bot.logging.SafeLog;
 import com.linetranslate.bot.model.UserProfile;
 import com.linetranslate.bot.repository.UserProfileRepository;
-import com.linetranslate.bot.service.ai.AiExecutionFailure;
+import com.linetranslate.bot.service.imagetranslator.ImageTranslatorProperties;
 import com.linetranslate.bot.service.preference.UserPreferencesModule;
 import com.linetranslate.bot.service.settings.RuntimeSettings;
 import com.linetranslate.bot.service.settings.RuntimeSettingsSource;
-import com.linetranslate.bot.service.translation.TranslationWorkflowResult;
 import com.linetranslate.bot.service.translation.TranslationResponse;
 import com.linetranslate.bot.util.LanguageUtils;
 import com.linetranslate.bot.util.LineTextLimit;
@@ -27,21 +26,46 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 public class ImageTranslationService {
 
+    /** Follows a picture whose tier is {@code warned}: usable, but it may have gaps or typos. */
+    public static final String WARNING_TEXT = "⚠️ 圖片翻譯可能有遺漏或錯字，數字請以原圖為準";
+
+    /** Introduces the translated text that replaces a picture the service did not trust. */
+    public static final String TEXT_ONLY_PREFIX = "圖片無法完整翻譯，以下是文字翻譯：";
+
+    static final String DISABLED_TEXT = "圖片翻譯功能目前已停用。請稍後再試。";
+    static final String NO_TEXT_TEXT = "未能識別到圖片中的文字。請確保圖片中包含清晰可見的文字。";
+    static final String BUDGET_TEXT = "本月圖片翻譯額度已用完，請下個月再試。";
+    static final String SERVICE_UNAVAILABLE_TEXT = "圖片翻譯服務暫時無法使用，請稍後再試。";
+    static final String FAILED_TEXT = "圖片處理失敗，請稍後再試。";
+
     private final ImageTranslationPipeline imageTranslationPipeline;
     private final UserProfileRepository userProfileRepository;
     private final UserPreferencesModule userPreferencesModule;
     private final RuntimeSettingsSource runtimeSettingsSource;
+    private final ImageTranslatorProperties imageTranslatorProperties;
 
     @Autowired
     public ImageTranslationService(
             ImageTranslationPipeline imageTranslationPipeline,
             UserProfileRepository userProfileRepository,
             UserPreferencesModule userPreferencesModule,
-            RuntimeSettingsSource runtimeSettingsSource) {
+            RuntimeSettingsSource runtimeSettingsSource,
+            ImageTranslatorProperties imageTranslatorProperties) {
         this.imageTranslationPipeline = imageTranslationPipeline;
         this.userProfileRepository = userProfileRepository;
         this.userPreferencesModule = userPreferencesModule;
         this.runtimeSettingsSource = runtimeSettingsSource;
+        this.imageTranslatorProperties = imageTranslatorProperties;
+    }
+
+    /** Compatibility constructor for focused unit tests: the service client is switched on. */
+    public ImageTranslationService(
+            ImageTranslationPipeline imageTranslationPipeline,
+            UserProfileRepository userProfileRepository,
+            UserPreferencesModule userPreferencesModule,
+            RuntimeSettingsSource runtimeSettingsSource) {
+        this(imageTranslationPipeline, userProfileRepository, userPreferencesModule,
+                runtimeSettingsSource, new ImageTranslatorProperties());
     }
 
     /** Compatibility constructor for focused unit tests. */
@@ -52,9 +76,13 @@ public class ImageTranslationService {
         this(imageTranslationPipeline, userProfileRepository, userPreferencesModule, () -> null);
     }
 
+    /**
+     * Image translation is on while the administrator's {@code ocrEnabled} setting (deployment default
+     * {@code OCR_ENABLED}) is on and {@code app.image-translator.enabled} has not switched the client off.
+     */
     public boolean isOcrEnabled() {
         RuntimeSettings settings = runtimeSettingsSource.current();
-        return settings == null || settings.ocrEnabled();
+        return imageTranslatorProperties.isEnabled() && (settings == null || settings.ocrEnabled());
     }
 
     public String processImageTranslation(String userId, String messageId) {
@@ -67,8 +95,7 @@ public class ImageTranslationService {
 
     public ImageTranslationReply processImageTranslationReply(String userId, String messageId) {
         if (!isOcrEnabled()) {
-            return ImageTranslationReply.text(
-                    TranslationResponse.plain("OCR 功能目前已停用。請稍後再試。"));
+            return text(DISABLED_TEXT);
         }
 
         Instant start = Instant.now();
@@ -82,32 +109,31 @@ public class ImageTranslationService {
             if (outcome instanceof ImageTranslationOutcome.Success success) {
                 return render(success.result());
             }
-            return ImageTranslationReply.text(TranslationResponse.plain(
-                    renderFailure(userId, (ImageTranslationOutcome.Failure) outcome)));
+            return text(renderFailure((ImageTranslationOutcome.Failure) outcome));
         } catch (RuntimeException failure) {
             log.error("圖片翻譯失敗: user={}, failure={}",
                     SafeLog.user(userId), SafeLog.failure(failure));
-            return ImageTranslationReply.text(
-                    TranslationResponse.plain("圖片翻譯處理失敗，請稍後再試。"));
+            return text("圖片翻譯處理失敗，請稍後再試。");
         }
     }
 
+    private static ImageTranslationReply text(String message) {
+        return ImageTranslationReply.text(TranslationResponse.plain(message));
+    }
+
     private ImageTranslationReply render(ImageTranslationPipelineResult result) {
-        String recognizedText = result.context().recognizedText();
-        TranslationWorkflowResult translation = result.translation();
-        StringBuilder display = new StringBuilder();
         Optional<String> renderedImageUrl = result.renderedImage().url()
                 .filter(ImageTranslationService::isSafeRenderedImageUrl);
-        Optional<String> renderedPreviewUrl = renderedImageUrl.isEmpty()
-                ? Optional.empty()
-                : result.renderedImage().previewUrl().filter(ImageTranslationService::isSafeRenderedImageUrl);
-        renderedImageUrl.ifPresent(url -> display.append("【翻譯圖片（連結 1 小時內有效）】\n")
-                        .append(url)
-                        .append("\n\n"));
-        if (result.overlayDisposition() == ImageOverlayDisposition.SAFETY_DEGRADED) {
-            display.append("⚠️ 本次未能覆寫原圖，僅提供文字翻譯。\n\n");
+        if (renderedImageUrl.isEmpty()) {
+            return renderTextOnly(result);
         }
-        display.append("【圖片文字辨識結果】\n\n")
+        ImageTranslationPipelineResult.Text translation = result.text();
+        Optional<String> renderedPreviewUrl = result.renderedImage().previewUrl()
+                .filter(ImageTranslationService::isSafeRenderedImageUrl);
+        StringBuilder display = new StringBuilder("【翻譯圖片（連結 1 小時內有效）】\n")
+                .append(renderedImageUrl.get())
+                .append("\n\n")
+                .append("【圖片文字辨識結果】\n\n")
                 .append("識別的文字：\n");
         String translationSection = "\n\n翻譯結果：\n" + translation.translatedText() + "\n\n"
                 + "[偵測到: " + LanguageUtils.toChineseName(translation.sourceLanguage())
@@ -115,39 +141,36 @@ public class ImageTranslationService {
         // Recognized text yields its space first so the translation stays inside the LINE limit.
         int recognizedBudget = LineTextLimit.MAX_CODE_POINTS
                 - LineTextLimit.codePoints(display) - LineTextLimit.codePoints(translationSection);
-        display.append(LineTextLimit.fit(recognizedText, recognizedBudget))
+        display.append(LineTextLimit.fit(translation.recognizedText(), recognizedBudget))
                 .append(translationSection);
-        logOverlayOutcome(result);
         return new ImageTranslationReply(
-                TranslationResponse.success(translation, display.toString()),
+                response(display.toString(), translation),
                 renderedImageUrl,
-                renderedPreviewUrl);
+                renderedPreviewUrl,
+                result.warned() ? Optional.of(WARNING_TEXT) : Optional.empty());
     }
 
-    /**
-     * Overlay degradation is operator diagnostics, not user-facing copy. The per-reason breakdown
-     * goes to the log; the reply only states whether the image could be overwritten.
-     */
-    private static void logOverlayOutcome(ImageTranslationPipelineResult pipeline) {
-        OverlayDegradationSummary degradation = pipeline.degradation();
-        ImageOverlayDisposition disposition = pipeline.overlayDisposition();
-        int preservedTotal = degradation.total();
-        int lowConfidence = pipeline.lowConfidenceBlockCount();
-        int coverage = degradation.count(OverlayDegradationReason.COVERAGE);
-        int geometry = degradation.count(OverlayDegradationReason.GEOMETRY);
-        int overlap = degradation.count(OverlayDegradationReason.OVERLAP);
-        int font = degradation.count(OverlayDegradationReason.FONT);
-        int textFit = degradation.count(OverlayDegradationReason.TEXT_FIT);
-        int mapping = degradation.count(OverlayDegradationReason.MAPPING);
-        int disabled = degradation.count(OverlayDegradationReason.DISABLED);
-        int storage = degradation.count(OverlayDegradationReason.STORAGE);
-        int limit = degradation.count(OverlayDegradationReason.LIMIT);
-        int other = degradation.count(OverlayDegradationReason.OTHER);
-        log.info("Image overlay outcome: disposition={}, preservedTotal={}, lowConfidence={}, "
-                        + "coverage={}, geometry={}, overlap={}, font={}, textFit={}, "
-                        + "mapping={}, disabled={}, storage={}, limit={}, other={}",
-                disposition, preservedTotal, lowConfidence, coverage, geometry, overlap,
-                font, textFit, mapping, disabled, storage, limit, other);
+    /** No picture to send: the translated text, behind a line that says why it is not a picture. */
+    private ImageTranslationReply renderTextOnly(ImageTranslationPipelineResult result) {
+        ImageTranslationPipelineResult.Text translation = result.text();
+        if (translation.translatedText().isBlank()) {
+            return text(FAILED_TEXT);
+        }
+        String head = TEXT_ONLY_PREFIX + "\n";
+        String display = head + LineTextLimit.fit(
+                translation.translatedText(), LineTextLimit.MAX_CODE_POINTS - LineTextLimit.codePoints(head));
+        return ImageTranslationReply.text(response(display, translation));
+    }
+
+    private static TranslationResponse response(String display, ImageTranslationPipelineResult.Text translation) {
+        return new TranslationResponse(
+                display,
+                translation.translatedText(),
+                translation.recordId(),
+                translation.sourceLanguage(),
+                translation.targetLanguage(),
+                translation.stylePresetId(),
+                translation.stylePromptVersion());
     }
 
     private static boolean isSafeRenderedImageUrl(String value) {
@@ -161,12 +184,12 @@ public class ImageTranslationService {
         }
     }
 
-    private String renderFailure(String userId, ImageTranslationOutcome.Failure failure) {
-        failure.executionFailure().ifPresent(execution -> logWorkflowFailure(userId, execution));
+    private static String renderFailure(ImageTranslationOutcome.Failure failure) {
         return switch (failure.stage()) {
-            case NO_TEXT -> "未能識別到圖片中的文字。請確保圖片中包含清晰可見的文字。";
-            case TRANSLATION -> "圖片翻譯服務暫時無法使用，請稍後再試。";
-            case DOWNLOAD, RECOGNITION, CANCELLED -> "圖片處理失敗，請稍後再試。";
+            case NO_TEXT -> NO_TEXT_TEXT;
+            case BUDGET -> BUDGET_TEXT;
+            case SERVICE_UNAVAILABLE -> SERVICE_UNAVAILABLE_TEXT;
+            case TRANSLATION, DOWNLOAD, CANCELLED -> FAILED_TEXT;
         };
     }
 
@@ -174,16 +197,5 @@ public class ImageTranslationService {
         UserProfile userProfile = userPreferencesModule.profile(userId);
         userProfileRepository.setLastInteractionAt(userId, LocalDateTime.now());
         return userProfile;
-    }
-
-    private void logWorkflowFailure(String userId, AiExecutionFailure failure) {
-        log.warn(
-                "AI 圖片翻譯未完成: user={}, provider={}, model={}, outcome={}, reason={}, correlation={}",
-                SafeLog.user(userId),
-                failure.provider(),
-                failure.model(),
-                failure.outcome(),
-                failure.reason(),
-                failure.correlationId());
     }
 }

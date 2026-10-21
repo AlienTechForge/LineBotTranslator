@@ -146,6 +146,7 @@ class AdminStatsIntegrationTests {
                     .append("總翻譯次數: 6\n")
                     .append("  文字翻譯: 5\n")
                     .append("  圖片翻譯: 1\n")
+                    .append("圖片翻譯費用（本月估計）: $0.00\n")
                     .append("過去24小時活躍用戶: 1\n")
                     .append("\nAI 提供商使用情況\n")
                     .append("-------------------\n")
@@ -158,6 +159,52 @@ class AdminStatsIntegrationTests {
         } finally {
             TimeZone.setDefault(original);
         }
+    }
+
+    @Test
+    void systemStatsSumTheImageCostOfThisMonthOnly() throws Exception {
+        LocalDateTime now = nowAwayFromMidnight();
+        LocalDate monthStart = now.toLocalDate().withDayOfMonth(1);
+        saveImageRecord(now.minusSeconds(10), 0.0523);
+        saveImageRecord(now.minusSeconds(20), 0.07);
+        // Left out: last month's cost, an image record of the old pipeline without a cost, and a text record.
+        saveImageRecord(monthStart.minusDays(1).atTime(12, 0), 5.0);
+        saveImageRecord(now.minusSeconds(30), null);
+        saveRecord(now.minusSeconds(40), false, "openrouter", 1_000);
+
+        assertThat(adminService.getSystemStats()).contains("圖片翻譯費用（本月估計）: $0.12\n");
+        assertThat(translationRecordRepository.sumImageCostByCreatedAtBetween(
+                monthStart.atStartOfDay(), monthStart.plusMonths(1).atStartOfDay()))
+                .hasValueSatisfying(summary -> {
+                    assertThat(summary.totalUsd()).isCloseTo(0.1223, org.assertj.core.data.Offset.offset(1e-9));
+                    assertThat(summary.records()).isEqualTo(2);
+                });
+        assertThat(translationRecordRepository.sumImageCostByCreatedAtBetween(
+                monthStart.plusMonths(3).atStartOfDay(), monthStart.plusMonths(4).atStartOfDay())).isEmpty();
+    }
+
+    @Test
+    void theImageFieldsOfARecordSurviveTheRoundTripThroughMongo() throws Exception {
+        TranslationRecord saved = translationRecordRepository.save(TranslationRecord.builder()
+                .userId("U-record-owner")
+                .isImageTranslation(true)
+                .aiProvider("image-translator")
+                .createdAt(nowAwayFromMidnight())
+                .imageMode("B")
+                .imageTier("warned")
+                .imageVerdict("numbers+score")
+                .imageUsability(0.71)
+                .imageCostUsd(0.0523)
+                .build());
+
+        TranslationRecord loaded = translationRecordRepository.findById(saved.getId()).orElseThrow();
+
+        assertThat(loaded.getImageMode()).isEqualTo("B");
+        assertThat(loaded.getImageTier()).isEqualTo("warned");
+        assertThat(loaded.getImageVerdict()).isEqualTo("numbers+score");
+        assertThat(loaded.getImageUsability()).isEqualTo(0.71);
+        assertThat(loaded.getImageCostUsd()).isEqualTo(0.0523);
+        assertThat(translationRecordRepository.countByIsImageTranslation(true)).isEqualTo(1);
     }
 
     @Test
@@ -247,6 +294,19 @@ class AdminStatsIntegrationTests {
                 .createdAt(createdAt)
                 .isImageTranslation(image)
                 .processingTimeMs(processingTimeMs)
+                .build());
+    }
+
+    private void saveImageRecord(LocalDateTime createdAt, Double imageCostUsd) {
+        translationRecordRepository.save(TranslationRecord.builder()
+                .userId("U-record-owner")
+                .sourceText("source")
+                .translatedText("translated")
+                .aiProvider("image-translator")
+                .createdAt(createdAt)
+                .isImageTranslation(true)
+                .imageMode("A")
+                .imageCostUsd(imageCostUsd)
                 .build());
     }
 

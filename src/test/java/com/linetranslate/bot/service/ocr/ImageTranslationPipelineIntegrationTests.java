@@ -3,803 +3,270 @@ package com.linetranslate.bot.service.ocr;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.doReturn;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.io.InputStream;
-import java.awt.image.BufferedImage;
-import java.time.Instant;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
-import java.util.Set;
+import java.util.Queue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.ValueSource;
-import org.mockito.ArgumentCaptor;
-import org.springframework.beans.factory.ObjectProvider;
-
-import javax.imageio.ImageIO;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import com.linecorp.bot.client.base.BlobContent;
 import com.linecorp.bot.client.base.Result;
 import com.linecorp.bot.messaging.client.MessagingApiBlobClient;
+import com.linecorp.bot.messaging.model.ImageMessage;
+import com.linecorp.bot.messaging.model.Message;
+import com.linecorp.bot.messaging.model.TextMessage;
 import com.linetranslate.bot.model.TranslationRecord;
 import com.linetranslate.bot.model.UserProfile;
 import com.linetranslate.bot.repository.TranslationRecordRepository;
-import com.linetranslate.bot.service.ai.AiExecutionOutcome;
-import com.linetranslate.bot.service.ai.AiExecutionResult;
-import com.linetranslate.bot.service.ai.AiProviderException;
-import com.linetranslate.bot.service.ai.AiProviderExecutionModule;
-import com.linetranslate.bot.service.preference.UserPreferences;
+import com.linetranslate.bot.service.line.LineInteractionModule;
 import com.linetranslate.bot.service.preference.UserPreferencesModule;
 import com.linetranslate.bot.service.storage.ImageStorageResult;
 import com.linetranslate.bot.service.storage.MinioStorageService;
-import com.linetranslate.bot.service.translation.CachedTranslationAdapter;
-import com.linetranslate.bot.service.translation.LanguageDetectionService;
-import com.linetranslate.bot.service.translation.TranslationRequestKind;
-import com.linetranslate.bot.service.translation.TranslationWorkflowModule;
-import com.linetranslate.bot.service.translation.TranslationWorkflowOutcome;
-import com.linetranslate.bot.service.translation.TranslationWorkflowRequest;
-import com.linetranslate.bot.service.translation.TranslationWorkflowResult;
-import com.linetranslate.bot.service.translation.ImageRegionTranslation;
+import com.linetranslate.bot.testing.ImageTranslatorFixtures;
 
-@SuppressWarnings("unchecked")
+import okhttp3.mockwebserver.Dispatcher;
+import okhttp3.mockwebserver.MockResponse;
+import okhttp3.mockwebserver.MockWebServer;
+import okhttp3.mockwebserver.RecordedRequest;
+import okio.Buffer;
+
+/**
+ * An image message from LINE through the whole bot: the real Spring context and MongoDB, with a
+ * {@link MockWebServer} standing in for the image-translator service and the LINE content API and the
+ * object storage stubbed. It follows the picture from the LINE message to the messages of the reply and
+ * to the record in MongoDB.
+ */
+@SpringBootTest(properties = {"app.ocr.enabled=true", "openrouter.api.key=test-openrouter-key"})
+@ActiveProfiles("test")
 class ImageTranslationPipelineIntegrationTests {
 
-    private ObjectProvider<OcrService> ocrServiceProvider;
-    private OcrService ocrService;
-    private TranslationWorkflowModule workflowModule;
-    private AiProviderExecutionModule aiProviderExecutionModule;
-    private UserPreferencesModule userPreferencesModule;
-    private MessagingApiBlobClient messagingApiBlobClient;
-    private MinioStorageService minioStorageService;
-    private ImageTranslationPipeline pipeline;
-    private UserProfile userProfile;
+    private static final String USER = "U0123456789abcdef0123456789abcdef";
+    private static final String ORIGINAL = "https://storage.example/original.png?signature=orig";
+    private static final String TRANSLATED = "https://storage.example/translated.png?signature=translated";
+    private static final Pattern REQUEST_ID = Pattern.compile("name=\"request_id\"\r\n\r\n([^\r]*)\r\n");
+    private static final byte[] TRANSLATED_PNG = ImageTranslatorFixtures.png(48, 32);
+
+    private static final MockWebServer SERVICE = new MockWebServer();
+    private static final Queue<Call> CALLS = new ConcurrentLinkedQueue<>();
+    private static volatile String scenario = "clean";
+
+    @MockitoBean
+    private MessagingApiBlobClient blobClient;
+
+    @MockitoBean
+    private MinioStorageService minio;
+
+    @Autowired
+    private LineInteractionModule interaction;
+
+    @Autowired
+    private UserPreferencesModule preferences;
+
+    @Autowired
+    private TranslationRecordRepository records;
+
+    @Autowired
+    private MongoTemplate mongo;
+
+    @DynamicPropertySource
+    static void theServiceIsTheMockServer(DynamicPropertyRegistry registry) throws IOException {
+        SERVICE.setDispatcher(new Dispatcher() {
+            @Override
+            public MockResponse dispatch(RecordedRequest request) {
+                String body = request.getBody().clone().readString(StandardCharsets.ISO_8859_1);
+                CALLS.add(new Call(request.getMethod(), request.getPath(), request.getHeader("X-Service-Token"), body));
+                String path = request.getPath();
+                if ("/healthz".equals(path)) {
+                    return json(200, ImageTranslatorFixtures.healthJson());
+                }
+                if ("POST".equals(request.getMethod()) && "/v1/translations".equals(path)) {
+                    Matcher id = REQUEST_ID.matcher(body);
+                    return answer(id.find() ? id.group(1) : "unknown");
+                }
+                if (path != null && path.startsWith("/v1/translations/") && path.endsWith("/image.png")) {
+                    return new MockResponse().setResponseCode(200).addHeader("Content-Type", "image/png")
+                            .setBody(new Buffer().write(TRANSLATED_PNG));
+                }
+                return new MockResponse().setResponseCode(404);
+            }
+        });
+        SERVICE.start();
+        registry.add("app.image-translator.url", () -> SERVICE.url("/").toString());
+        registry.add("app.image-translator.token", () -> ImageTranslatorFixtures.TOKEN);
+    }
+
+    @AfterAll
+    static void stopTheServer() throws IOException {
+        SERVICE.shutdown();
+    }
 
     @BeforeEach
-    void setUp() {
-        ocrServiceProvider = mock(ObjectProvider.class);
-        ocrService = mock(OcrService.class);
-        workflowModule = mock(TranslationWorkflowModule.class);
-        aiProviderExecutionModule = mock(AiProviderExecutionModule.class);
-        userPreferencesModule = mock(UserPreferencesModule.class);
-        messagingApiBlobClient = mock(MessagingApiBlobClient.class);
-        minioStorageService = mock(MinioStorageService.class);
-        when(ocrServiceProvider.getIfAvailable()).thenReturn(ocrService);
-        // A service without a single-request override: the default composes the region and text stubs.
-        when(ocrService.recognize(any(InputStream.class))).thenCallRealMethod();
-        pipeline = new ImageTranslationPipeline(
-                ocrServiceProvider,
-                workflowModule,
-                aiProviderExecutionModule,
-                userPreferencesModule,
-                messagingApiBlobClient,
-                minioStorageService);
-        userProfile = UserProfile.builder()
-                .userId("U-image")
-                .preferredModel("gpt-test")
-                .build();
-        when(userPreferencesModule.resolve(userProfile)).thenReturn(
-                com.linetranslate.bot.testing.UserPreferencesFixtures.preferences(userProfile));
-    }
-
-    @Test
-    void successCarriesDownloadedStorageOcrAndTranslationResultsExplicitly() throws Exception {
-        TrackingInputStream stream = image("message-1", new byte[] {1, 2, 3});
-        when(minioStorageService.uploadImage(new byte[] {1, 2, 3}, "image/jpeg"))
-                .thenReturn(ImageStorageResult.stored("https://storage.example/one.jpg"));
-        when(ocrService.recognizeText(any(InputStream.class))).thenReturn("hello");
-        when(workflowModule.execute(any())).thenReturn(success("hello", "你好"));
-
-        ImageTranslationOutcome outcome = pipeline.execute(request("message-1"));
-
-        assertThat(outcome).isInstanceOfSatisfying(ImageTranslationOutcome.Success.class, success -> {
-            assertThat(success.result().context().image().bytes()).containsExactly(1, 2, 3);
-            assertThat(success.result().context().storage().stored()).isTrue();
-            assertThat(success.result().context().recognizedText()).isEqualTo("hello");
-            assertThat(success.result().translation().translatedText()).isEqualTo("你好");
-        });
-        assertThat(stream.closed()).isTrue();
-    }
-
-    @Test
-    void emptyLineResponseStopsAtDownloadStage() {
-        Result<BlobContent> response = mock(Result.class);
-        when(messagingApiBlobClient.getMessageContent("message-no-body"))
-                .thenReturn(CompletableFuture.completedFuture(response));
-        when(response.body()).thenReturn(null);
-
-        ImageTranslationOutcome outcome = pipeline.execute(request("message-no-body"));
-
-        assertThat(outcome).isEqualTo(new ImageTranslationOutcome.Failure(
-                ImageTranslationFailureStage.DOWNLOAD));
-        verify(minioStorageService, never()).uploadImage(any(), anyString());
-        verify(ocrService, never()).recognizeText(any());
-        verify(workflowModule, never()).execute(any());
-    }
-
-    @Test
-    void minioDegradedStillTranslatesWithExplicitNotStoredResult() throws Exception {
-        image("message-degraded", new byte[] {4});
-        when(minioStorageService.uploadImage(any(byte[].class), anyString()))
-                .thenReturn(ImageStorageResult.notStored());
-        when(ocrService.recognizeText(any(InputStream.class))).thenReturn("hello");
-        when(workflowModule.execute(any())).thenReturn(success("hello", "你好"));
-
-        ImageTranslationOutcome outcome = pipeline.execute(request("message-degraded"));
-
-        assertThat(outcome).isInstanceOfSatisfying(ImageTranslationOutcome.Success.class,
-                success -> assertThat(success.result().context().storage().stored()).isFalse());
-    }
-
-    @Test
-    void minioExceptionIsDegradedAndDoesNotBlockTranslation() throws Exception {
-        image("message-storage-error", new byte[] {7});
-        when(minioStorageService.uploadImage(any(byte[].class), anyString()))
-                .thenThrow(new IllegalStateException("storage unavailable"));
-        when(ocrService.recognizeText(any(InputStream.class))).thenReturn("hello");
-        when(workflowModule.execute(any())).thenReturn(success("hello", "你好"));
-
-        ImageTranslationOutcome outcome = pipeline.execute(request("message-storage-error"));
-
-        assertThat(outcome).isInstanceOfSatisfying(ImageTranslationOutcome.Success.class,
-                success -> assertThat(success.result().context().storage().stored()).isFalse());
-    }
-
-    @Test
-    void primaryOcrFailureFallsBackToAiImageRecognition() throws Exception {
-        image("message-fallback", new byte[] {5});
-        when(minioStorageService.uploadImage(any(byte[].class), anyString()))
-                .thenReturn(ImageStorageResult.notStored());
-        when(ocrService.recognizeText(any(InputStream.class)))
-                .thenThrow(new OcrProcessingException("vision unavailable"));
-        when(aiProviderExecutionModule.processImage(any(), anyString(), anyString()))
-                .thenReturn(new AiExecutionResult("fallback text", "openai", "gpt-image"));
-        when(workflowModule.execute(any())).thenReturn(success("fallback text", "後備翻譯"));
-
-        ImageTranslationOutcome outcome = pipeline.execute(request("message-fallback"));
-
-        assertThat(outcome).isInstanceOfSatisfying(ImageTranslationOutcome.Success.class,
-                success -> assertThat(success.result().context().recognizedText())
-                        .isEqualTo("fallback text"));
-        verify(aiProviderExecutionModule).processImage(any(), anyString(), anyString());
-    }
-
-    @Test
-    void allRecognitionProvidersFailWithoutCallingTranslationWorkflow() throws Exception {
-        TrackingInputStream stream = image("message-failed", new byte[] {6});
-        when(minioStorageService.uploadImage(any(byte[].class), anyString()))
-                .thenReturn(ImageStorageResult.notStored());
-        when(ocrService.recognizeText(any(InputStream.class)))
-                .thenThrow(new OcrProcessingException("vision unavailable"));
-        when(aiProviderExecutionModule.processImage(any(), anyString(), anyString()))
-                .thenThrow(new AiProviderException(
-                        AiProviderException.Outcome.TRANSPORT_ERROR,
-                        "openai",
-                        "gpt-image",
-                        "IO_FAILURE",
-                        "correlation-image",
-                        -1,
-                        null));
-
-        ImageTranslationOutcome outcome = pipeline.execute(request("message-failed"));
-
-        assertThat(outcome).isEqualTo(new ImageTranslationOutcome.Failure(
-                ImageTranslationFailureStage.RECOGNITION));
-        assertThat(stream.closed()).isTrue();
-        verify(workflowModule, never()).execute(any());
-    }
-
-    @Test
-    void noRecognizedTextStopsBeforeTranslation() throws Exception {
-        image("message-empty", new byte[] {8});
-        when(minioStorageService.uploadImage(any(byte[].class), anyString()))
-                .thenReturn(ImageStorageResult.notStored());
-        when(ocrService.recognizeText(any(InputStream.class))).thenReturn("  ");
-
-        ImageTranslationOutcome outcome = pipeline.execute(request("message-empty"));
-
-        assertThat(outcome).isEqualTo(new ImageTranslationOutcome.Failure(
-                ImageTranslationFailureStage.NO_TEXT));
-        verify(workflowModule, never()).execute(any());
-    }
-
-    @Test
-    void imageWithoutTextMakesOneOcrRequestAndStopsAtNoText() throws Exception {
-        image("message-no-text", new byte[] {11});
-        when(minioStorageService.uploadImage(any(byte[].class), anyString()))
-                .thenReturn(ImageStorageResult.notStored());
-        doReturn(OcrRecognition.plain("")).when(ocrService).recognize(any(InputStream.class));
-
-        ImageTranslationOutcome outcome = pipeline.execute(request("message-no-text"));
-
-        assertThat(outcome).isEqualTo(new ImageTranslationOutcome.Failure(
-                ImageTranslationFailureStage.NO_TEXT));
-        verify(ocrService, times(1)).recognize(any(InputStream.class));
-        verify(ocrService, never()).recognizeRegions(any());
-        verify(ocrService, never()).recognizeText(any());
-        verify(aiProviderExecutionModule, never()).processImage(any(), anyString(), anyString());
-        verify(workflowModule, never()).execute(any());
-    }
-
-    @Test
-    void textWithoutRegionsTranslatesFromTheSameOcrRequest() throws Exception {
-        image("message-plain-text", new byte[] {12});
-        when(minioStorageService.uploadImage(any(byte[].class), anyString()))
-                .thenReturn(ImageStorageResult.notStored());
-        doReturn(OcrRecognition.plain("hello")).when(ocrService).recognize(any(InputStream.class));
-        when(workflowModule.execute(any())).thenReturn(success("hello", "你好"));
-
-        ImageTranslationOutcome outcome = pipeline.execute(request("message-plain-text"));
-
-        assertThat(successResult(outcome).context().recognizedText()).isEqualTo("hello");
-        verify(ocrService, times(1)).recognize(any(InputStream.class));
-        verify(ocrService, never()).recognizeRegions(any());
-        verify(ocrService, never()).recognizeText(any());
-        verify(aiProviderExecutionModule, never()).processImage(any(), anyString(), anyString());
-    }
-
-    @Test
-    void workflowFailureKeepsExplicitTranslationStage() throws Exception {
-        image("message-translation-failed", new byte[] {9});
-        when(minioStorageService.uploadImage(any(byte[].class), anyString()))
-                .thenReturn(ImageStorageResult.notStored());
-        when(ocrService.recognizeText(any(InputStream.class))).thenReturn("hello");
-        var providerFailure = new AiProviderException(
-                AiProviderException.Outcome.TRANSPORT_ERROR,
-                "openai",
-                "gpt-test",
-                "IO_FAILURE",
-                "correlation-translation",
-                -1,
-                null);
-        when(workflowModule.execute(any())).thenReturn(new TranslationWorkflowOutcome.Failure(
-                com.linetranslate.bot.service.ai.AiExecutionFailure.from(
-                        providerFailure, List.of())));
-
-        ImageTranslationOutcome outcome = pipeline.execute(request("message-translation-failed"));
-
-        assertThat(outcome).isInstanceOfSatisfying(ImageTranslationOutcome.Failure.class, failure -> {
-            assertThat(failure.stage()).isEqualTo(ImageTranslationFailureStage.TRANSLATION);
-            assertThat(failure.executionFailure()).isPresent();
-        });
-    }
-
-    @Test
-    void interruptedDownloadPreservesCancellationAndSkipsEveryLaterStage() {
-        CompletableFuture<Result<BlobContent>> pending = new CompletableFuture<>();
-        when(messagingApiBlobClient.getMessageContent("message-cancelled")).thenReturn(pending);
-
-        ImageTranslationOutcome outcome;
-        try {
-            Thread.currentThread().interrupt();
-            outcome = pipeline.execute(request("message-cancelled"));
-            assertThat(Thread.currentThread().isInterrupted()).isTrue();
-        } finally {
-            Thread.interrupted();
+    void cleanState() {
+        for (String collection : List.of("translation_records", "user_profiles", "runtime_settings")) {
+            if (mongo.collectionExists(collection)) {
+                mongo.dropCollection(collection);
+            }
         }
-
-        assertThat(outcome).isEqualTo(new ImageTranslationOutcome.Failure(
-                ImageTranslationFailureStage.CANCELLED));
-        verify(minioStorageService, never()).uploadImage(any(), anyString());
-        verify(ocrService, never()).recognizeText(any());
-        verify(workflowModule, never()).execute(any());
+        CALLS.clear();
+        scenario = "clean";
+        when(minio.uploadImage(any(byte[].class), anyString())).thenReturn(ImageStorageResult.stored(ORIGINAL));
+        when(minio.uploadTranslatedImage(any(byte[].class), anyString()))
+                .thenReturn(ImageStorageResult.stored(TRANSLATED));
     }
 
     @Test
-    void packageContainsNoThreadLocalRequestState() throws Exception {
-        String service = java.nio.file.Files.readString(java.nio.file.Path.of(
-                "src", "main", "java", "com", "linetranslate", "bot", "service", "ocr",
-                "ImageTranslationService.java"));
-        String pipelineSource = java.nio.file.Files.readString(java.nio.file.Path.of(
-                "src", "main", "java", "com", "linetranslate", "bot", "service", "ocr",
-                "ImageTranslationPipeline.java"));
+    void anImageMessageIsTranslatedByTheServiceStoredAndAnsweredWithThePictureOnly() {
+        preferences.updateTargetLanguage(USER, "ja");
+        byte[] upload = ImageTranslatorFixtures.png(64, 48);
+        lineSends("line-message-1", upload);
 
-        assertThat(service).doesNotContain("ThreadLocal");
-        assertThat(pipelineSource).doesNotContain("ThreadLocal");
-    }
+        List<Message> messages = interaction.executeImage(USER, "line-message-1");
 
-    @Test
-    void concurrentRequestsKeepBytesStorageOcrAndTranslationBoundToTheirMessage() throws Exception {
-        image("message-a", new byte[] {10});
-        image("message-b", new byte[] {20});
-        when(minioStorageService.uploadImage(any(byte[].class), anyString()))
-                .thenAnswer(invocation -> {
-                    byte first = invocation.getArgument(0, byte[].class)[0];
-                    return ImageStorageResult.stored("https://storage.example/" + first);
-                });
-        when(ocrService.recognizeText(any(InputStream.class))).thenAnswer(invocation -> {
-            int first = invocation.getArgument(0, InputStream.class).read();
-            return "ocr-" + first;
+        // the reply is the picture alone
+        assertThat(messages).singleElement().isInstanceOfSatisfying(ImageMessage.class,
+                image -> assertThat(image.originalContentUrl().toString()).isEqualTo(TRANSLATED));
+        // the original went to storage, the translated PNG too
+        verify(minio).uploadImage(any(byte[].class), eq("image/png"));
+        verify(minio).uploadTranslatedImage(TRANSLATED_PNG, "image/png");
+        // the service saw the picture, the user's language and the LINE message id, and was asked for its picture
+        List<Call> calls = serviceCalls();
+        assertThat(calls).extracting(Call::method).containsExactly("POST", "GET");
+        Call post = calls.get(0);
+        assertThat(post.path()).isEqualTo("/v1/translations");
+        assertThat(post.token()).isEqualTo(ImageTranslatorFixtures.TOKEN);
+        assertThat(post.body())
+                .contains("name=\"image\"; filename=\"image.png\"")
+                .contains("name=\"target_lang\"\r\n\r\nja\r\n")
+                .contains("name=\"request_id\"\r\n\r\nline-message-1\r\n")
+                .contains(new String(upload, StandardCharsets.ISO_8859_1));
+        assertThat(calls.get(1).path()).isEqualTo("/v1/translations/line-message-1/image.png");
+        assertThat(calls.get(1).token()).isEqualTo(ImageTranslatorFixtures.TOKEN);
+        // the record in MongoDB carries the texts, the storage of the original and the service's numbers
+        List<TranslationRecord> saved = records.findAll();
+        assertThat(saved).singleElement().satisfies(record -> {
+            assertThat(record.getUserId()).isEqualTo(USER);
+            assertThat(record.isImageTranslation()).isTrue();
+            assertThat(record.getSourceText()).isEqualTo("TONKATSU SET MENU NT$120");
+            assertThat(record.getTranslatedText()).isEqualTo("炸豬排套餐\nNT$120");
+            assertThat(record.getSourceLanguage()).isEqualTo("en");
+            assertThat(record.getTargetLanguage()).isEqualTo("ja");
+            assertThat(record.getAiProvider()).isEqualTo("image-translator");
+            assertThat(record.getModelName()).isEqualTo("A");
+            assertThat(record.getImageUrl()).isEqualTo(ORIGINAL);
+            assertThat(record.getImageStored()).isTrue();
+            assertThat(record.getImageMode()).isEqualTo("A");
+            assertThat(record.getImageTier()).isEqualTo("clean");
+            assertThat(record.getImageVerdict()).isEqualTo("pass");
+            assertThat(record.getImageUsability()).isEqualTo(0.82);
+            assertThat(record.getImageCostUsd()).isEqualTo(0.0523);
         });
-        var workflowRequests = new ConcurrentLinkedQueue<TranslationWorkflowRequest>();
-        when(workflowModule.execute(any())).thenAnswer(invocation -> {
-            TranslationWorkflowRequest workflowRequest = invocation.getArgument(0);
-            workflowRequests.add(workflowRequest);
-            return success(workflowRequest.sourceText(), "translated-" + workflowRequest.sourceText());
+        // ... and the user's counters moved
+        UserProfile profile = preferences.profile(USER);
+        assertThat(profile.getImageTranslations()).isEqualTo(1);
+    }
+
+    @Test
+    void aWarnedPictureIsFollowedByTheWarningLine() {
+        scenario = "warned";
+        lineSends("line-message-2", ImageTranslatorFixtures.png(64, 48));
+
+        List<Message> messages = interaction.executeImage(USER, "line-message-2");
+
+        assertThat(messages).hasSize(2);
+        assertThat(messages.get(0)).isInstanceOf(ImageMessage.class);
+        assertThat(((TextMessage) messages.get(1)).text()).isEqualTo("⚠️ 圖片翻譯可能有遺漏或錯字，數字請以原圖為準");
+        assertThat(records.findAll()).singleElement()
+                .satisfies(record -> assertThat(record.getImageTier()).isEqualTo("warned"));
+    }
+
+    @Test
+    void textOnlyIsAnsweredWithTheTranslatedTextAndFetchesNoPicture() {
+        scenario = "text_only";
+        lineSends("line-message-3", ImageTranslatorFixtures.png(64, 48));
+
+        List<Message> messages = interaction.executeImage(USER, "line-message-3");
+
+        assertThat(messages).singleElement().isInstanceOfSatisfying(TextMessage.class, text ->
+                assertThat(text.text()).isEqualTo("圖片無法完整翻譯，以下是文字翻譯：\n你好"));
+        assertThat(serviceCalls()).extracting(Call::method).containsExactly("POST");
+        assertThat(records.findAll()).singleElement().satisfies(record -> {
+            assertThat(record.getTranslatedText()).isEqualTo("你好");
+            assertThat(record.getImageTier()).isNull();
         });
-
-        List<ImageTranslationOutcome> outcomes;
-        ExecutorService executor = Executors.newFixedThreadPool(2);
-        try {
-            var first = executor.submit(() -> pipeline.execute(request("message-a")));
-            var second = executor.submit(() -> pipeline.execute(request("message-b")));
-            outcomes = List.of(first.get(), second.get());
-        } finally {
-            executor.shutdownNow();
-        }
-
-        assertThat(outcomes).extracting(outcome -> successResult(outcome).context().recognizedText())
-                .containsExactlyInAnyOrder("ocr-10", "ocr-20");
-        for (ImageTranslationOutcome outcome : outcomes) {
-            ImageTranslationPipelineResult result = successResult(outcome);
-            int imageByte = result.context().image().bytes()[0];
-            assertThat(result.context().storage().url()).contains("https://storage.example/" + imageByte);
-            assertThat(result.context().recognizedText()).isEqualTo("ocr-" + imageByte);
-            assertThat(result.translation().translatedText()).isEqualTo("translated-ocr-" + imageByte);
-        }
-        assertThat(workflowRequests).allSatisfy(workflowRequest -> {
-            String imageByte = workflowRequest.sourceText().substring("ocr-".length());
-            assertThat(workflowRequest.imageUrl()).isEqualTo("https://storage.example/" + imageByte);
-            assertThat(workflowRequest.kind()).isEqualTo(TranslationRequestKind.IMAGE_OCR);
-        });
     }
 
     @Test
-    void locatedOcrRendersTranslatedBlocksAndStoresShortLivedResult() throws Exception {
-        byte[] png = png(240, 120);
-        image("message-overlay", png, "image/png");
-        ImageTranslationProperties limits = ImageTranslationProperties.defaults();
-        pipeline = new ImageTranslationPipeline(
-                ocrServiceProvider,
-                workflowModule,
-                aiProviderExecutionModule,
-                userPreferencesModule,
-                messagingApiBlobClient,
-                minioStorageService,
-                new ImageInputValidator(limits),
-                renderer(),
-                limits);
-        when(minioStorageService.uploadImage(any(byte[].class), anyString()))
-                .thenReturn(ImageStorageResult.stored("https://storage.example/source.png"));
-        when(ocrService.recognizeRegions(any(InputStream.class))).thenReturn(List.of(
-                region("r-hello", "hello", 10, 10, 90, 35, .98f),
-                region("r-world", "world", 10, 60, 90, 35, .92f)));
-        when(workflowModule.execute(any())).thenReturn(successStructured(
-                "hello\nworld", "greetings\nplanet",
-                List.of(new ImageRegionTranslation("r-hello", "greetings"),
-                        new ImageRegionTranslation("r-world", "planet"))));
-        when(minioStorageService.uploadTranslatedImage(any(byte[].class), anyString(), any()))
-                .thenReturn(ImageStorageResult.stored("https://storage.example/translated.png"));
+    void aServiceThatAnswersWithAnHttpErrorIsReportedAsUnavailableAndNothingIsSaved() {
+        scenario = "http_503";
+        lineSends("line-message-4", ImageTranslatorFixtures.png(64, 48));
 
-        ImageTranslationPipelineResult result = successResult(pipeline.execute(request("message-overlay")));
+        List<Message> messages = interaction.executeImage(USER, "line-message-4");
 
-        assertThat(result.renderedImage().url())
-                .contains("https://storage.example/translated.png");
-        assertThat(result.lowConfidenceBlockCount()).isZero();
-        ArgumentCaptor<TranslationWorkflowRequest> workflow =
-                ArgumentCaptor.forClass(TranslationWorkflowRequest.class);
-        verify(workflowModule).execute(workflow.capture());
-        assertThat(workflow.getValue().sourceText()).isEqualTo("hello\nworld");
-        assertThat(workflow.getValue().explicitSourceLanguage()).isEqualTo("en");
-        assertThat(workflow.getValue().imageRegions()).extracting(
-                com.linetranslate.bot.service.translation.ImageRegionTranslationInput::regionId)
-                .containsExactly("r-hello", "r-world");
-        verify(minioStorageService).uploadTranslatedImage(any(byte[].class), anyString(), any());
+        assertThat(messages).singleElement().isInstanceOfSatisfying(TextMessage.class, text ->
+                assertThat(text.text()).isEqualTo("圖片翻譯服務暫時無法使用，請稍後再試。"));
+        assertThat(records.findAll()).isEmpty();
     }
 
     @Test
-    void denseUniformTextDocumentUsesDocumentCoverageAndUploadsOverlay() throws Exception {
-        byte[] png = whitePng(400, 400);
-        image("message-document-overlay", png, "image/png");
-        ImageTranslationProperties limits = ImageTranslationProperties.defaults();
-        pipeline = new ImageTranslationPipeline(
-                ocrServiceProvider, workflowModule, aiProviderExecutionModule, userPreferencesModule,
-                messagingApiBlobClient, minioStorageService, new ImageInputValidator(limits),
-                renderer(), limits);
-        when(minioStorageService.uploadImage(any(byte[].class), anyString()))
-                .thenReturn(ImageStorageResult.notStored());
-        when(ocrService.recognizeRegions(any(InputStream.class))).thenReturn(List.of(
-                region("p1", "first paragraph", 10, 10, 380, 100, .98f),
-                region("p2", "second paragraph", 10, 145, 380, 100, .98f),
-                region("p3", "third paragraph", 10, 280, 380, 100, .98f)));
-        when(workflowModule.execute(any())).thenReturn(successStructured(
-                "first paragraph\nsecond paragraph\nthird paragraph",
-                "first\nsecond\nthird",
-                List.of(new ImageRegionTranslation("p1", "first"),
-                        new ImageRegionTranslation("p2", "second"),
-                        new ImageRegionTranslation("p3", "third"))));
-        when(minioStorageService.uploadTranslatedImage(any(byte[].class), anyString(), any()))
-                .thenReturn(ImageStorageResult.stored("https://storage.example/document-translated.png"));
+    void aBudgetThatIsUsedUpHasItsOwnReply() {
+        scenario = "budget";
+        lineSends("line-message-5", ImageTranslatorFixtures.png(64, 48));
 
-        ImageTranslationPipelineResult result = successResult(
-                pipeline.execute(request("message-document-overlay")));
-
-        assertThat(result.overlayDisposition()).isEqualTo(ImageOverlayDisposition.GENERATED);
-        assertThat(result.renderedImage().url())
-                .contains("https://storage.example/document-translated.png");
-        verify(minioStorageService).uploadTranslatedImage(any(byte[].class), anyString(), any());
+        assertThat(interaction.executeImage(USER, "line-message-5")).singleElement()
+                .isInstanceOfSatisfying(TextMessage.class, text ->
+                        assertThat(text.text()).isEqualTo("本月圖片翻譯額度已用完，請下個月再試。"));
     }
 
-    @Test
-    void overlayKillSwitchStillCompletesTextWorkflowWithoutUploadingRenderedImage() throws Exception {
-        byte[] png = png(240, 120);
-        image("message-disabled-overlay", png, "image/png");
-        ImageTranslationProperties limits = new ImageTranslationProperties(
-                10_485_760, 4096, 16_000_000, .6f, false, .12, .35);
-        pipeline = new ImageTranslationPipeline(
-                ocrServiceProvider, workflowModule, aiProviderExecutionModule, userPreferencesModule,
-                messagingApiBlobClient, minioStorageService, new ImageInputValidator(limits),
-                renderer(), limits);
-        when(minioStorageService.uploadImage(any(byte[].class), anyString()))
-                .thenReturn(ImageStorageResult.notStored());
-        when(ocrService.recognizeRegions(any(InputStream.class)))
-                .thenReturn(List.of(region("r1", "hello", 10, 10, 90, 35, .98f)));
-        when(workflowModule.execute(any())).thenReturn(successStructured("hello", "greetings",
-                List.of(new ImageRegionTranslation("r1", "greetings"))));
+    // ------------------------------------------------------------------ the stand-in service
 
-        ImageTranslationPipelineResult result = successResult(pipeline.execute(request("message-disabled-overlay")));
-
-        assertThat(result.translation().translatedText()).isEqualTo("greetings");
-        assertThat(result.renderedImage().stored()).isFalse();
-        assertThat(result.overlayDisposition()).isEqualTo(ImageOverlayDisposition.SAFETY_DEGRADED);
-        verify(minioStorageService, never()).uploadTranslatedImage(any(byte[].class), anyString(), any());
+    private static MockResponse answer(String requestId) {
+        return switch (scenario) {
+            case "warned" -> json(200, ImageTranslatorFixtures.imageJson(requestId, "warned", "a_better", "B", 100));
+            case "text_only" -> json(200, ImageTranslatorFixtures.textOnlyJson(requestId, "你好"));
+            case "http_503" -> json(503, ImageTranslatorFixtures.httpErrorJson(
+                    "service_token_missing", "SERVICE_TOKEN is not set: the service is not configured"));
+            case "budget" -> json(200, ImageTranslatorFixtures.errorJson(requestId, "anthropic_budget"));
+            default -> json(200, ImageTranslatorFixtures.imageJson(requestId, "clean", "a_pass", "A", 100));
+        };
     }
 
-    @Test
-    void missingStructuredMappingsNeverFallsBackToLineIndexOverlay() throws Exception {
-        byte[] png = png(240, 120);
-        image("message-incomplete-mapping", png, "image/png");
-        when(minioStorageService.uploadImage(any(byte[].class), anyString()))
-                .thenReturn(ImageStorageResult.notStored());
-        when(ocrService.recognizeRegions(any(InputStream.class)))
-                .thenReturn(List.of(region("r1", "hello", 10, 10, 90, 35, .98f)));
-        when(workflowModule.execute(any())).thenReturn(success("hello", "greetings"));
-
-        ImageTranslationPipelineResult result = successResult(pipeline.execute(request("message-incomplete-mapping")));
-
-        assertThat(result.translation().translatedText()).isEqualTo("greetings");
-        assertThat(result.overlayDisposition()).isEqualTo(ImageOverlayDisposition.SAFETY_DEGRADED);
-        verify(minioStorageService, never()).uploadTranslatedImage(any(byte[].class), anyString(), any());
+    private static MockResponse json(int status, String body) {
+        return new MockResponse().setResponseCode(status).addHeader("Content-Type", "application/json").setBody(body);
     }
 
-    @Test
-    void partiallyMappedRegionsStillOverlayTheAnsweredOnesAndReportTheRest() throws Exception {
-        byte[] png = png(240, 120);
-        image("message-partial-mapping", png, "image/png");
-        ImageTranslationProperties limits = ImageTranslationProperties.defaults();
-        pipeline = new ImageTranslationPipeline(
-                ocrServiceProvider,
-                workflowModule,
-                aiProviderExecutionModule,
-                userPreferencesModule,
-                messagingApiBlobClient,
-                minioStorageService,
-                new ImageInputValidator(limits),
-                renderer(),
-                limits);
-        when(minioStorageService.uploadImage(any(byte[].class), anyString()))
-                .thenReturn(ImageStorageResult.notStored());
-        when(ocrService.recognizeRegions(any(InputStream.class))).thenReturn(List.of(
-                region("r-hello", "hello", 10, 10, 90, 35, .98f),
-                region("r-world", "world", 10, 60, 90, 35, .92f)));
-        when(workflowModule.execute(any())).thenReturn(successStructured(
-                "hello\nworld", "greetings\nworld",
-                List.of(new ImageRegionTranslation("r-hello", "greetings"))));
-        when(minioStorageService.uploadTranslatedImage(any(byte[].class), anyString(), any()))
-                .thenReturn(ImageStorageResult.stored("https://storage.example/partial.png"));
-
-        ImageTranslationPipelineResult result =
-                successResult(pipeline.execute(request("message-partial-mapping")));
-
-        assertThat(result.overlayDisposition()).isEqualTo(ImageOverlayDisposition.GENERATED);
-        assertThat(result.renderedImage().url()).contains("https://storage.example/partial.png");
-        assertThat(result.degradation().count(OverlayDegradationReason.MAPPING)).isEqualTo(1);
-        verify(minioStorageService).uploadTranslatedImage(any(byte[].class), anyString(), any());
+    private static List<Call> serviceCalls() {
+        return CALLS.stream().filter(call -> !"/healthz".equals(call.path())).toList();
     }
 
-    @Test
-    void preserveRegionsStayReadableButNeverBecomeProviderOrOverlayTargets() throws Exception {
-        image("message-preserve", png(300, 150), "image/png");
-        when(minioStorageService.uploadImage(any(byte[].class), anyString()))
-                .thenReturn(ImageStorageResult.notStored());
-        OcrRegion product = new OcrRegion("product", "불닭볶음면", List.of(
-                new OcrPoint(10, 10), new OcrPoint(120, 20),
-                new OcrPoint(115, 50), new OcrPoint(5, 40)), List.of(),
-                .98f, true, OcrBlockType.TEXT, List.of(new OcrDetectedLanguage("ko", .98f)), 0);
-        OcrRegion date = new OcrRegion("date", "2021.05.28", List.of(
-                new OcrPoint(10, 70), new OcrPoint(100, 70),
-                new OcrPoint(100, 90), new OcrPoint(10, 90)), List.of(),
-                .99f, true, OcrBlockType.TEXT, List.of(), 1);
-        OcrRegion decoration = new OcrRegion("decoration", "~", List.of(
-                new OcrPoint(130, 70), new OcrPoint(150, 70),
-                new OcrPoint(150, 85), new OcrPoint(130, 85)), List.of(),
-                .95f, true, OcrBlockType.TEXT, List.of(), 2);
-        when(ocrService.recognizeRegions(any(InputStream.class)))
-                .thenReturn(List.of(product, date, decoration));
-        when(workflowModule.execute(any())).thenReturn(successStructured(
-                "불닭볶음면\n2021.05.28", "Spicy noodles\n2021.05.28",
-                List.of(new ImageRegionTranslation("product", "Spicy noodles"))));
-
-        ImageTranslationPipelineResult result = successResult(pipeline.execute(request("message-preserve")));
-
-        assertThat(result.translation().translatedText()).endsWith("2021.05.28");
-        ArgumentCaptor<TranslationWorkflowRequest> request = ArgumentCaptor.forClass(TranslationWorkflowRequest.class);
-        verify(workflowModule).execute(request.capture());
-        assertThat(request.getValue().sourceText()).isEqualTo("불닭볶음면\n2021.05.28");
-        assertThat(request.getValue().explicitSourceLanguage()).isEqualTo("ko");
-        assertThat(request.getValue().imageRegions()).extracting(
-                com.linetranslate.bot.service.translation.ImageRegionTranslationInput::regionId,
-                com.linetranslate.bot.service.translation.ImageRegionTranslationInput::translatable)
-                .containsExactly(org.assertj.core.groups.Tuple.tuple("product", true),
-                        org.assertj.core.groups.Tuple.tuple("date", false));
-    }
-
-    @Test
-    void verticalCjkColumnsReachTheCodecAndTheWorkflowRightToLeft() throws Exception {
-        image("message-vertical", png(120, 210), "image/png");
-        when(minioStorageService.uploadImage(any(byte[].class), anyString()))
-                .thenReturn(ImageStorageResult.notStored());
-        // Vision lists the left column first; the segmenter has to turn that into reading order.
-        List<OcrWord> words = List.of(
-                glyph("澎", 10, 10), glyph("湃", 10, 34), glyph("飯", 10, 58),
-                glyph("風", 10, 110), glyph("味", 10, 134), glyph("飯", 10, 158),
-                glyph("香", 60, 10), glyph("酥", 60, 34), glyph("飯", 60, 58),
-                glyph("經", 60, 110), glyph("典", 60, 134), glyph("飯", 60, 158));
-        OcrRegion card = new OcrRegion("card", "澎湃飯 風味飯 香酥飯 經典飯", List.of(
-                new OcrPoint(5, 5), new OcrPoint(95, 5), new OcrPoint(95, 190), new OcrPoint(5, 190)),
-                words, .98f, true, OcrBlockType.TEXT, List.of(new OcrDetectedLanguage("zh", .98f)), 0);
-        when(ocrService.recognizeRegions(any(InputStream.class)))
-                .thenReturn(new OcrRegionSegmenter().segment(List.of(card)));
-        when(workflowModule.execute(any())).thenReturn(success("香酥飯", "stub"));
-
-        pipeline.execute(request("message-vertical"));
-
-        ArgumentCaptor<TranslationWorkflowRequest> workflow =
-                ArgumentCaptor.forClass(TranslationWorkflowRequest.class);
-        verify(workflowModule).execute(workflow.capture());
-        assertThat(workflow.getValue().sourceText()).isEqualTo("香酥飯\n經典飯\n澎湃飯\n風味飯");
-        var regions = workflow.getValue().imageRegions();
-        assertThat(regions).extracting(
-                com.linetranslate.bot.service.translation.ImageRegionTranslationInput::regionId)
-                .containsExactly("card.v1.1", "card.v1.2", "card.v2.1", "card.v2.2");
-        assertThat(regions).extracting(
-                com.linetranslate.bot.service.translation.ImageRegionTranslationInput::readingOrder)
-                .containsExactly(0, 1, 2, 3);
-        // The request the model receives lists the regions in the same order.
-        var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
-        var wire = mapper.readTree(
-                new com.linetranslate.bot.service.translation.StructuredImageTranslationCodec(mapper)
-                        .encode(regions, "en", false));
-        assertThat(wire.get("regions")).extracting(node -> node.get("sourceText").asText())
-                .containsExactly("香酥飯", "經典飯", "澎湃飯", "風味飯");
-    }
-
-    private static OcrWord glyph(String text, int x, int y) {
-        return new OcrWord(text, List.of(
-                new OcrPoint(x, y), new OcrPoint(x + 22, y),
-                new OcrPoint(x + 22, y + 22), new OcrPoint(x, y + 22)), .98f, true);
-    }
-
-    @Test
-    void anOrphanLineThatWrappedOutOfAnArticleParagraphReachesTheWorkflowWithItsParagraph() throws Exception {
-        image("message-article", png(1260, 1308), "image/png");
-        when(minioStorageService.uploadImage(any(byte[].class), anyString()))
-                .thenReturn(ImageStorageResult.notStored());
-        // Three paragraphs and a fourth block holding the two characters that wrapped out of the
-        // last one. Alone, those characters were an untrusted glyph, so the request carried three
-        // regions and the orphan stayed on the image in Japanese.
-        OcrRegion third = OcrArticleFixtures.paragraph("p3", 780, 6, 2);
-        when(ocrService.recognizeRegions(any(InputStream.class))).thenReturn(new OcrRegionSegmenter().segment(
-                List.of(OcrArticleFixtures.paragraph("p1", 100, 4, 0),
-                        OcrArticleFixtures.paragraph("p2", 440, 4, 1), third,
-                        OcrArticleFixtures.tail("orphan", "る。", OcrArticleFixtures.nextLineTop(780, 6), 3))));
-        when(workflowModule.execute(any())).thenReturn(success("source", "stub"));
-
-        pipeline.execute(request("message-article"));
-
-        ArgumentCaptor<TranslationWorkflowRequest> workflow =
-                ArgumentCaptor.forClass(TranslationWorkflowRequest.class);
-        verify(workflowModule).execute(workflow.capture());
-        var regions = workflow.getValue().imageRegions();
-        assertThat(regions).extracting(
-                com.linetranslate.bot.service.translation.ImageRegionTranslationInput::regionId)
-                .containsExactly("p1", "p2", "p3");
-        assertThat(regions).allMatch(
-                com.linetranslate.bot.service.translation.ImageRegionTranslationInput::translatable);
-        assertThat(regions.get(2).sourceText()).isEqualTo(third.text() + "る。");
-        assertThat(workflow.getValue().sourceText()).endsWith("る。");
-    }
-
-    @Test
-    void longPreservedRegionAndDenseTokenRegionStillReachTheTranslationWorkflow() throws Exception {
-        image("message-dense-tokens", png(300, 150), "image/png");
-        when(minioStorageService.uploadImage(any(byte[].class), anyString()))
-                .thenReturn(ImageStorageResult.notStored());
-        List<String> prices = java.util.stream.IntStream.rangeClosed(1, 80)
-                .mapToObj(value -> "$" + value).toList();
-        String menu = "Menu $" + "9".repeat(200) + " " + String.join(" ", prices);
-        String account = "1234567890".repeat(30);
-        when(ocrService.recognizeRegions(any(InputStream.class))).thenReturn(List.of(
-                region("menu", menu, 10, 10, 280, 60, .98f),
-                region("account", account, 10, 90, 280, 40, .98f)));
-        when(workflowModule.execute(any())).thenReturn(success(menu + "\n" + account, "菜單"));
-
-        ImageTranslationOutcome outcome = pipeline.execute(request("message-dense-tokens"));
-
-        assertThat(outcome).isInstanceOf(ImageTranslationOutcome.Success.class);
-        ArgumentCaptor<TranslationWorkflowRequest> request = ArgumentCaptor.forClass(TranslationWorkflowRequest.class);
-        verify(workflowModule).execute(request.capture());
-        var regions = request.getValue().imageRegions().stream().collect(java.util.stream.Collectors.toMap(
-                com.linetranslate.bot.service.translation.ImageRegionTranslationInput::regionId, value -> value));
-        assertThat(regions).containsOnlyKeys("menu", "account");
-        assertThat(regions.get("menu").translatable()).isTrue();
-        assertThat(regions.get("menu").protectedTokens()).containsExactlyElementsOf(prices.subList(0, 64));
-        assertThat(regions.get("account").translatable()).isFalse();
-        assertThat(regions.get("account").protectedTokens()).isEmpty();
-    }
-
-    @ParameterizedTest
-    @ValueSource(strings = {"本書已翻譯成多國語言", "本菜單可翻譯成英文", "翻譯成ja 你好"})
-    void recognizedTextNeverRequestsItsOwnTargetLanguage(String recognizedText) throws Exception {
-        image("message-embedded-command", new byte[] {11});
-        when(minioStorageService.uploadImage(any(byte[].class), anyString()))
-                .thenReturn(ImageStorageResult.notStored());
-        when(ocrService.recognizeText(any(InputStream.class))).thenReturn(recognizedText);
-        when(workflowModule.execute(any())).thenReturn(success(recognizedText, "translated"));
-
-        ImageTranslationPipelineResult result =
-                successResult(pipeline.execute(request("message-embedded-command")));
-
-        ArgumentCaptor<TranslationWorkflowRequest> workflow =
-                ArgumentCaptor.forClass(TranslationWorkflowRequest.class);
-        verify(workflowModule).execute(workflow.capture());
-        assertThat(workflow.getValue().requestedTargetLanguage()).isNull();
-        assertThat(workflow.getValue().sourceText()).isEqualTo(recognizedText);
-    }
-
-    @ParameterizedTest
-    @ValueSource(strings = {"本書已翻譯成多國語言", "本菜單可翻譯成英文"})
-    void embeddedTranslationPhraseKeepsThePreferenceTargetAndIsTranslatedVerbatim(
-            String recognizedText) throws Exception {
-        LanguageDetectionService detection = mock(LanguageDetectionService.class);
-        CachedTranslationAdapter adapter = mock(CachedTranslationAdapter.class);
-        TranslationRecordRepository records = mock(TranslationRecordRepository.class);
-        UserPreferences preferences = new UserPreferences("ko", "ja", "en", "gpt-test", List.of());
-        when(userPreferencesModule.resolve(userProfile)).thenReturn(preferences);
-        when(detection.detectLanguage(recognizedText)).thenReturn("zh-TW");
-        when(adapter.translate(preferences, recognizedText, "ja")).thenReturn(
-                new AiExecutionOutcome.Success(new AiExecutionResult("翻訳", "openrouter", "gpt-test")));
-        pipeline = new ImageTranslationPipeline(
-                ocrServiceProvider,
-                new TranslationWorkflowModule(detection, adapter, records, userPreferencesModule),
-                aiProviderExecutionModule,
-                userPreferencesModule,
-                messagingApiBlobClient,
-                minioStorageService);
-        image("message-embedded-phrase", new byte[] {12});
-        when(minioStorageService.uploadImage(any(byte[].class), anyString()))
-                .thenReturn(ImageStorageResult.notStored());
-        when(ocrService.recognizeText(any(InputStream.class))).thenReturn(recognizedText);
-
-        ImageTranslationPipelineResult result =
-                successResult(pipeline.execute(request("message-embedded-phrase")));
-
-        assertThat(result.translation().targetLanguage()).isEqualTo("ja");
-        verify(adapter).translate(preferences, recognizedText, "ja");
-        ArgumentCaptor<TranslationRecord> record = ArgumentCaptor.forClass(TranslationRecord.class);
-        verify(records).save(record.capture());
-        assertThat(record.getValue().getSourceText()).isEqualTo(recognizedText);
-        assertThat(record.getValue().getTargetLanguage()).isEqualTo("ja");
-    }
-
-    private TrackingInputStream image(String messageId, byte[] bytes) throws Exception {
-        return image(messageId, bytes, null);
-    }
-
-    private TrackingInputStream image(String messageId, byte[] bytes, String mimeType) throws Exception {
+    @SuppressWarnings("unchecked")
+    private void lineSends(String messageId, byte[] bytes) {
         Result<BlobContent> result = mock(Result.class);
         BlobContent content = mock(BlobContent.class);
-        TrackingInputStream stream = new TrackingInputStream(bytes);
-        when(messagingApiBlobClient.getMessageContent(messageId))
-                .thenReturn(CompletableFuture.completedFuture(result));
+        when(blobClient.getMessageContent(messageId)).thenReturn(CompletableFuture.completedFuture(result));
         when(result.body()).thenReturn(content);
-        when(content.byteStream()).thenReturn(stream);
-        when(content.mimeType()).thenReturn(mimeType);
-        return stream;
+        when(content.byteStream()).thenReturn(new java.io.ByteArrayInputStream(bytes));
+        when(content.mimeType()).thenReturn("image/png");
     }
 
-    private static byte[] png(int width, int height) throws Exception {
-        BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
-        ByteArrayOutputStream output = new ByteArrayOutputStream();
-        ImageIO.write(image, "png", output);
-        return output.toByteArray();
-    }
-
-    private static byte[] whitePng(int width, int height) throws Exception {
-        BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
-        java.awt.Graphics2D graphics = image.createGraphics();
-        graphics.setColor(java.awt.Color.WHITE);
-        graphics.fillRect(0, 0, width, height);
-        graphics.dispose();
-        ByteArrayOutputStream output = new ByteArrayOutputStream();
-        ImageIO.write(image, "png", output);
-        return output.toByteArray();
-    }
-
-    private ImageTranslationRequest request(String messageId) {
-        return new ImageTranslationRequest(
-                userProfile,
-                messageId,
-                Instant.parse("2026-08-11T00:00:00Z"));
-    }
-
-    private TranslationWorkflowOutcome success(String sourceText, String translatedText) {
-        return new TranslationWorkflowOutcome.Success(new TranslationWorkflowResult(
-                sourceText,
-                "en",
-                "zh-TW",
-                new AiExecutionResult(translatedText, "openai", "gpt-test"),
-                10,
-                TranslationRequestKind.IMAGE_OCR));
-    }
-
-    private TranslationWorkflowOutcome successStructured(
-            String sourceText,
-            String translatedText,
-            List<ImageRegionTranslation> regions) {
-        return new TranslationWorkflowOutcome.Success(new TranslationWorkflowResult(
-                sourceText, "en", "zh-TW",
-                new AiExecutionResult(translatedText, "openai", "gpt-test"),
-                10, TranslationRequestKind.IMAGE_OCR, null, "faithful", "faithful-v1", regions));
-    }
-
-    private static OcrRegion region(
-            String id, String text, int x, int y, int width, int height, float confidence) {
-        return new OcrRegion(id, text, List.of(
-                new OcrPoint(x, y), new OcrPoint(x + width, y),
-                new OcrPoint(x + width, y + height), new OcrPoint(x, y + height)),
-                List.of(), confidence, true, OcrBlockType.TEXT,
-                List.of(new OcrDetectedLanguage("en", .98f)), 0);
-    }
-
-    private static ImageTranslationOverlayRenderer renderer() {
-        return new ImageTranslationOverlayRenderer(
-                new ImageTranslationFontProvider(Set.of("dejavu sans")));
-    }
-
-    private ImageTranslationPipelineResult successResult(ImageTranslationOutcome outcome) {
-        return ((ImageTranslationOutcome.Success) outcome).result();
-    }
-
-    private static final class TrackingInputStream extends ByteArrayInputStream {
-
-        private boolean closed;
-
-        private TrackingInputStream(byte[] bytes) {
-            super(bytes);
-        }
-
-        @Override
-        public void close() throws IOException {
-            closed = true;
-            super.close();
-        }
-
-        boolean closed() {
-            return closed;
-        }
+    private record Call(String method, String path, String token, String body) {
     }
 }

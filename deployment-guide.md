@@ -13,7 +13,7 @@
 
 在停止舊容器前，部署腳本會用 `OPEN_ROUTE_API_KEY` 呼叫 OpenRouter `/models`，只檢查 HTTP 狀態且不輸出回應內容。credential 無效時部署立即停止。隔離的 local smoke 可設 `VALIDATE_OPENROUTER_REMOTE=false`，正式 workflow 不應關閉。
 
-`/actuator/health/liveness` 只代表程序存活；`/actuator/health/readiness` 會檢查 LINE 設定、MongoDB、MinIO、OCR 與 OpenRouter 設定。必要依賴失敗時回 `DOWN`/HTTP 503；MinIO 或 OCR 等 optional dependency 失敗時回 `DEGRADED`/HTTP 200，因此不會造成部署 rollback。回應只公開 component status，不公開 details。
+`/actuator/health/liveness` 代表程序存活，並包含 `imageTranslator`（Java 對 image-translator 的 `GET /healthz`，3 秒逾時；`OCR_ENABLED=false` 或 `IMAGE_TRANSLATOR_ENABLED=false` 時為 `DISABLED`）；`/actuator/health/readiness` 會檢查 LINE 設定、MongoDB、MinIO 與 OpenRouter 設定，**不含** image-translator：它停擺時機器人仍要能回覆文字訊息。必要依賴失敗時回 `DOWN`/HTTP 503；MinIO 等 optional dependency 失敗時回 `DEGRADED`/HTTP 200，因此不會造成部署 rollback。回應只公開 component status，不公開 details。
 
 Image 預設 `JAVA_TOOL_OPTIONS=-XX:MaxRAMPercentage=60.0 -XX:+ExitOnOutOfMemoryError`：heap 上限依容器記憶體（未設 `--memory` 時為主機記憶體）計算，OOM 時程序直接結束並由 `--restart unless-stopped` 重啟；比先前的 75% 低，是因為同一個容器裡還有 image-translator 的 Python 程序（見下一節）。與 MongoDB/MinIO 共用小主機時，可用 Actions Variable `JAVA_TOOL_OPTIONS` 改成固定 `-Xmx`。
 
@@ -106,7 +106,7 @@ JVM heap 上限是容器記憶體的 60%（`MaxRAMPercentage=60.0`），其餘�
 - `verify` lifecycle 會 compile、執行兩層測試並建立 Spring Boot JAR；workflow 另行確認 packaged JAR 存在。
 - 「Verify production image runtime」步驟會建置正式 image，確認字型（`fc-match "Noto Sans CJK TC"`）、`/app/app.jar` 與 `/app/entrypoint.sh` 存在，並在 image 內只啟動 Python 那一半（`LAB_MOCK=1`）：確認 `cv2`、`PIL`、`anthropic`、`google.cloud.vision`、`fastapi` 都能匯入，`/healthz` 回應，且一張合成 PNG 的 `/v1/translations` 回 `status: image`。Java 那一半需要 MongoDB，不在這裡啟動。
 - 獨立的 `Image translator tests` job 以 Python 3.12（`actions/setup-python`）安裝 `services/image-translator/requirements.txt`（執行期套件 `requirements-runtime.txt` 加上 `pytest`）並執行 `pytest -q`；`publish` 需要它與 Maven job 都成功。映像本身只安裝 `requirements-runtime.txt`，不含 `pytest`。
-- provider、LINE reply、OCR 與 storage 邊界在 focused tests 使用 mocks/adapters，不讀 production Secrets，也不呼叫付費 API。
+- provider、LINE reply、圖片翻譯服務（以 `MockWebServer` 取代）與 storage 邊界在 focused tests 使用 mocks/adapters，不讀 production Secrets，也不呼叫付費 API。
 - 測試失敗時 Actions 會保留 Surefire 與 Failsafe reports 7 天；成功時不建立多餘 artifact。
 
 ## GitHub Repository 設定
@@ -166,9 +166,9 @@ Secrets 只作為容器環境變數傳入，不會寫入 image、Repository 或 
 | `DOCKER_NETWORK` | `host` | 與既有 MongoDB/MinIO 相容的 Docker network |
 | `IMAGE_PROXY_PUBLIC_BASE_URL` | 選填 | 需要獨立 preview proxy 時才設；留空時直接使用 MinIO/木雷 URL 傳送 LINE 圖片。 |
 | `IMAGE_PROXY_CONTENT_CACHE_MAX_BYTES` | `67108864` | `/i/{token}` proxy 快取保留的 original + preview 位元組上限（64 MiB）；取代已不再生效的 `IMAGE_PROXY_CONTENT_CACHE_ENTRIES`。 |
-| `IMAGE_TRANSLATION_MAX_OUTPUT_BYTES` | `10485760` | 產生圖片的大小上限（LINE 原圖限制 10 MB）；PNG 超過時改輸出 JPEG 或縮小。 |
-| `IMAGE_TRANSLATION_DELIVERY_TARGET_BYTES` | `2097152` | 產生圖片的交付大小目標（2 MiB）。LINE 要在自己的逾時內從部署主機（MinIO 或 proxy）取回原圖，大張 PNG 可能取不到；不透明圖片的 PNG 超過此值時，改輸出 JPEG（品質 0.92，再 0.85），取第一個不超過目標者，都不符合則維持 PNG（仍受上限約束）。透明圖片一律維持 PNG。設為不小於 `IMAGE_TRANSLATION_MAX_OUTPUT_BYTES` 的值即停用。 |
-| `IMAGE_TEXT_REPLY_ENABLED` | `true` | 翻譯圖片後是否再附上辨識文字、譯文與快速操作的部署預設值；管理員可用 `/admin config image-text [on\|off]` 動態切換。 |
+| `IMAGE_TRANSLATION_MAX_OUTPUT_BYTES` | `10485760` | 產生圖片的大小上限（LINE 原圖限制 10 MB）；image-translator 回傳的 PNG 超過時改輸出 JPEG，仍超過則改回文字譯文。 |
+| `IMAGE_TRANSLATION_DELIVERY_TARGET_BYTES` | `2097152` | 產生圖片的交付大小目標（2 MiB）。LINE 要在自己的逾時內從部署主機（MinIO 或 proxy）取回原圖，大張 PNG 可能取不到；不透明圖片的 PNG 超過此值時，改輸出 JPEG（品質 0.92，再 0.85），取第一個不超過目標者，都不符合則維持 PNG（仍受上限約束）。透明圖片一律維持 PNG（超過上限時改回文字譯文）。設為不小於 `IMAGE_TRANSLATION_MAX_OUTPUT_BYTES` 的值即停用。 |
+| `IMAGE_TEXT_REPLY_ENABLED` | `false` | 翻譯後的圖片之外是否再附上辨識文字、譯文與快速操作的部署預設值（預設只回傳圖片）；管理員可用 `/admin config image-text [on\|off]` 動態切換。 |
 | `DWZ_API_BASE_URL` | 短網址啟用時必填 | 木雷 API base。host network 可用固定 loopback port；也可用公開 HTTPS domain。 |
 | `DWZ_SHORT_DOMAIN` | 選填 | 指定木雷短域名；留空使用木雷預設 domain。 |
 | `DWZ_WORKSPACE_ID` | 選填 | 木雷 workspace ID。 |
@@ -203,8 +203,8 @@ Secrets 只作為容器環境變數傳入，不會寫入 image、Repository 或 
 | `MINIO_READ_TIMEOUT_MS` | `5000` | MinIO API 讀取 timeout |
 | `LINE_PUSH_FALLBACK_ENABLED` | `true` | reply token 過期時是否改用 push 傳送答案；push 消耗官方帳號每月訊息額度，reply 不消耗 |
 | `LINE_PUSH_FALLBACK_DAILY_LIMIT` | `100` | 每日（UTC+8）最多備援 push 次數，重啟後歸零；可用 `/admin quota` 查看額度與今日用量 |
-| `OCR_ENABLED` | `true` | 是否啟用 Google Vision OCR 的部署預設值；設為 `false` 則圖片改用 AI 辨識，部署也不再需要 `GOOGLE_CREDENTIALS_JSON`。管理員可用 `/admin config ocr [on\|off]` 動態切換。GitHub 變數留空會回到預設值。 |
-| `GOOGLE_VISION_TIMEOUT_MS` | `60000` | 單次 Google Vision OCR 呼叫（含重試）的總時間上限 |
+| `OCR_ENABLED` | `true` | 圖片翻譯的總開關（沿用這個名稱）的部署預設值；設為 `false` 則不啟動 image-translator，圖片訊息回「圖片翻譯功能目前已停用」，部署也不再需要 `GOOGLE_CREDENTIALS_JSON` 與 `ANTHROPIC_API_KEY`。管理員可用 `/admin config ocr [on\|off]` 動態切換。GitHub 變數留空會回到預設值。 |
+| `GOOGLE_VISION_TIMEOUT_MS` | `60000` | 已不再使用：Java 端的 Vision OCR 已移除（image-translator 自己呼叫 Vision）。部署腳本仍會傳入，下次整理 workflow 時移除 |
 
 ### MongoDB 資料保留
 

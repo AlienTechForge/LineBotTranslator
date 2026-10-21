@@ -1,107 +1,61 @@
 package com.linetranslate.bot.service.ocr;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 /**
- * Security and rendering limits for image translation.
+ * Security and delivery limits for image translation: what a LINE upload may be before it is sent to
+ * the image-translator service, and how large the translated picture may be when it is handed back to
+ * LINE.
  *
- * @param orientationRetryEnabled whether a rotated page that was read poorly is read a second time
- *                                from its upright raster, at the price of one more OCR call. Off by
- *                                default until the decision log shows how often it would run.
+ * @param maxFileSizeBytes    the largest upload accepted from LINE
+ * @param maxDimension        the longest side, in pixels, of an accepted upload
+ * @param maxPixels           the most pixels an accepted upload may have
+ * @param maxOutputBytes      hard cap on the delivered picture (LINE refuses an original above 10 MB)
+ * @param deliveryTargetBytes size an opaque picture is brought under by JPEG when its PNG is larger;
+ *                            a value at or above {@code maxOutputBytes} switches that step off
  */
 @Component
 public record ImageTranslationProperties(
         long maxFileSizeBytes,
         int maxDimension,
         long maxPixels,
-        float lowConfidenceThreshold,
-        boolean overlayEnabled,
-        double maxRegionAreaRatio,
-        double maxTotalMaskRatio,
-        double posterMaxTotalMaskRatio,
-        boolean orientationRetryEnabled) {
+        long maxOutputBytes,
+        long deliveryTargetBytes) {
 
-    /** Total mask limit for {@link OverlayContentMode#POSTER} unless configured otherwise. */
-    public static final double DEFAULT_POSTER_MAX_TOTAL_MASK_RATIO = .60;
-
-    @org.springframework.beans.factory.annotation.Autowired
+    @Autowired
     public ImageTranslationProperties(
             @Value("${app.image-translation.max-file-size-bytes:10485760}") long maxFileSizeBytes,
             @Value("${app.image-translation.max-dimension:4096}") int maxDimension,
             @Value("${app.image-translation.max-pixels:16000000}") long maxPixels,
-            @Value("${app.image-translation.low-confidence-threshold:0.60}") float lowConfidenceThreshold,
-            @Value("${app.image-translation.overlay-enabled:true}") boolean overlayEnabled,
-            @Value("${app.image-translation.max-region-area-ratio:0.12}") double maxRegionAreaRatio,
-            @Value("${app.image-translation.max-total-mask-ratio:0.35}") double maxTotalMaskRatio,
-            @Value("${app.image-translation.poster-max-total-mask-ratio:0.60}")
-            double posterMaxTotalMaskRatio,
-            @Value("${app.image-translation.orientation-retry-enabled:false}")
-            boolean orientationRetryEnabled) {
+            @Value("${app.image-translation.max-output-bytes:10485760}") long maxOutputBytes,
+            @Value("${app.image-translation.delivery-target-bytes:2097152}") long deliveryTargetBytes) {
         if (maxFileSizeBytes <= 0
                 || maxFileSizeBytes >= Integer.MAX_VALUE
                 || maxDimension <= 0
                 || maxPixels <= 0) {
             throw new IllegalArgumentException("Image translation limits must be positive");
         }
-        // NaN fails every comparison, so a range test written as "<= 0 || > 1" lets it through and
-        // then every limit built on it silently stops limiting: finiteness is checked first.
-        if (!Float.isFinite(lowConfidenceThreshold) || lowConfidenceThreshold <= 0
-                || lowConfidenceThreshold > 1) {
-            throw new IllegalArgumentException("OCR confidence threshold must be in (0, 1]");
+        if (maxOutputBytes <= 0) {
+            throw new IllegalArgumentException("Translated image size cap must be positive");
         }
-        if (!isRatio(maxRegionAreaRatio) || !isRatio(maxTotalMaskRatio)
-                || maxRegionAreaRatio > maxTotalMaskRatio) {
-            throw new IllegalArgumentException("Overlay area ratios are invalid");
-        }
-        if (!isRatio(posterMaxTotalMaskRatio)) {
-            throw new IllegalArgumentException("Poster overlay area ratio must be in (0, 1]");
+        if (deliveryTargetBytes <= 0) {
+            throw new IllegalArgumentException("Translated image delivery target must be positive");
         }
         this.maxFileSizeBytes = maxFileSizeBytes;
         this.maxDimension = maxDimension;
         this.maxPixels = maxPixels;
-        this.lowConfidenceThreshold = lowConfidenceThreshold;
-        this.overlayEnabled = overlayEnabled;
-        this.maxRegionAreaRatio = maxRegionAreaRatio;
-        this.maxTotalMaskRatio = maxTotalMaskRatio;
-        this.posterMaxTotalMaskRatio = posterMaxTotalMaskRatio;
-        this.orientationRetryEnabled = orientationRetryEnabled;
+        this.maxOutputBytes = maxOutputBytes;
+        this.deliveryTargetBytes = Math.min(deliveryTargetBytes, maxOutputBytes);
     }
 
-    private static boolean isRatio(double value) {
-        return Double.isFinite(value) && value > 0 && value <= 1;
-    }
-
-    /** The limits of an image read once: callers that predate the orientation retry. */
-    public ImageTranslationProperties(
-            long maxFileSizeBytes,
-            int maxDimension,
-            long maxPixels,
-            float lowConfidenceThreshold,
-            boolean overlayEnabled,
-            double maxRegionAreaRatio,
-            double maxTotalMaskRatio,
-            double posterMaxTotalMaskRatio) {
-        this(maxFileSizeBytes, maxDimension, maxPixels, lowConfidenceThreshold, overlayEnabled,
-                maxRegionAreaRatio, maxTotalMaskRatio, posterMaxTotalMaskRatio, false);
-    }
-
-    /** The limits of an image that is not a poster: callers that predate the poster limit. */
-    public ImageTranslationProperties(
-            long maxFileSizeBytes,
-            int maxDimension,
-            long maxPixels,
-            float lowConfidenceThreshold,
-            boolean overlayEnabled,
-            double maxRegionAreaRatio,
-            double maxTotalMaskRatio) {
-        this(maxFileSizeBytes, maxDimension, maxPixels, lowConfidenceThreshold, overlayEnabled,
-                maxRegionAreaRatio, maxTotalMaskRatio, DEFAULT_POSTER_MAX_TOTAL_MASK_RATIO);
+    /** The limits of an upload alone, with the default delivery limits. */
+    public ImageTranslationProperties(long maxFileSizeBytes, int maxDimension, long maxPixels) {
+        this(maxFileSizeBytes, maxDimension, maxPixels, 10_485_760L, 2_097_152L);
     }
 
     public static ImageTranslationProperties defaults() {
-        return new ImageTranslationProperties(
-                10_485_760, 4_096, 16_000_000, 0.60f, true, .12, .35,
-                DEFAULT_POSTER_MAX_TOTAL_MASK_RATIO, false);
+        return new ImageTranslationProperties(10_485_760, 4_096, 16_000_000);
     }
 }

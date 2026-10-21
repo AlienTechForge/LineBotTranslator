@@ -68,7 +68,7 @@ public class LineMessageRenderer {
         return text("🤖 LINE 翻譯機器人幫助\n\n"
                 + "[💬 基本使用]\n"
                 + "• 直接發送文字 → 自動檢測語言並翻譯\n"
-                + "• 發送圖片 → 識別圖片中的文字並翻譯\n"
+                + "• 發送圖片 → 翻譯圖片中的文字，回傳翻譯後的圖片\n"
                 + "• 快速翻譯:[語言代碼] [文本] → 翻譯到指定語言\n\n"
                 + "[⚙️ 設置命令]\n"
                 + "🔠 /外文翻譯 [語言] - 設置偏好的目標語言\n"
@@ -211,9 +211,10 @@ public class LineMessageRenderer {
     }
 
     /**
-     * Image reply as an ordered message list. A delivered overlay image is followed by the
-     * recognised text and translation with their quick replies unless the administrator
-     * switched {@code imageTextReplyEnabled} off. Quick replies only show on the last message.
+     * Image reply as an ordered message list: the picture, then the warning line when the picture is
+     * only usable ({@code tier: warned}), then, when the administrator switched
+     * {@code imageTextReplyEnabled} on (it is off by default: picture-only replies), the recognised
+     * text and translation with their quick replies. Quick replies only show on the last message.
      *
      * <p>Logs which delivery branch was taken, with the image host (never the URL: a signed URL
      * carries its signature) and whether the stored preview was available, because a LINE image
@@ -222,21 +223,28 @@ public class LineMessageRenderer {
     public List<Message> imageResultMessages(ImageTranslationReply reply) {
         ImageDelivery delivery = deliver(reply);
         Message primary = delivery.message();
-        boolean textReply = primary instanceof ImageMessage && imageTextReplyEnabled();
+        boolean picture = primary instanceof ImageMessage;
+        boolean warning = picture && reply.warning().isPresent();
+        boolean textReply = picture && imageTextReplyEnabled();
+        List<Message> messages = new ArrayList<>();
+        messages.add(primary);
+        if (warning) {
+            messages.add(text(reply.warning().get()));
+        }
+        if (textReply) {
+            messages.add(interactiveTranslation(withoutImageLink(reply)));
+        }
         String host = delivery.imageHost() == null ? "none" : SafeLog.metadata(delivery.imageHost());
         log.info("Image reply composed: branch={}, reason={}, imageHost={}, previewUrlPresent={}, "
-                        + "shortened={}, textReply={}, messages={}",
+                        + "shortened={}, warning={}, textReply={}, messages={}",
                 delivery.branch(), delivery.reason(), host,
-                delivery.previewUrlPresent(), delivery.shortened(), textReply, textReply ? 2 : 1);
-        if (!textReply) {
-            return List.of(primary);
-        }
-        return List.of(primary, interactiveTranslation(withoutImageLink(reply)));
+                delivery.previewUrlPresent(), delivery.shortened(), warning, textReply, messages.size());
+        return List.copyOf(messages);
     }
 
     private boolean imageTextReplyEnabled() {
         RuntimeSettings settings = runtimeSettingsSource.current();
-        return settings == null || settings.imageTextReplyEnabled();
+        return settings != null && settings.imageTextReplyEnabled();
     }
 
     /** The image message already shows the artifact, so its signed link is not repeated in text. */

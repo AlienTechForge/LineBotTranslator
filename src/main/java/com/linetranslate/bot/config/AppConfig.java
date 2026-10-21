@@ -23,7 +23,7 @@ public class AppConfig {
     @Value("${app.short-url.enabled:${SHORT_URL_ENABLED:false}}")
     private boolean shortUrlEnabled;
 
-    @Value("${app.image-translation.text-reply-enabled:${IMAGE_TEXT_REPLY_ENABLED:true}}")
+    @Value("${app.image-translation.text-reply-enabled:${IMAGE_TEXT_REPLY_ENABLED:false}}")
     private boolean imageTextReplyEnabled;
 
 }

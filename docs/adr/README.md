@@ -21,7 +21,7 @@ ADR 記錄已確立、會限制後續設計的決策。Domain 名稱與不變量
 | [0006](0006-required-and-optional-dependencies.md) | Accepted | MongoDB 為必要依賴；MinIO/OCR/AI 能力可 disabled/degraded。 |
 | [0007](0007-shared-translation-workflow.md) | Accepted | 文字與圖片共用單一 Translation Workflow。 |
 | [0008](0008-effective-user-preferences.md) | Accepted | 以 immutable effective User Preferences 集中 precedence 與 validation。 |
-| [0009](0009-explicit-image-translation-pipeline.md) | Accepted | 圖片 pipeline 使用 explicit request/result，移除 ThreadLocal state。 |
+| [0009](0009-explicit-image-translation-pipeline.md) | Superseded | 圖片 pipeline 使用 explicit request/result，移除 ThreadLocal state；Java 端 OCR 與覆寫渲染由 ADR-0017 取代。 |
 | [0010](0010-model-aware-bounded-cache.md) | Accepted | 翻譯 cache 有界、model-aware，且只保存安全成功。 |
 | [0011](0011-openrouter-single-provider-adapter.md) | Accepted | 只保留 OpenRouter Adapter，模型由 catalog 動態探索與選擇。 |
 | [0012](0012-idempotent-translation-actions.md) | Accepted | 翻譯結果 actions 使用 opaque record reference、owner check 與 durable claim。 |
@@ -29,3 +29,4 @@ ADR 記錄已確立、會限制後續設計的決策。Domain 名稱與不變量
 | [0015](0015-versioned-translation-prompt-system.md) | Accepted | 文字、圖片、OCR 與語言偵測採獨立版本化模板；locale/script 約束與 cache identity 一致。 |
 | [0014](0014-split-minio-internal-and-public-endpoints.md) | Accepted | MinIO 內部 S3 操作與外部 presigned URL 使用不同 endpoint。 |
 | [0016](0016-proxied-translated-image-delivery.md) | Accepted | 翻譯圖片以受限 proxy 直接輸出；木雷短網址為管理員可切換 Adapter。 |
+| [0017](0017-image-translation-through-the-image-translator-service.md) | Accepted | 圖片交給同容器的 image-translator 服務翻譯並回傳圖片；移除 Java 端 OCR 與覆寫管線；服務只在 liveness。 |

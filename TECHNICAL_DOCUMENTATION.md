@@ -9,7 +9,7 @@
 本專案採用典型的 Spring Boot MVC 架構，主要分為以下幾層：
 
 1. **控制器層（Controller）**：處理來自 LINE 平台的請求
-2. **服務層（Service）**：實現業務邏輯，包括翻譯、OCR、用戶管理等
+2. **服務層（Service）**：實現業務邏輯，包括翻譯、圖片翻譯（呼叫圖片翻譯服務）、用戶管理等
 3. **資料訪問層（Repository）**：與 MongoDB 資料庫交互
 4. **模型層（Model）**：定義資料模型
 5. **配置層（Config）**：系統配置和外部服務整合
@@ -31,9 +31,10 @@
   - 自動語言檢測和目標語言選擇
   - 翻譯記錄管理
 
-- **ImageTranslationService**：圖片翻譯服務
-  - 處理圖片 OCR 和翻譯
-  - 整合 Google Cloud Vision API 或 AI 模型進行文字識別
+- **ImageTranslationService**、**ImageTranslationPipeline**：圖片翻譯流程
+  - 下載並驗證 LINE 圖片、存下原圖，呼叫圖片翻譯服務，依服務的回答組出圖片或文字回覆並保存翻譯記錄
+- **ImageTranslatorClient**（`service/imagetranslator/`）：圖片翻譯服務（`services/image-translator`，同一個容器、loopback）的 OkHttp 客戶端
+  - `POST /v1/translations`（multipart）加上取回圖片的 `GET`，兩者都帶 `X-Service-Token`；`ImageTranslatorException` 帶 HTTP 狀態與服務的 `reason`（不含令牌）
 
 - **LanguageDetectionService**：語言檢測服務
   - 使用 language-detector 庫檢測文字語言
@@ -64,7 +65,7 @@
 - **MongoConfig**：MongoDB 資料庫配置
 - **AppConfig**：應用程式全局配置
 - **OpenRouterConfig**：OpenRouter API、預設模型與 catalog TTL 配置
-- **GoogleVisionConfig**：Google Cloud Vision API 配置
+- **ImageTranslatorProperties**：圖片翻譯服務的位址、令牌、逾時與開關（`app.image-translator.*`）
 
 ## 資料庫設計
 
@@ -139,6 +140,12 @@ public class MongoConfig extends AbstractMongoClientConfiguration {
   "processingTimeMs": 處理時間(毫秒),
   "isImageTranslation": 是否為圖片翻譯,
   "imageUrl": "圖片URL(如果是圖片翻譯)",
+  "imageStored": 原圖是否已存入 storage,
+  "imageMode": "圖片翻譯服務採用的嘗試 A 或 B（文字翻譯為 null）",
+  "imageTier": "clean、warned，或 text_only 時為 null",
+  "imageVerdict": "judge 判定",
+  "imageUsability": 可用度 0–1,
+  "imageCostUsd": 服務回報的這個請求的費用(美元),
   "timestamp": "時間戳"
 }
 
@@ -235,6 +242,12 @@ public class TranslationRecord {
     private double processingTimeMs;      // 處理時間 (毫秒)
     private boolean isImageTranslation;   // 是否為圖片翻譯
     private String imageUrl;              // 圖片 URL (如果是圖片翻譯)
+    private Boolean imageStored;          // null = 舊紀錄，儲存狀態未知
+    private String imageMode;             // 圖片翻譯服務採用的嘗試：A 或 B
+    private String imageTier;             // clean、warned；text_only 時為 null
+    private String imageVerdict;          // judge 判定
+    private Double imageUsability;        // 0–1
+    private Double imageCostUsd;          // 服務回報的費用（美元）
 
     @Builder.Default
     private LocalDateTime timestamp = LocalDateTime.now();  // 時間戳
@@ -286,14 +299,15 @@ public interface TranslationRecordRepository extends MongoRepository<Translation
    - 成功後保存實際 provider/model metadata，並更新用戶資料
 
 2. **圖片翻譯流程**：
-   - 用戶發送圖片
-   - `LineBotController` 接收圖片並調用 `ImageTranslationService`
-   - 使用 LINE Blob Client 獲取圖片內容
-   - 使用 Google Cloud Vision API 或 AI 模型進行 OCR
-   - 檢測識別出的文字語言
-   - 翻譯文字並返回結果
-   - 保存翻譯記錄並更新用戶資料
-   - 辨識、儲存、翻譯或渲染階段拋出已知 OCR、provider、結構化對應、渲染或資料庫失敗以外的例外時（包含 OCR adapter 與 provider execution 包裝起來的程式缺陷：`OcrDefectException`、`UNEXPECTED_ERROR`，以及結構化翻譯嘗試遇到、由純文字回退補上的 `UNEXPECTED_ERROR`），使用者仍收到同一則降級回覆（OCR adapter 的缺陷仍會改用 AI 辨識），但以 ERROR 記錄（含移除訊息的 stack frames）並計入 `image.translation.unexpected{stage="recognition|storage|translation|rendering"}`，以區分程式缺陷與服務中斷
+   - 用戶發送圖片，`LineBotController` 接收並調用 `ImageTranslationService` → `ImageTranslationPipeline`
+   - 使用 LINE Blob Client 獲取圖片內容；`ImageInputValidator` 檢查類型、大小、尺寸與像素並做 EXIF 轉正；`MinioStorageService.uploadImage` 存下原圖（失敗不影響翻譯）
+   - 目標語言取使用者的偏好語言（`UserPreferencesModule`，與文字翻譯相同，`/外文翻譯` 設定生效）
+   - `ImageTranslatorClient.translate`（`request_id` = LINE message id；讀取逾時 `IMAGE_TRANSLATOR_TIMEOUT`，預設 4 分鐘；服務自己的期限是 210 秒）。LINE 重送同一事件時服務回 409，回覆通用失敗而不再翻譯
+   - 依服務的 `status` 對應：`image`（`clean`／`warned`）取回 PNG（`GET` 服務給的 `image.path`）、必要時依 `IMAGE_TRANSLATION_MAX_OUTPUT_BYTES`／`IMAGE_TRANSLATION_DELIVERY_TARGET_BYTES` 轉成 JPEG，`MinioStorageService.uploadTranslatedImage` 存成一小時有效的簽名網址，回 LINE Image Message（`warned` 再多一則警語）；`text_only` 回「圖片無法完整翻譯，以下是文字翻譯：」加譯文；`no_text`；`error`（`anthropic_budget`／`openrouter_budget` 為額度用完，其餘為通用失敗）；HTTP 錯誤、逾時與無法解析的回應為「圖片翻譯服務暫時無法使用」。圖片取不回、太大或存不進 storage 時，只要服務給了譯文就改回文字
+   - 保存翻譯記錄（含 `imageMode`、`imageTier`、`imageVerdict`、`imageUsability`、`imageCostUsd`）並更新用戶資料；資料庫寫入失敗只讓回覆少了快速操作
+   - 管理員 `/admin config ocr [on|off]`（`OCR_ENABLED` 的執行期開關）仍是圖片翻譯的總開關，`app.image-translator.enabled=false` 則讓機器人不再呼叫服務
+   - 下載、儲存、服務呼叫、取圖或記錄階段拋出已知失敗以外的例外時，使用者仍收到降級回覆，但以 ERROR 記錄（含移除訊息的 stack frames）並計入 `image.translation.unexpected{stage="storage|translation|delivery|recording"}`，以區分程式缺陷與服務中斷
+   - 服務的健康狀態由 `imageTranslator` health indicator（`GET /healthz`，3 秒逾時，細節含版本與本月預算數字）回報，只列在 liveness 群組、不在 readiness：服務停擺不會讓機器人停止回覆文字訊息
 
 ### AI 服務整合
 
@@ -324,15 +338,18 @@ public interface TranslationRecordRepository extends MongoRepository<Translation
    - `/styles` 列出風格，`/style <id>` 保存個人預設，`/translate-style <id> <text>` 僅套用一次
    - Translation Record、cache identity 與安全 restyle action 都保存／使用實際 preset ID 與 prompt version
 
-### OCR 實現
+### 圖片翻譯服務
 
-1. **Google Cloud Vision API**：
-   - 主要 OCR 實現方式
-   - 高精度文字識別
+圖片的文字辨識（Google Cloud Vision）、翻譯規劃、擦除與繪製（Mode A）、圖片模型（Mode B）與品質判定都在 `services/image-translator`（Python），Java 端只是它的客戶端。Java 端原本的 Vision OCR、區塊切分、方向與直書偵測、覆寫圖片的渲染與對應的設定（`IMAGE_TRANSLATION_OVERLAY_ENABLED`、`IMAGE_TRANSLATION_*_MASK_RATIO`、`IMAGE_TRANSLATION_LOW_CONFIDENCE_THRESHOLD`、`IMAGE_TRANSLATION_ORIENTATION_RETRY_ENABLED`、`GOOGLE_VISION_TIMEOUT_MS`）已移除；`google-cloud-vision` 不再是相依套件。服務的 API 契約見該目錄的 README（`/v1`）。
 
-2. **AI 模型備用方案**：
-   - 當 Google Cloud Vision API 不可用時
-   - 使用已選擇且支援 image input 的 OpenRouter model 進行辨識
+| 設定 | 預設 | 說明 |
+| --- | --- | --- |
+| `IMAGE_TRANSLATOR_URL` | `http://127.0.0.1:4041` | 服務位址（同一個容器） |
+| `IMAGE_TRANSLATOR_TOKEN` | 無 | 共用令牌（`X-Service-Token`）；容器 entrypoint 產生，圖片翻譯開啟時正式環境必填 |
+| `IMAGE_TRANSLATOR_TIMEOUT` | `PT4M` | 機器人等待一次翻譯的時間 |
+| `IMAGE_TRANSLATOR_ENABLED` | `true` | `false` 時機器人不呼叫服務（等同停用圖片翻譯） |
+| `OCR_ENABLED` | `true` | 圖片翻譯總開關（管理員可用 `/admin config ocr` 動態切換） |
+| `IMAGE_TEXT_REPLY_ENABLED` | `false` | 圖片之後是否再附辨識文字與譯文（只回傳圖片是預設） |
 
 ## 系統性能與優化
 

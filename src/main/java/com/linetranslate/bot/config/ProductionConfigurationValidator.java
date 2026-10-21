@@ -12,7 +12,8 @@ import org.springframework.stereotype.Component;
 
 /**
  * Fails production startup with setting names only when core configuration is
- * incomplete, or when enabled MinIO storage would use the factory credentials.
+ * incomplete (including the image-translator URL and token while image translation
+ * is on), or when enabled MinIO storage would use the factory credentials.
  */
 @Component
 @Profile("prod")
@@ -39,6 +40,11 @@ public class ProductionConfigurationValidator implements InitializingBean {
         requiredSettings.put("MONGODB_URI", "mongodb.uri");
         requiredSettings.put("MONGODB_DATABASE", "mongodb.database");
         requiredSettings.put("OPEN_ROUTE_API_KEY", "openrouter.api.key");
+        if (imageTranslatorRequired()) {
+            // The container entrypoint generates the token, so it is always set in production.
+            requiredSettings.put("IMAGE_TRANSLATOR_URL", "app.image-translator.url");
+            requiredSettings.put("IMAGE_TRANSLATOR_TOKEN", "app.image-translator.token");
+        }
 
         List<String> missing = new ArrayList<>(requiredSettings.entrySet().stream()
                 .filter(entry -> isBlank(environment.getProperty(entry.getValue())))
@@ -74,6 +80,12 @@ public class ProductionConfigurationValidator implements InitializingBean {
         if (!problems.isEmpty()) {
             throw new IllegalStateException(String.join("; ", problems));
         }
+    }
+
+    /** Image translation is on ({@code OCR_ENABLED}) and its client is not switched off. */
+    private boolean imageTranslatorRequired() {
+        return environment.getProperty("app.ocr.enabled", Boolean.class, false)
+                && environment.getProperty("app.image-translator.enabled", Boolean.class, true);
     }
 
     /** Mirrors {@code ${minio.enabled:${MINIO_ENABLED:true}}} used by the MinIO beans. */
