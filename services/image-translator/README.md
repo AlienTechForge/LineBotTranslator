@@ -43,6 +43,12 @@
     "height": 480,
     "bytes": 18117
   },
+  "source": {
+    "width": 640,
+    "height": 480,
+    "words": 7,
+    "median_glyph_px": 31.0
+  },
   "text": {
     "source_language": "en",
     "recognized_text": "TONKATSU SET MENU NT$120 紅燒肉飯店 LUNCH SPECIAL",
@@ -94,11 +100,12 @@
 - `status`：`image`（有圖可送）、`text_only`（改傳譯文）、`no_text`（圖上沒有字）、`error`（做不出來）。`tier`：`clean` 或 `warned`（只有 `status: image` 才有，其餘是 `null`）。`reason` 與 `mode`（`A`／`B`，採用的是哪一個）見下表。`target_lang` 是實際使用的語言碼（正規化之後）。
 - `verdict`、`usability`、`coverage`：被採用的那一張圖的 judge 判定（`pass`、`numbers+score` …，見「判定規則」）、可用度與完成度（0–1）；沒有圖時是 `null`。`text_only` 也帶著，說明為什麼不送圖。
 - `image`：`{"path", "width", "height", "bytes"}`，只有 `status: image` 才有（否則 `null`）；`path` 用同一個令牌 GET 就是 PNG。
-- `text.source_language`：Vision 偵測到的來源語言（`ja`、`en` …，偵測不出來是 `null`）；`text.recognized_text`：Vision 對來源圖的全文（保留換行）；`text.translated_text`：Mode A 規劃出來的 unit **依規劃給的閱讀順序、每個 unit 一行**（翻譯的 unit 用譯文，`keep` 的 unit〔價格、數字、品牌名〕用原文，unit 自己的換行保留；譯文是空的就顯示原文）。Mode A 的規劃從來沒有回答（沒跑、或在規劃前就失敗）時是 `null`。Mode A 的規劃有回答、之後才在畫圖時失敗，`translated_text` 仍然有。
+- `source`：`{"width", "height", "words", "median_glyph_px"}`，Vision 讀到的來源圖尺寸（px）、有字的 word 數，以及有字的 word 的字框高度中位數（`Word.box_height`，一位小數；一個字框都沒有時是 `0.0`）。Vision 沒有結果（失敗，或請求在 Vision 之前就結束）時是 `null`。這是**新增的欄位**：`schema_version` 仍是 1，Java 忽略未知欄位。`median_glyph_px` 低於 `MODE_A_MIN_GLYPH_PX` 時 Mode A 不先跑（見「字太小」）。
+- `text.source_language`：Vision 偵測到的來源語言（`ja`、`en` …，偵測不出來是 `null`）；`text.recognized_text`：Vision 對來源圖的全文（保留換行）；`text.translated_text`：Mode A 規劃出來的 unit **依規劃給的閱讀順序、每個 unit 一行**（翻譯的 unit 用譯文，`keep` 的 unit〔價格、數字、品牌名〕用原文，unit 自己的換行保留；譯文是空的就顯示原文）。**OCR 碎片不會出現**（`policy._is_fragment`）：整行沒有字母、數字或中日韓字（只有標點符號）、只有一個非中日韓的字元（`2`、`C`、`-`）、三個字元以內而括號只有一邊（`さい)`）的行都丟掉，連續重複的行只留一行；如果每一行都被丟掉，就回傳沒過濾的全文（過濾不會把回覆變成空的）。Mode A 的規劃從來沒有回答（沒跑、或在規劃前就失敗）時是 `null`。Mode A 的規劃有回答、之後才在畫圖時失敗，`translated_text` 仍然有。
 - `judge`：被採用那張圖的 judge 摘要 `{"summary", "altered_numbers", "untranslated_major", "legibility_major"}`（後三者是 judge 紀錄裡的項目：被改的數字、`major` 的沒翻文字、`major` 的亂碼）；judge 沒有答案時是 `null`。
 - `costs`：這個請求花的錢 `{"anthropic_usd", "openrouter_usd", "total_usd"}`（Mock 模式一律 0）。`budget`：寫入這個請求之後本月的用量與上限（見「預算」）。
 - `timings_ms`：`ocr`（來源圖 Vision）、`mode_a`、`mode_b`（含各自的 judge；沒跑的是 `null`）、`judge`（所有 judge 的合計）、`total`。
-- `attempts`：每個模式一筆 `{"mode", "verdict", "usability", "cost_usd", "elapsed_ms", "error", "skipped", "selected"}`。`error` 是失敗原因（已遮掉金鑰）；`skipped` 是這個模式沒跑的原因（`policy_a_only`、`policy_b_only`、`openrouter_budget`、`anthropic_budget`、`deadline`）；A 通過而 B 根本沒必要跑時，不會有 B 那一筆。
+- `attempts`：每個模式一筆 `{"mode", "verdict", "usability", "cost_usd", "elapsed_ms", "error", "skipped", "selected"}`。`error` 是失敗原因（已遮掉金鑰）；`skipped` 是這個模式沒跑的原因（`policy_a_only`、`policy_b_only`、`small_text`、`openrouter_budget`、`anthropic_budget`、`deadline`）；A 通過而 B 根本沒必要跑時，不會有 B 那一筆。`attempts` 的順序是**實際執行的順序**：字太小時 B 在前、A 在後（A 沒跑就是 `skipped: small_text`）。
 - `warnings`：給人看的提醒（最多 30 則）：未知語言、缺字型、右到左文字、價格未知、Mode B 為什麼被跳過、某個模式失敗、judge 提到但不計入 Mode A 判定的版面問題、Mode A 的排版提醒（例如多少個直排欄太窄而保持原樣）。
 
 ### `status`、`tier`、`reason` 一覽
@@ -106,8 +113,8 @@
 | `status` | `tier` | `reason` | 意思 |
 | --- | --- | --- | --- |
 | `image` | `clean` | `a_pass` | Mode A 的判定是 `pass`（意味著 usability ≥ 0.80），直接用，Mode B 不跑 |
-| `image` | `clean` 或 `warned` | `b_better` | Mode B 的結果勝過 Mode A 的圖（`verify.choose_attempt`，平手給 A） |
-| `image` | `warned` | `a_better` | A 沒過、B 跑了，但 A 的圖還是比較好（或平手） |
+| `image` | `clean` 或 `warned` | `b_better` | 兩張圖裡 Mode B 的**比較能送出**（`clean` > `warned` > 送不出去；同一層級才比 `verify.attempt_key`；完全平手給 A，見「策略」） |
+| `image` | `warned` | `a_better` | A 沒過、B 也做出了圖，但 A 的圖比較能送出（或完全平手） |
 | `image` | `clean` 或 `warned` | `a_failed` | Mode A 沒做出圖（例外、Vision 失敗），採用 Mode B 的圖 |
 | `image` | `warned` | `b_failed` | A 的圖沒過，Mode B 失敗，只好用 A 的圖 |
 | `image` | `warned` | `policy_a_only` | A 的圖沒過，但 `policy=a_only` 不准跑 B |
@@ -115,16 +122,19 @@
 | `image` | `warned` | `openrouter_budget` | A 的圖沒過，但本月 OpenRouter 預算用完，跳過 Mode B |
 | `image` | `warned` | `anthropic_budget` | A 的圖沒過，但 Mode A 之後本月 Anthropic 預算用完了（Mode B 的 judge 需要它），跳過 Mode B |
 | `image` | `warned` | `deadline` | A 的圖沒過，但剩下的時間不到 `MODE_B_MIN_REMAINING_S`，跳過 Mode B |
-| `text_only` | `null` | `below_threshold` | 最好的那張圖 usability 低於 `SEND_MIN_USABILITY`（0.60）：Java 改傳 `text.translated_text` |
+| `image` | `clean` 或 `warned` | `small_text` | 來源字太小（`source.median_glyph_px` 低於 `MODE_A_MIN_GLYPH_PX`，策略 `a_then_b`）：Mode B 先跑，它的圖可以送出，Mode A 完全沒跑（`attempts` 有 `A` `skipped: small_text`） |
+| `text_only` | `null` | `below_threshold` | 所有圖都送不出去，最好的那張 usability 低於 `SEND_MIN_USABILITY`（0.60）：Java 改傳 `text.translated_text` |
 | `text_only` | `null` | `unverified` | 有圖，但 judge 沒有答案（沒金鑰、API 錯誤…）：不敢送，改傳譯文 |
 | `no_text` | `null` | `no_text` | Vision 在來源圖上找不到任何字 |
 | `error` | `null` | `both_failed` | Mode A 與 Mode B 都失敗 |
 | `error` | `null` | `a_failed` | `policy=a_only` 且 Mode A 失敗（B 不准跑） |
-| `error` | `null` | `b_failed` | `policy=b_only` 且 Mode B 失敗（A 沒跑） |
-| `error` | `null` | `openrouter_budget`、`deadline`、`anthropic_budget` | 沒有任何一張圖，而且 Mode B 因預算或時間被跳過；`anthropic_budget` 也用在請求一開始 Anthropic 預算就用完（**什麼都沒呼叫**）；`deadline` 也用在一開始時限就已過 |
+| `error` | `null` | `b_failed` | `policy=b_only` 且 Mode B 失敗（A 沒跑）；或字太小、B 失敗、而且之後沒時間（或沒預算）跑 A |
+| `error` | `null` | `below_threshold` | **字太小**：B 的圖低於 `SEND_MIN_USABILITY`，而且之後沒時間（剩餘不到 `MODE_A_MIN_REMAINING_S`＝120 秒，或 Anthropic 預算用完）跑 A，所以沒有規劃出來的譯文可以改傳。`verdict`、`usability`、`judge` 仍帶著 B 的結果；`attempts` 有 `A` `skipped: deadline`（或 `anthropic_budget`） |
+| `error` | `null` | `unverified` | 同上，但 B 的圖 judge 沒有答案 |
+| `error` | `null` | `openrouter_budget`、`deadline`、`anthropic_budget` | 沒有任何一張圖，而且 Mode B 因預算或時間被跳過（字太小時 A 也沒有時間或預算）；`anthropic_budget` 也用在請求一開始 Anthropic 預算就用完（**什麼都沒呼叫**）；`deadline` 也用在一開始時限就已過 |
 | `error` | `null` | `internal_error` | 策略本身出了沒預料到的錯誤（程式 bug）；仍然是 200，不是 500 |
 
-`service_token_missing` 只出現在 503 的錯誤本文（見下）。**內部失敗不會變成 HTTP 錯誤**：只要請求本身合格，一定是 200 加上 `status`，Java 才有東西可以告訴使用者。
+上表列出現在所有會出現的 `(status, tier, reason)` 組合。`service_token_missing` 只出現在 503 的錯誤本文（見下）。**內部失敗不會變成 HTTP 錯誤**：只要請求本身合格，一定是 200 加上 `status`，Java 才有東西可以告訴使用者。
 
 ### HTTP 錯誤
 
@@ -151,12 +161,22 @@
 
 `app/policy.py` 的 `run(image, target_lang, policy, request_id, deadline)`：
 
-1. **Vision 讀來源圖一次**（`jobs.SourceOcr`，Mode A 與兩個 judge 共用）。沒有字：`status: no_text`。Vision 失敗：Mode A 做不了，Mode B 與它的 judge 照樣可以。
-2. **Mode A**（Vision 字框 → Claude 規劃 → 擦除 → Pillow 畫字，見後面各節）加 judge；**不自己重試**（lab 的那一次重試由 Mode B 取代）；覆蓋補翻照舊。judge 對 Mode A **不計 `rows`**（見「第 7 輪的修正」）。
+1. **Vision 讀來源圖一次**（`jobs.SourceOcr`，Mode A 與兩個 judge 共用）。沒有字：`status: no_text`。Vision 失敗：Mode A 做不了，Mode B 與它的 judge 照樣可以。讀完算出**字高中位數**（有字的 word 的 `box_height` 中位數，一位小數；沒有字框的 word 不算，整張都沒有字框時是 `0.0`），寫進回應的 `source.median_glyph_px`。
+2. **Mode A**（Vision 字框 → Claude 規劃 → 擦除 → Pillow 畫字，見後面各節）加 judge；**不自己重試**（lab 的那一次重試由 Mode B 取代）；覆蓋補翻照舊。judge 對 Mode A **不計 `rows`**（見「第 7 輪的修正」）。**例外：字太小時 Mode A 不先跑**，見下面「字太小」。
 3. Mode A 判定 `pass`：`image`／`clean`／`a_pass`，結束。
-4. 否則，當策略允許、OpenRouter 本月預算還有空間、時限剩下至少 `MODE_B_MIN_REMAINING_S`（90 秒）、而且 Anthropic 預算還有空間（Mode B 的 judge 要用）：**Mode B 一次生成**（`google/gemini-3-pro-image`，2K，不重試）加 judge；兩個嘗試用 `verify.choose_attempt` 選較好的（平手給 A）。**最多這兩個嘗試，沒有更多重試。**
-5. 被採用的那個嘗試：判定 `pass` → `clean`；否則 usability ≥ `SEND_MIN_USABILITY`（0.60；剛好 0.60 算）→ `warned`（附圖，Java 加一行警語）；否則 `text_only`（`below_threshold`）。沒有任何嘗試做出圖：`error`。
+4. 否則，當策略允許、OpenRouter 本月預算還有空間、時限剩下至少 `MODE_B_MIN_REMAINING_S`（90 秒）、而且 Anthropic 預算還有空間（Mode B 的 judge 要用）：**Mode B 一次生成**（`google/gemini-3-pro-image`，2K，不重試）加 judge。**最多這兩個嘗試，沒有更多重試。**
+5. **選結果：先看哪一張送得出去。** 兩個嘗試都做出圖時，排名是 `clean`（判定 `pass`）> `warned`（usability ≥ `SEND_MIN_USABILITY`，0.60；剛好 0.60 算）> 送不出去（低於門檻，或沒有判定）；只有**在同一個層級裡**才用 `verify.attempt_key`（有判定的先於沒判定的；`numbers`、`rows`、`garbled`、`partial`、`score` 五項依序，不失敗的贏；usability；coverage），完全平手給 A。被採用的那一張：`clean` → 附圖；`warned` → 附圖（Java 加一行警語）；送不出去 → `text_only`（`below_threshold` 或 `unverified`）。沒有任何嘗試做出圖：`error`。
+   第一張真實圖片就是為了這一條：A 的判定是 `garbled+score`、usability 0.10，B 是 `numbers+score`、usability 0.60。舊規則先比五項檢查（A 的 `numbers` 沒失敗，因為圖上根本沒有讀得出來的數字），A 贏，圖低到不能送，使用者收到的是 OCR 碎片拼成的文字；現在 B 是 `warned`，結果是 `image`／`warned`／`b_better`。lab 的批次頁比的是同一個模式的多次嘗試，沒有「送不送」的問題，仍用 `verify.choose_attempt` 的舊排名。
 6. Mode B 被跳過時，原因寫在 `reason`（`openrouter_budget`、`anthropic_budget`、`deadline`、`policy_a_only`；圖還是 `warned`），也寫在 `attempts[].skipped` 與 `warnings`。
+
+### 字太小：Mode B 先跑（`MODE_A_MIN_GLYPH_PX`）
+
+來源字只有幾個像素高時（例如第一張真實圖片：550×412 的菜單照），Mode A 做不出東西：擦掉的字不可能在原位用同樣大小重畫，規劃（105 秒、18.7k tokens）與擦除只是白花錢。所以：策略是 `a_then_b`、`source.median_glyph_px` **大於 0 且小於** `MODE_A_MIN_GLYPH_PX`（預設 12；`0` 關掉這條規則）時，順序反過來：
+
+- **Mode B 先跑**（同樣的 `b_skip_reason` 把關，同樣是一次 2K 生成）。它的圖送得出去（`clean` 或 `warned`）：結果就是它，`status: image`、`reason: small_text`，**Mode A 完全沒跑**（省下規劃與擦除；`attempts` 是 `[B, A(skipped: small_text)]`；`warnings` 有一行 `Mode A skipped: the source text is too small (median glyph N px < MODE_A_MIN_GLYPH_PX 12)`）。
+- B 沒做出能送的圖（被跳過、失敗、圖低於門檻、或沒有判定），而且剩下的時間**多於** `MODE_A_MIN_REMAINING_S`（常數 120 秒，`config.py`）、Anthropic 預算還有空間：Mode A **在 B 之後**跑，這樣規劃出來的譯文（`text_only` 的內容）與舊的行為都還在；選結果照第 5 步（`a_pass`、`a_better`、`b_better`、`below_threshold`、`b_failed`、`openrouter_budget` … 和平常一樣）。`attempts` 是 `[B, A]`，`warnings` 說 `Mode A ran only after Mode B`。
+- B 沒做出能送的圖、又沒有時間（或預算）跑 A：`attempts` 的 A 是 `skipped: deadline`（或 `anthropic_budget`）。**沒有規劃就沒有譯文可以改傳**，所以不是 `text_only` 而是 `status: error`：B 的圖低於門檻 → `below_threshold`、沒有判定 → `unverified`、B 沒做出圖 → `b_failed`（或 B 被跳過的原因：`openrouter_budget`、`deadline`、`anthropic_budget`）。
+- 策略 `a_only`、`b_only`、`both` 不看這條規則（`a_only` 一定要有文字；`both` 是 lab 的對照）。**Mock 模式也不套用**：mock 的字框是照上傳圖縮放的罐頭值，高度不代表真的字高。一個字框都沒有（中位數 `0.0`）也永遠不觸發；只有「大於 0 且小於門檻」才會。
 
 整體時限 `V1_DEADLINE_S`（預設 210 秒，從請求開始算）：超過之後**不再開始新的工作**，回傳目前最好的結果。已經在跑的呼叫不會被中斷（Anthropic／Vision／OpenRouter 各自的逾時仍是 lab 的設定），所以它不是硬性的牆：Java 端自己要有讀取逾時（建議 240 秒），逾時就當成 `text_only` 處理。一個模式裡的錯誤不會殺掉另一個。
 
@@ -201,7 +221,7 @@
 
 ## Mock 模式
 
-`LAB_MOCK=1` 讓 `/v1` 也完全離線：Vision、規劃、judge 與影像模型都是罐頭答案（Mode B 直接回傳輸入圖；judge 一律 usability 1.0），所以 Java 端可以對著它開發與測試。`policy=both` 的 mock 請求會跑 A 與 B；預算檔照寫、費用算 0。罐頭答案永遠是 `status: image`、`tier: clean`（`a_then_b` 時 `reason: a_pass`），要測其他 `status` 請用單元測試的腳本化結果。
+`LAB_MOCK=1` 讓 `/v1` 也完全離線：Vision、規劃、judge 與影像模型都是罐頭答案（Mode B 直接回傳輸入圖；judge 一律 usability 1.0），所以 Java 端可以對著它開發與測試。`policy=both` 的 mock 請求會跑 A 與 B；預算檔照寫、費用算 0。罐頭答案永遠是 `status: image`、`tier: clean`（`a_then_b` 時 `reason: a_pass`），要測其他 `status` 請用單元測試的腳本化結果。mock 不套用「字太小」規則（罐頭字框隨上傳圖縮放；`source.median_glyph_px` 照樣算出來）。
 
 ```bash
 cd services/image-translator
@@ -213,12 +233,12 @@ curl -s -H 'X-Service-Token: dev-token' -F image=@sample.png -F target_lang=zh-T
 ## 隱私
 
 - 只有**縮小後的圖片**（長邊最多 1568 px 的 JPEG，Mode B 最多 2048 px）與 OCR 文字會送到 Anthropic 與 OpenRouter；原圖本身只送給 Google Vision。
-- INFO 等級的 log 沒有任何 OCR 文字、譯文、圖片資料、令牌或金鑰：只有請求 id、狀態、模式、判定與數字。測試會檢查。錯誤訊息進 `attempts[].error` 之前會遮掉已知的金鑰（`redaction.py`，含 `SERVICE_TOKEN`）。
+- INFO 等級的 log 沒有任何 OCR 文字、譯文、圖片資料、令牌或金鑰：只有請求 id、狀態、模式、判定與數字。測試會檢查。每個請求的 `stage=v1` 那一行帶 `attempts=A:garbled+score/0.10,B:numbers+score/0.60`（每個嘗試的模式、判定、usability；沒跑的是 `A:skipped(small_text)`，失敗的是 `B:error`）與 `glyph_px=`（字高中位數，沒有 OCR 時是 `-`）；策略每個嘗試結束時另寫一行 `stage=policy request=… mode=A verdict=… usability=… coverage=… ms=… cost=…`（跳過是 `skipped=…`，失敗只有例外的類別名 `error=OSError`，不含訊息）。錯誤訊息進 `attempts[].error` 之前會遮掉已知的金鑰（`redaction.py`，含 `SERVICE_TOKEN`）。
 - 來源圖不寫進硬碟；回傳的圖與記錄只留 `V1_RETENTION_MINUTES` 分鐘。
 
 ## 這個 PR 沒有驗證的
 
-所有需要真實 Anthropic（規劃與 judge）、Google Vision、OpenRouter 的部分都**只經過離線測試與 `LAB_MOCK=1` 端到端**：新的策略在真實圖片上的通過率、`SEND_MIN_USABILITY`（0.60）與預算數字是否合適、Mode B 在 210 秒時限內的實際耗時、第 7 輪四項修正在真實規劃輸出上的效果、泰文／阿拉伯文等字型（沒有裝 Noto 字型的環境只測了退回與提醒）。價目表之外的 Claude 型號費用算 0。
+所有需要真實 Anthropic（規劃與 judge）、Google Vision、OpenRouter 的部分都**只經過離線測試與 `LAB_MOCK=1` 端到端**：新的策略在真實圖片上的通過率、`SEND_MIN_USABILITY`（0.60）與預算數字是否合適、Mode B 在 210 秒時限內的實際耗時、第 7 輪四項修正在真實規劃輸出上的效果、泰文／阿拉伯文等字型（沒有裝 Noto 字型的環境只測了退回與提醒）。價目表之外的 Claude 型號費用算 0。「先看哪一張送得出去」的選擇規則與「字太小」規則（`MODE_A_MIN_GLYPH_PX` 的 12 px 是照第一張真實圖片估的，沒有更多樣本）同樣只經過離線測試與 `LAB_MOCK=1` 端到端，沒有在真實的 Anthropic／Vision／OpenRouter 上跑過。
 
 ---
 
@@ -399,6 +419,7 @@ docker inspect linebot-translator --format '{{range .Config.Env}}{{println .}}{{
 | `V1_DEADLINE_S` | `210` | 一個 `/v1/translations` 請求從開始算起的總時限（秒）；超過後不再開始新的工作。 |
 | `V1_RETENTION_MINUTES` | `15` | `/v1` 的記錄與圖片保留幾分鐘（背景清掃刪除）。 |
 | `MODE_B_MIN_REMAINING_S` | `90` | Mode B 開始時至少要剩的秒數，否則跳過（`reason: deadline`）。 |
+| `MODE_A_MIN_GLYPH_PX` | `12` | 來源字高中位數（px，`source.median_glyph_px`）低於它、且策略是 `a_then_b` 時，Mode B 先跑，Mode A 只在 B 沒做出能送的圖時才補跑（見「字太小」）。`0` = 關掉這條規則；Mock 模式不套用。 |
 | `MIN_ROTATED_COLUMN_PX` | `16` | 目標語言不是中日韓時，欄寬（字高）小於它的直排 unit 保持原樣（`skipped: column too narrow`）。 |
 | `LAB_MOCK` | `0` | `1` = 不打任何網路（`/v1` 也是），改用內建 fixture（Mode B 直接回傳輸入圖，Vision 用內建字框，Claude 與 judge 用罐頭答案，上傳改用記憶體假物件）。 |
 | `LAB_DATA_DIR` | `./data` | 上傳與輸出（`<job-id>/`、`batch-<batch-id>/` 底下）、`/v1` 的記錄（`v1/<request_id>/`）與預算檔（`budget.json`）；容器內固定 `/app/data`。 |
@@ -828,6 +849,7 @@ lab 的 API（路徑現在在 `/lab` 底下：`POST /lab/api/batches`、`POST /l
 - `/v1` 一直是 503：沒設 `SERVICE_TOKEN`（`reason: service_token_missing`）。401 是沒帶 `X-Service-Token`、403 是令牌不對；令牌只收標頭。`/healthz` 不需要令牌。
 - `/v1` 回 `status: error`、`reason: anthropic_budget`：本月 Anthropic 預算用完了（看 `budget`，或 `GET /healthz`）；下個日曆月（Asia/Taipei）自動歸零，或調高 `ANTHROPIC_MONTHLY_BUDGET_USD`（0 = 不設上限）。`openrouter_budget` 只會讓 Mode B 被跳過。
 - `/v1` 一直回 `text_only`／`below_threshold`：看 `judge.summary` 與 `attempts`；`unverified` 是 judge 沒有答案（金鑰、API 錯誤）。
+- `/v1` 的 `reason` 是 `small_text`、或 `attempts` 裡 A 是 `skipped: small_text`：來源字太小（`source.median_glyph_px` 低於 `MODE_A_MIN_GLYPH_PX`），Mode B 先跑而且成功，Mode A 沒有跑，這是設計。覺得門檻不對就看 log 的 `glyph_px=` 並調 `MODE_A_MIN_GLYPH_PX`（`0` = 永遠先跑 A）。字太小、B 又沒做出能送的圖、之後沒時間跑 A 時是 `status: error`（`below_threshold`／`unverified`／`b_failed`），因為沒有規劃就沒有譯文可以改傳。
 - 圖上直排的欄沒翻譯、`skipped: column too narrow`：拉丁目標語言的圖裡窄於 `MIN_ROTATED_COLUMN_PX` 的欄保持原樣，這是刻意的（轉 90 度的小字讀不出來）；真的要畫就調小 `MIN_ROTATED_COLUMN_PX`。
 - 泰文／阿拉伯文出現方塊：`warnings` 會寫缺哪個 Noto 字型；Docker 映像裝了 `fonts-noto-core` 就有。阿拉伯文與希伯來文沒有 shaping／bidi，圖多半是錯的。
 - 測試：`docker compose run --rm lab pytest -q`（容器內也有測試；README 與 prompt 一致性的那些測試會因為映像沒有 README 而略過）。

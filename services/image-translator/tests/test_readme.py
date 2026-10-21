@@ -196,8 +196,9 @@ def test_the_json_example_of_the_readme_has_the_keys_of_a_real_response(monkeypa
         data={"target_lang": "zh-TW", "request_id": "example-0001"},
     ).json()  # fmt: skip
     assert list(example) == list(real)
-    for key in ("image", "text", "judge", "costs", "budget", "timings_ms"):
+    for key in ("image", "source", "text", "judge", "costs", "budget", "timings_ms"):
         assert list(example[key]) == list(real[key]), key
+    assert example["source"] == real["source"]  # the mock's words are not random: the example shows the real numbers
     assert list(example["attempts"][0]) == list(real["attempts"][0])
     assert example["schema_version"] == v1.SCHEMA_VERSION == 1
     assert {k: example[k] for k in ("status", "tier", "reason", "mode", "verdict", "target_lang", "text")} == {
@@ -261,3 +262,23 @@ def test_the_docker_files_serve_the_whole_service_from_the_new_directory():
     for name, text in (("Dockerfile", dockerfile), ("docker-compose.yml", compose), (".env.example", env)):
         assert "tools/overlay-lab" not in text, name
     assert "COPY pytest.ini ." in dockerfile and "COPY app ./app" in dockerfile and "COPY tests ./tests" in dockerfile
+
+
+def test_the_selection_rule_the_tiny_text_rule_and_the_new_source_block_are_documented():
+    from app import config, policy
+
+    text = read("README.md")
+    for needle in (
+        "`small_text`", "`MODE_A_MIN_GLYPH_PX`", "`MODE_A_MIN_REMAINING_S`", "`source.median_glyph_px`", "`source`：",
+        "先看哪一張送得出去", "`verify.attempt_key`", "`policy._is_fragment`", "`attempts=", "`glyph_px=`", "`stage=policy",
+        "Mode A skipped: the source text is too small", "Mode A ran only after Mode B",
+    ):
+        assert needle in text, needle
+    assert "small_text" in policy.REASONS and config.MODE_A_MIN_REMAINING_S == 120.0 and "（常數 120 秒" in text
+    row = re.search(r"\| `MODE_A_MIN_GLYPH_PX` \| `([0-9.]+)` \|", text)
+    line = re.search(r"^MODE_A_MIN_GLYPH_PX=([0-9.]+)$", read(".env.example"), re.M)
+    assert row and line and float(row.group(1)) == float(line.group(1)) == config.DEFAULT_MODE_A_MIN_GLYPH_PX == 12.0
+    # every (status, tier, reason) the policy can produce for the small-text path has its own row
+    for reason in ("below_threshold", "unverified", "b_failed"):
+        assert re.search(rf"\| `error` \| `null` \| `{reason}` \|", text), reason
+    assert re.search(r"\| `image` \| `clean` 或 `warned` \| `small_text` \|", text)

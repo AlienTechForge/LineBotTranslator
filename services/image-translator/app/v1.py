@@ -252,6 +252,7 @@ def build_response(request_id: str, lang: str, outcome: policy.Outcome, image_in
         "usability": outcome.usability,
         "coverage": outcome.coverage,
         "image": image_info,
+        "source": outcome.source,
         "text": outcome.text,
         "judge": outcome.judge,
         "costs": outcome.costs,
@@ -260,6 +261,24 @@ def build_response(request_id: str, lang: str, outcome: policy.Outcome, image_in
         "attempts": outcome.attempts,
         "warnings": outcome.warnings,
     }
+
+
+def attempts_summary(attempts: list[dict]) -> str:
+    """`A:garbled+score/0.10,B:numbers+score/0.60` for the log: mode, verdict and usability (two decimals, `-` when
+    unknown) of every attempt; `A:skipped(small_text)` for a mode that did not run, `B:error` for one that failed.
+    Only fixed words and numbers: no text, no error message."""
+    parts = []
+    for item in attempts:
+        mode = str(item.get("mode") or "?")
+        if item.get("skipped"):
+            parts.append(f"{mode}:skipped({item['skipped']})")
+        elif item.get("error"):
+            parts.append(f"{mode}:error")
+        else:
+            usability = item.get("usability")
+            shown = "-" if usability is None else f"{usability:.2f}"
+            parts.append(f"{mode}:{item.get('verdict') or '-'}/{shown}")
+    return ",".join(parts) or "-"
 
 
 def internal_failure(started: float, warnings: list[str]) -> policy.Outcome:
@@ -323,9 +342,12 @@ async def create_translation(
         response = build_response(rid, lang, outcome, image_info)
         write_atomic(folder / RECORD_FILE, json.dumps(response, ensure_ascii=False).encode("utf-8"))
         log.info(
-            "stage=v1 request=%s status=%s tier=%s reason=%s mode=%s verdict=%s usability=%s cost=%.4f total_ms=%s",
+            "stage=v1 request=%s status=%s tier=%s reason=%s mode=%s verdict=%s usability=%s cost=%.4f total_ms=%s "
+            "attempts=%s glyph_px=%s",
             rid, outcome.status, outcome.tier, outcome.reason, outcome.mode, outcome.verdict, outcome.usability,
             outcome.costs.get("total_usd", 0.0), outcome.timings_ms.get("total"),
+            attempts_summary(outcome.attempts),
+            "-" if not outcome.source else f"{outcome.source['median_glyph_px']:.1f}",
         )  # fmt: skip
         return JSONResponse(response)
     finally:
