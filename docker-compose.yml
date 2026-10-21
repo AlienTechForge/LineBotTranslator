@@ -1,5 +1,11 @@
 version: '3.8'
 
+# 一個映像、一個容器、兩個程序：Java bot 與 Python image-translator（由 /app/entrypoint.sh 啟動）。
+# 下面標 ${NAME:-預設值} 的設定可以寫在 .env 覆寫；金鑰類（不要寫在這個檔案）也放在 .env：
+#   ANTHROPIC_API_KEY=       OCR_ENABLED=true 時必填（Mode A 規劃與視覺 judge）
+#   IMAGE_TRANSLATOR_TOKEN=  選填；留空時 entrypoint 每次啟動產生一個隨機令牌，Java 與 Python 共用
+#   LAB_TOKEN=               選填；只有要開 /lab 診斷頁時才需要（見 deployment-guide.md）
+
 services:
   app:
     image: ghcr.io/alientechforge/linebot-translator:latest
@@ -14,12 +20,26 @@ services:
       # 解決 gRPC 原生庫問題
       - GRPC_NETTY_SHADED_NETTY_TCNATIVE_DO_NOT_USE_CONSCRYPT=true
       - GRPC_NETTY_SHADED_NETTY_TCNATIVE_DO_NOT_USE_NATIVE=true
+      # image-translator：預設只綁 127.0.0.1:4041。改成 0.0.0.0 會在 host network 的主機上公開 4041 埠，務必同時設 LAB_TOKEN
+      - IMAGE_TRANSLATOR_URL=${IMAGE_TRANSLATOR_URL:-http://127.0.0.1:4041}
+      - IMAGE_TRANSLATOR_BIND=${IMAGE_TRANSLATOR_BIND:-127.0.0.1}
+      - IMAGE_TRANSLATOR_TIMEOUT=${IMAGE_TRANSLATOR_TIMEOUT:-PT4M}
+      - CLAUDE_MODEL=${CLAUDE_MODEL:-claude-sonnet-5-5}
+      - CLAUDE_JUDGE_MODEL=${CLAUDE_JUDGE_MODEL:-claude-sonnet-5-5}
+      - OPENROUTER_IMAGE_MODEL=${OPENROUTER_IMAGE_MODEL:-google/gemini-3-pro-image}
+      - OPENROUTER_MONTHLY_BUDGET_USD=${OPENROUTER_MONTHLY_BUDGET_USD:-15}
+      - ANTHROPIC_MONTHLY_BUDGET_USD=${ANTHROPIC_MONTHLY_BUDGET_USD:-80}
+      - SEND_MIN_USABILITY=${SEND_MIN_USABILITY:-0.60}
+      - V1_DEADLINE_S=${V1_DEADLINE_S:-210}
     volumes:
       - ./logs:/app/logs
       - ./linebot.json:/app/linebot.json:ro
+      # budget.json 與 /v1 請求記錄；目錄要先建立並交給容器內的 app 使用者：mkdir -p image-translator-data && chown 10001:10001 image-translator-data
+      - ./image-translator-data:/app/image-translator/data
     healthcheck:
-      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:4040/actuator/health/readiness"]
+      # 與映像內的 HEALTHCHECK 相同：bot 的 readiness 與 image-translator 的 /healthz 都要通過（OCR_ENABLED=false 時只檢查 bot）
+      test: ["CMD", "/app/healthcheck.sh"]
       interval: 10s
-      timeout: 5s
-      start_period: 40s
+      timeout: 10s
+      start_period: 60s
       retries: 6
