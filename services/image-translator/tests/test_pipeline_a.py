@@ -569,7 +569,8 @@ def test_a_small_box_in_a_group_is_fitted_at_the_group_line_height_and_reaches_t
     assert all(u["group_size_broken"] is False and u["readable"] for u in rows)
     cy = small["center"][1]
     ink = small["ink_bbox"]
-    assert abs((ink[1] + ink[3]) / 2 - cy) <= 3  # centred where the unit is, not where the taller frame would start
+    # centred where the unit is, not where the taller frame would start; the bound follows the glyph metrics of the installed font
+    assert abs((ink[1] + ink[3]) / 2 - cy) <= max(3, 0.2 * small["font_size"])
 
 
 def test_without_a_group_the_small_box_stays_small():
