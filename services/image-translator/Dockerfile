@@ -12,8 +12,19 @@ RUN apt-get update \
 
 WORKDIR /app
 
-COPY requirements.txt requirements-runtime.txt ./
-RUN pip install -r requirements.txt
+COPY requirements.txt requirements-runtime.txt requirements-inpaint.txt ./
+# requirements-inpaint.txt adds onnxruntime, for the LaMa inpainting model (INPAINT_MODEL=lama); the root Dockerfile
+# (production, Mode A and B) installs requirements-runtime.txt only and keeps Telea.
+RUN pip install -r requirements.txt -r requirements-inpaint.txt
+
+# The LaMa model (about 200 MB, Carve/LaMa-ONNX, Apache-2.0) is downloaded at build time into /app/models and is not
+# part of the repository. modelfetch.py is copied alone, ahead of the app, so that a code change does not download
+# it again. The checksum is that of the file named by the default URL: pass INPAINT_MODEL_SHA256= (empty) with another URL.
+ARG INPAINT_MODEL_URL=https://huggingface.co/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx
+ARG INPAINT_MODEL_SHA256=1faef5301d78db7dda502fe59966957ec4b79dd64e16f03ed96913c7a4eb68d6
+COPY app/modelfetch.py /tmp/modelfetch.py
+RUN python /tmp/modelfetch.py "$INPAINT_MODEL_URL" /app/models/lama_fp32.onnx "$INPAINT_MODEL_SHA256" \
+    && rm /tmp/modelfetch.py
 
 COPY pytest.ini .
 COPY app ./app
@@ -25,7 +36,8 @@ COPY tests ./tests
 # here because Docker publishes the port; do not expose it to the internet without LAB_TOKEN and SERVICE_TOKEN.
 ENV LAB_DATA_DIR=/app/data \
     LAB_PORT=4041 \
-    BIND_HOST=0.0.0.0
+    BIND_HOST=0.0.0.0 \
+    INPAINT_MODEL_PATH=/app/models/lama_fp32.onnx
 RUN mkdir -p /app/data
 EXPOSE 4041
 

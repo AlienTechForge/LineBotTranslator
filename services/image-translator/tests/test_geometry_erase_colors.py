@@ -214,20 +214,21 @@ def test_low_contrast_falls_back_to_black_on_light_and_white_on_dark():
     assert fallback_text_color((128, 128, 128)) == (0, 0, 0)
 
 
-def test_ink_fraction_is_tunable_and_defaults_to_40_percent(monkeypatch):
+def test_ink_fraction_is_tunable_and_defaults_to_15_percent(monkeypatch):
+    from app import colors
     from app.colors import ink_fraction
 
-    assert ink_fraction() == 0.40
+    assert ink_fraction() == 0.15 == colors.INK_CORE_FRACTION  # round 8: the core of the strokes (it was 0.40)
     monkeypatch.setenv("LAB_INK_FRACTION", "0.2")
     assert ink_fraction() == 0.2
     monkeypatch.setenv("LAB_INK_FRACTION", "7")
     assert ink_fraction() == 1.0
     monkeypatch.setenv("LAB_INK_FRACTION", "nonsense")
-    assert ink_fraction() == 0.40
+    assert ink_fraction() == 0.15
 
 
-def test_smaller_ink_fraction_gives_a_darker_ink_on_antialiased_text(monkeypatch):
-    # 12% solid ink pixels, 28% half-covered edge pixels: the default pool reaches into the edges
+def test_the_core_of_the_ink_is_darker_than_the_old_forty_percent_that_pulled_in_the_edges(monkeypatch):
+    # 12% solid ink pixels, 28% half-covered edge pixels: forty percent reaches into the edges, fifteen does not
     rng = np.random.default_rng(5)
     bg, ink = (240, 240, 240), (20, 20, 20)
     h, w = 80, 200
@@ -240,9 +241,53 @@ def test_smaller_ink_fraction_gives_a_darker_ink_on_antialiased_text(monkeypatch
     um = build_unit_mask((h, w), [word(1, "t", rect(20, 20, 139, 49))], 30.0)
     corners = np.array(rect(15, 15, 145, 55), dtype=np.float64)
     default = pick_colors(orig, inpainted, um, corners, glyph_h=30.0).text[0]
-    monkeypatch.setenv("LAB_INK_FRACTION", "0.10")
-    tight = pick_colors(orig, inpainted, um, corners, glyph_h=30.0).text[0]
-    assert tight < default and tight <= 25
+    monkeypatch.setenv("LAB_INK_FRACTION", "0.40")
+    old = pick_colors(orig, inpainted, um, corners, glyph_h=30.0).text[0]
+    assert default <= 25 and old >= 100  # the ink itself, against the grey of the edges
+
+
+def text_scene(fg, bg, size=20, text="Pork cutlet set"):
+    """Real anti-aliased text of `size` px, the picture, the background it would be erased to, mask and frame."""
+    from PIL import Image, ImageDraw
+
+    from app.fonts import load_font, resolve_font
+
+    font = load_font(resolve_font(False), size)
+    img = Image.new("RGB", (280, 70), bg)
+    draw = ImageDraw.Draw(img)
+    box = draw.textbbox((20, 18), text, font=font)
+    draw.text((20, 18), text, font=font, fill=fg)
+    arr = np.array(img)
+    um = build_unit_mask(arr.shape[:2], [word(1, "t", rect(*box))], float(size))
+    corners = np.array(rect(box[0] - 2, box[1] - 2, box[2] + 2, box[3] + 2), dtype=np.float64)
+    return arr, np.full_like(arr, bg), um, corners
+
+
+def colour_distance(a, b):
+    return float(np.linalg.norm(np.asarray(a, float) - np.asarray(b, float)))
+
+
+def test_black_text_at_20_px_keeps_its_black_and_white_text_its_white():
+    for fg, bg in (((0, 0, 0), (255, 255, 255)), ((255, 255, 255), (0, 0, 0)), ((10, 10, 10), (240, 235, 220))):
+        orig, inpainted, um, corners = text_scene(fg, bg)
+        c = pick_colors(orig, inpainted, um, corners, glyph_h=20.0)
+        assert colour_distance(c.text, fg) <= 24, (fg, bg, c.text)
+        assert not c.fallback
+
+
+def test_mid_grey_text_stays_grey_and_coloured_text_keeps_its_colour():
+    orig, inpainted, um, corners = text_scene((128, 128, 128), (255, 255, 255))
+    c = pick_colors(orig, inpainted, um, corners, glyph_h=20.0)
+    assert colour_distance(c.text, (128, 128, 128)) <= 24 and not c.fallback  # not snapped to black
+    orig, inpainted, um, corners = text_scene((200, 30, 30), (250, 245, 230))
+    assert colour_distance(pick_colors(orig, inpainted, um, corners, glyph_h=20.0).text, (200, 30, 30)) <= 24
+
+
+def test_the_old_forty_percent_made_black_text_grey(monkeypatch):
+    orig, inpainted, um, corners = text_scene((0, 0, 0), (255, 255, 255))
+    monkeypatch.setenv("LAB_INK_FRACTION", "0.40")
+    grey = pick_colors(orig, inpainted, um, corners, glyph_h=20.0).text
+    assert colour_distance(grey, (0, 0, 0)) > 24  # why the default changed
 
 
 def test_background_is_sampled_from_the_inpainted_image_not_the_ink():

@@ -75,7 +75,7 @@ def test_the_readme_documents_the_batch_the_cost_split_and_the_breaking_changes(
         "批次彙總表",
         "Anthropic（額度）",
         "OpenRouter（現金）",
-        "schema_version: 3",
+        "schema_version: 4",
         "A_a1.png",
         "A_a2.png",
         "numbers",
@@ -282,3 +282,112 @@ def test_the_selection_rule_the_tiny_text_rule_and_the_new_source_block_are_docu
     for reason in ("below_threshold", "unverified", "b_failed"):
         assert re.search(rf"\| `error` \| `null` \| `{reason}` \|", text), reason
     assert re.search(r"\| `image` \| `clean` 或 `warned` \| `small_text` \|", text)
+
+
+# ---------------------------------------------------------------- round 8: Mode C, the eraser, the ink colour
+
+
+def test_the_readme_shows_the_mode_c_prompt_and_every_constant_of_the_segmentation():
+    from app import claude_text, segment
+
+    text = read("README.md")
+    assert claude_text.SYSTEM_PROMPT in text
+    assert f"{claude_text.SHORT_RATIO:g} times the original" in claude_text.SYSTEM_PROMPT  # the prompt and the rule share one constant
+    for needle in (
+        "## Mode C（第 8 輪：幾何版面 + 純文字翻譯）", "### 版面規則（`segment.py`）", "### 純文字翻譯（`claude_text.py`）", "### Mode C 做不到的事",
+        f"`LINE_SPLIT_RATIO`（{segment.LINE_SPLIT_RATIO}）", f"`COLUMN_GAP_RATIO`（{segment.COLUMN_GAP_RATIO}）",
+        f"`LINE_HEIGHT_TOLERANCE`（{segment.LINE_HEIGHT_TOLERANCE:.0%}）", f"`ALIGN_TOLERANCE_RATIO`（{segment.ALIGN_TOLERANCE_RATIO}）",
+        f"`LINE_GAP_RATIO`（{segment.LINE_GAP_RATIO}）", f"`HEADING_RATIO`（{segment.HEADING_RATIO}）", f"`MINOR_RATIO`（{segment.MINOR_RATIO}）",
+        f"`GROUP_BUCKET_PX` = {segment.GROUP_BUCKET_PX}", f"`ROTATED_MIN_DEG`（{segment.ROTATED_MIN_DEG:g} 度）",
+        f"`SHORT_RATIO`（{claude_text.SHORT_RATIO}）", f"`TEXT_IMAGE_SIDE` = {claude_text.TEXT_IMAGE_SIDE}",
+        f"`max_tokens` {claude_text.MAX_TOKENS}", f"`effort: {claude_text.EFFORT}`", "`KEEP_PATTERNS`", "`order_boxes`", "`join_words`",
+        "`C_a1.png`", "`C_a1_erased.png`", "`C_a1_units.json`", "`mode_c=1`", "`on_translate(call)`", "`SegmentReport`",
+    ):  # fmt: skip
+        assert needle in text, needle
+    for kind, _ in segment.KEEP_PATTERNS:
+        assert f"`{kind}`" in text, kind  # every kind of keep pattern is explained
+
+
+def test_the_readme_documents_the_lama_section_with_the_constants_the_model_and_the_residue_rule():
+    from app import config, erase, inpaint
+
+    text = read("README.md")
+    for needle in (
+        "## 擦字模型（LaMa，第 8 輪）", "`inpaint(rgb, mask, *, model) -> rgb`", "requirements-inpaint.txt", "onnxruntime==1.31.0",
+        f"`INPAINT_MARGIN_PX`（{inpaint.INPAINT_MARGIN_PX} px）", f"`INPAINT_MAX_SIDE`（{inpaint.INPAINT_MAX_SIDE}）",
+        f"`FEATHER_SIGMA` {inpaint.FEATHER_SIGMA}", "`RETRY_AFTER_S`", "`MAX_CONCURRENT_INFERENCES`",
+        f"`RESIDUE_MAX_SHARE`（{erase.RESIDUE_MAX_SHARE}）", f"`RESIDUE_DILATE_PX`（{erase.RESIDUE_DILATE_PX} px）",
+        f"`RESIDUE_NOISE_K`（{erase.RESIDUE_NOISE_K:g}）", f"`INK_DISTANCE`（{erase.INK_DISTANCE:g}）", "`skipped: erase residue`",
+        "`telea (lama unavailable: <例外類別名>)`", config.DEFAULT_INPAINT_MODEL_URL, "208,044,816 bytes",
+        "1faef5301d78db7dda502fe59966957ec4b79dd64e16f03ed96913c7a4eb68d6", "Apache-2.0", "512×512", "`modelfetch.py`", "`/app/models`",
+        "`erase_residue`", "`erase_passes`", "`inpaint`",
+    ):  # fmt: skip
+        assert needle in text, needle
+
+
+def test_the_ink_colour_change_is_documented_and_the_defaults_agree_everywhere():
+    from app import colors, config
+
+    assert colors.INK_CORE_FRACTION == 0.15
+    text, env, compose = read("README.md"), read(".env.example"), read("docker-compose.yml")
+    assert "### 文字顏色（`colors.py`，第 8 輪改了）" in text and f"`INK_CORE_FRACTION`（{colors.INK_CORE_FRACTION}）" in text
+    expected = {
+        "LAB_INK_FRACTION": colors.INK_CORE_FRACTION,
+        "MODE_C_CHUNK_UNITS": config.DEFAULT_MODE_C_CHUNK_UNITS,
+        "MODE_C_IMAGE_CONTEXT": 1,
+    }
+    for name, default in expected.items():
+        row = re.search(rf"\| `{name}` \| `([0-9.]+)` \|", text)
+        assert row and float(row.group(1)) == default, f"README: {name}"
+        line = re.search(rf"^{name}=([0-9.]+)$", env, re.M)
+        assert line and float(line.group(1)) == default, f".env.example: {name}"
+        var = re.search(rf'{name}: "\$\{{{name}:-([0-9.]+)\}}"', compose)
+        assert var and float(var.group(1)) == default, f"docker-compose.yml: {name}"
+    assert config.DEFAULT_INPAINT_MODEL == "telea"
+    assert re.search(r"\| `INPAINT_MODEL` \| `telea`（lab 的 compose 預設 `lama`） \|", text)
+    assert 'INPAINT_MODEL: "${INPAINT_MODEL:-lama}"' in compose  # the lab opts in ...
+    assert "# INPAINT_MODEL=lama" in env and not re.search(r"^INPAINT_MODEL=", env, re.M)  # ... and a copied .env must not undo it
+    assert re.search(r"^CLAUDE_TRANSLATE_MODEL=$", env, re.M) and 'CLAUDE_TRANSLATE_MODEL: "${CLAUDE_TRANSLATE_MODEL:-}"' in compose
+    url = config.DEFAULT_INPAINT_MODEL_URL
+    assert url in env and url in compose and url in text
+    assert "（lab 映像 `/app/models/lama_fp32.onnx`）" in text
+
+
+def test_the_dockerfile_installs_onnxruntime_and_bakes_the_model_in_while_the_production_image_does_not(tmp_path):
+    from app import config
+
+    dockerfile, compose = read("Dockerfile"), read("docker-compose.yml")
+    assert "requirements-inpaint.txt" in dockerfile and "pip install -r requirements.txt -r requirements-inpaint.txt" in dockerfile
+    assert "ARG INPAINT_MODEL_URL=" + config.DEFAULT_INPAINT_MODEL_URL in dockerfile
+    assert "COPY app/modelfetch.py /tmp/modelfetch.py" in dockerfile and "/app/models/lama_fp32.onnx" in dockerfile
+    assert dockerfile.index("modelfetch.py") < dockerfile.index("COPY app ./app")  # the layer survives a code change
+    assert "INPAINT_MODEL_PATH=/app/models/lama_fp32.onnx" in dockerfile and "INPAINT_MODEL_PATH" in compose
+    sha = re.search(r"ARG INPAINT_MODEL_SHA256=([0-9a-f]{64})", dockerfile).group(1)
+    assert sha in compose and sha in read("README.md")  # the build checks the file the README describes
+    assert "INPAINT_MODEL_URL:" in compose and "args:" in compose
+    runtime = read("requirements-runtime.txt")
+    inpaint_requirements = read("requirements-inpaint.txt")
+    assert "onnxruntime" not in runtime and "onnxruntime" not in read("requirements.txt")
+    assert "-r requirements-runtime.txt" in inpaint_requirements and re.search(r"^onnxruntime==\d+\.\d+\.\d+$", inpaint_requirements, re.M)
+    root = ROOT.parents[1] / "Dockerfile"
+    if root.exists():  # the production image (inside the Java container) stays as it was: no LaMa, no ONNX Runtime
+        text = root.read_text(encoding="utf-8")
+        assert "onnxruntime" not in text and "inpaint" not in text.lower()
+
+
+def test_the_readme_has_the_round_8_section_the_schema_4_manifest_and_what_it_could_not_verify():
+    text = read("README.md")
+    for needle in (
+        "## 第 8 輪的變更（與第 7 輪不相容之處）", "**這一輪沒有驗證的**", "`schema_version: 4`", "`mode_c`",
+        "`C_a1_verify.json`", "schema 4（第 8 輪）", "Mode C · ", "`translate_model`", "`inpaint_model`", "`INK_CORE_FRACTION`",
+        "`Word.block`", "run_c=False", "`select at least one of Mode A, Mode B and Mode C`", "`/v1` 與 `app/policy.py` 完全沒變",
+        "Docker 映像的建置", "`CLAUDE_TRANSLATE_MODEL`", "`MODE_C_IMAGE_CONTEXT`", "`MODE_C_CHUNK_UNITS`", "`INPAINT_MODEL_PATH`",
+        "`INPAINT_MODEL_URL`", "`INPAINT_MODEL_SHA256`",
+    ):  # fmt: skip
+        assert needle in text, needle
+    from app import publish
+
+    assert publish.SCHEMA_VERSION == 4 and "schema_version: 4" in text
+    minio = text.split("## 給審閱者的連結")[1].split("## 直接打 API")[0]
+    assert "`schema_version: 3`" not in minio  # the manifests of the section say 4 now
+    assert "Mode C" in (ROOT / "app" / "publish.py").read_text(encoding="utf-8").split('"""', 2)[1]  # the docstring of publish.py

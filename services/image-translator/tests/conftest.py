@@ -38,6 +38,13 @@ ENV_NAMES = (
     "MODE_B_MIN_REMAINING_S",
     "MODE_A_MIN_GLYPH_PX",
     "MIN_ROTATED_COLUMN_PX",
+    "CLAUDE_TRANSLATE_MODEL",
+    "MODE_C_IMAGE_CONTEXT",
+    "MODE_C_CHUNK_UNITS",
+    "INPAINT_MODEL",
+    "INPAINT_MODEL_PATH",
+    "INPAINT_MODEL_URL",
+    "INPAINT_MODEL_SHA256",
 )
 
 
@@ -46,3 +53,6 @@ def clean_env(monkeypatch):
     """Every test starts without any lab / provider variables and sets what it needs."""
     for name in ENV_NAMES:
         monkeypatch.delenv(name, raising=False)
+    from app import inpaint
+
+    inpaint.reset()  # no model session and no remembered download failure carry over from another test

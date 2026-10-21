@@ -51,7 +51,8 @@ class Word(BaseModel):
     polygon: list[tuple[float, float]]  # 4 points, provider order kept
     confidence: float = 0.0
     brk: str | None = None  # detected break after the word (SPACE, LINE_BREAK, ...)
-    para: int | None = None  # provider paragraph index (JSON panel only)
+    para: int | None = None  # provider paragraph index (JSON panel only; Mode C segments by it)
+    block: int | None = None  # provider block index (Mode C: the reading order and the groups of units)
     # Vision's own guesses for this word, (base code, confidence), best first; empty when it gave none
     detected_languages: list[tuple[str, float]] = Field(default_factory=list)
     # the language used by the Mode B checks: the best of `detected_languages`, else the one of the

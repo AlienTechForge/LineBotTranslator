@@ -11,7 +11,8 @@ import numpy as np
 from .erase import UnitMask
 
 MIN_CONTRAST = 60.0  # RGB distance below which we fall back to black / white
-INK_FRACTION = 0.40  # the share of masked pixels farthest from the background used for the ink
+INK_CORE_FRACTION = 0.15  # round 8: the share of masked pixels farthest from the background that gives the ink colour
+# (round 5-7: 0.40, which pulled the anti-aliased edge pixels in and made black headings medium grey)
 BOLD_RATIO = 0.18  # stroke width / glyph height at or above which the ink counts as bold
 MIN_BOLD_GLYPH_PX = 12
 
@@ -27,15 +28,16 @@ class ColorChoice:
 
 
 def ink_fraction() -> float:
-    """0.40 by default; LAB_INK_FRACTION (0.05 - 1.0) lets you tune it without touching code.
+    """INK_CORE_FRACTION (0.15) by default; LAB_INK_FRACTION (0.05 - 1.0) lets you tune it without touching code.
 
-    A smaller share (say 0.2) gives a darker / more saturated ink on thin, small text whose
-    polygons are mostly anti-aliased edge pixels.
+    The ink colour is the median of this share of the masked pixels that differ most from the
+    background: a small share keeps to the core of the strokes, a larger one (say 0.4) lets the
+    anti-aliased edge pixels in and pulls black text towards grey.
     """
     try:
-        value = float(os.environ.get("LAB_INK_FRACTION", INK_FRACTION))
+        value = float(os.environ.get("LAB_INK_FRACTION", INK_CORE_FRACTION))
     except ValueError:
-        return INK_FRACTION
+        return INK_CORE_FRACTION
     return min(1.0, max(0.05, value))
 
 
@@ -104,8 +106,8 @@ def pick_colors(
 ) -> ColorChoice:
     """Choose the ink colour (from the pre-inpaint pixels) and the background colour.
 
-    Ink: among the pixels of the undilated word mask, the 40% that differ most from the
-    inpainted background at the same pixel; their median colour in the ORIGINAL image.
+    Ink: among the pixels of the undilated word mask, the INK_CORE_FRACTION (15%) that differ most
+    from the inpainted background at the same pixel; their median colour in the ORIGINAL image.
     Background: median of the inpainted pixels under the unit frame. If the two are closer
     than 60 in RGB distance, fall back to black on light / white on dark.
     """

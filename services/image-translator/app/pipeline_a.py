@@ -50,6 +50,7 @@ from PIL import Image
 from . import claude_units, verify, vision
 from .colors import ColorChoice, hex_color, pick_colors
 from .erase import (
+    SKIP_ERASE_RESIDUE,
     BackgroundInfo,
     EraseUnit,
     UnitMask,
@@ -369,10 +370,22 @@ def render_units(rgb: np.ndarray, ocr: OcrResult, units: list[ClaudeUnit], lang:
     erased = erase.erased
     erase_ms = measure_ms + int((time.perf_counter() - t2) * 1000)
     log.info(
-        "stage=erase ms=%d units=%d flat=%d inpaint=%d image=%dx%d",
+        "stage=erase ms=%d units=%d flat=%d inpaint=%d residue_restored=%d image=%dx%d",
         erase_ms, len(translated), sum(1 for m in erase.methods.values() if m == "flat"),
-        sum(1 for m in erase.methods.values() if m == "inpaint"), img_w, img_h,
+        sum(1 for m in erase.methods.values() if m == "inpaint"), len(erase.restored), img_w, img_h,
     )  # fmt: skip
+    for p in translated:  # round 8: how each unit was erased, and the units whose erase failed the residue check
+        p.report.update(
+            erase_method=erase.methods[p.uid], inpaint=erase.engines.get(p.uid),
+            erase_residue=round(erase.residue[p.uid], 4), erase_passes=erase.passes[p.uid],
+        )  # fmt: skip
+        if p.uid in erase.restored:
+            p.action, p.reason = "skipped", SKIP_ERASE_RESIDUE
+            p.report.update(action="skipped", skip_reason=SKIP_ERASE_RESIDUE)
+            warnings.append(
+                f"{p.uid}: the erase left residue ({erase.residue[p.uid]:.0%} of the erased pixels still unlike the paper) "
+                "after a second pass; the original text stays"
+            )
 
     # ---- draw
     t3 = time.perf_counter()
@@ -498,6 +511,32 @@ def _sum_known(values: list) -> float | None:
 PlanFn = Callable[["claude_units.ClaudeCall"], None]
 
 
+def render_notes(result: RenderResult, ocr: OcrResult, no_units: str) -> list[str]:
+    """The notes an attempt adds to the render's own warnings: nothing translated, words in no unit, units left alone."""
+    translated = [u for u in result.units if u["action"] == "translated"]
+    extra: list[str] = []
+    if not result.units:
+        extra.append(no_units)
+    elif not translated:
+        extra.append("every unit was kept or skipped; nothing was translated")
+    listed = {wid for u in result.units for wid in u["word_ids"]}
+    if ocr.words and len(listed) < len(ocr.words):
+        extra.append(f"{len(ocr.words) - len(listed)} of {len(ocr.words)} OCR words are in no unit and stay untouched")
+    too_small = sum(1 for u in result.units if u.get("skip_reason") == SKIP_TOO_SMALL)
+    if too_small:
+        extra.append(f"{too_small} minor unit(s) could not be drawn at a readable size and stay untouched")
+    narrow = sum(1 for u in result.units if u.get("skip_reason") == SKIP_NARROW_COLUMN)
+    if narrow:
+        extra.append(f"{narrow} vertical column(s) are too narrow to draw rotated text and stay untouched")
+    dirty = sum(1 for u in result.units if u.get("skip_reason") == SKIP_ERASE_RESIDUE)
+    if dirty:
+        extra.append(f"{dirty} unit(s) kept their original text because the erase left residue (a visible original word beats a smudge)")
+    fell_back = [str(u["inpaint"]) for u in result.units if str(u.get("inpaint") or "").startswith("telea (")]
+    if fell_back:
+        extra.append(f"{len(fell_back)} unit(s) were erased by Telea although lama was asked for ({fell_back[0][fell_back[0].index('(') + 1 : -1]})")
+    return extra
+
+
 def _attempt(
     n: int, image: LoadedImage, ocr: OcrResult, lang: str, out_dir: Path, feedback: str | None, check: CheckFn | None,
     meta: dict, on_plan: PlanFn | None = None,
@@ -513,20 +552,7 @@ def _attempt(
     (out_dir / f"A_a{n}.png").write_bytes(png)
     (out_dir / f"A_a{n}_erased.png").write_bytes(_png_bytes(result.erased))
     translated = [u for u in result.units if u["action"] == "translated"]
-    extra: list[str] = []
-    if not result.units:
-        extra.append("Claude returned no usable units; the image is unchanged")
-    elif not translated:
-        extra.append("every unit was kept or skipped; nothing was translated")
-    listed = {wid for u in result.units for wid in u["word_ids"]}
-    if ocr.words and len(listed) < len(ocr.words):
-        extra.append(f"{len(ocr.words) - len(listed)} of {len(ocr.words)} OCR words are in no unit and stay untouched")
-    too_small = sum(1 for u in result.units if u.get("skip_reason") == SKIP_TOO_SMALL)
-    if too_small:
-        extra.append(f"{too_small} minor unit(s) could not be drawn at a readable size and stay untouched")
-    narrow = sum(1 for u in result.units if u.get("skip_reason") == SKIP_NARROW_COLUMN)
-    if narrow:
-        extra.append(f"{narrow} vertical column(s) are too narrow to draw rotated text and stay untouched")
+    extra = render_notes(result, ocr, "Claude returned no usable units; the image is unchanged")
     attempt = {
         "n": n,
         "output": f"A_a{n}.png",

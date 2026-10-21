@@ -3,9 +3,9 @@
 After a job completes, a background thread uploads
 
 * the original as it was sent,
-* every result image (each attempt of Mode A, each attempt of each Mode B model and run),
-* the units JSON of every Mode A attempt and one verification JSON (with the judge's record) per
-  attempt of either mode,
+* every result image (each attempt of Mode A, the attempt of Mode C, each attempt of each Mode B model and run),
+* the units JSON of every Mode A and Mode C attempt and one verification JSON (with the judge's record) per
+  attempt of any mode,
 * ``manifest.json``: run metadata plus a presigned GET URL for every object,
 
 under ``<MINIO_PREFIX>/<job-id>/<name>`` in ``MINIO_BUCKET_NAME``. The page shows the
@@ -43,8 +43,9 @@ from .redaction import describe_error
 log = logging.getLogger("lab.publish")
 
 MANIFEST_NAME = "manifest.json"
-SCHEMA_VERSION = 3  # 3: judge verdicts (numbers, rows, garbled, partial, score), Mode A attempts, cost split, batch manifest
-# (2: mode_b[] is one entry per model with runs[] and a summary; 1: one entry per model run)
+SCHEMA_VERSION = 4  # 4: Mode C (`mode_c`, `options.mode_c`, the C_a1* files, the segmentation counts)
+# (3: judge verdicts (numbers, rows, garbled, partial, score), Mode A attempts, cost split, batch manifest;
+#  2: mode_b[] is one entry per model with runs[] and a summary; 1: one entry per model run)
 CONTENT_TYPES = {
     ".png": "image/png",
     ".jpg": "image/jpeg",
@@ -190,13 +191,14 @@ def collect_files(job: dict, job_dir: Path) -> list[str]:
             names.append(name)
 
     add((job.get("image") or {}).get("url", "").rsplit("/", 1)[-1])
-    mode_a = job.get("mode_a") or {}
-    if mode_a.get("status") == "done":
-        for attempt in mode_a.get("attempts") or []:
-            add(attempt.get("output"))
-            add(attempt.get("erased"))
-            add(attempt.get("units_file"))
-            add(attempt.get("verification_file"))
+    for key in ("mode_a", "mode_c"):
+        overlay = job.get(key) or {}
+        if overlay.get("status") == "done":
+            for attempt in overlay.get("attempts") or []:
+                add(attempt.get("output"))
+                add(attempt.get("erased"))
+                add(attempt.get("units_file"))
+                add(attempt.get("verification_file"))
     for result in (job.get("mode_b") or {}).get("results") or []:
         for attempt in result.get("tries") or []:
             add(attempt.get("output"))
@@ -338,6 +340,45 @@ def _mode_a_attempt_entry(t: dict, ref) -> dict:
     }
 
 
+def _mode_c_attempt_entry(t: dict, ref) -> dict:
+    """Like a Mode A attempt (one Claude call, one render, one judge), plus the segmentation time and the calls."""
+    return {**_mode_a_attempt_entry(t, ref), "segment_ms": t.get("segment_ms"), "claude_calls": t.get("claude_calls")}
+
+
+def _overlay_entry(m: dict, ref, attempt_entry) -> dict:
+    """The manifest block of Mode A or Mode C (the same fields; Mode C adds the segmentation)."""
+    entry = {
+        "status": m.get("status"),
+        "error": m.get("error"),
+        "model": m.get("model"),
+        "served_model": m.get("served_model"),
+        "elapsed_ms": m.get("elapsed_ms"),
+        "vision_ms": m.get("vision_ms"),
+        "claude_ms": m.get("claude_ms"),
+        "tokens": m.get("tokens"),
+        "cost_usd": m.get("cost_usd"),
+        "judge_cost_usd": m.get("judge_cost_usd"),
+        "total_cost_usd": m.get("total_cost_usd"),
+        "cost_anthropic_usd": m.get("cost_anthropic_usd"),
+        "cost_openrouter_usd": m.get("cost_openrouter_usd"),
+        "word_count": m.get("word_count"),
+        "unit_count": m.get("unit_count"),
+        "translated_count": m.get("translated_count"),
+        "verdict": m.get("verdict"),
+        "failed_checks": (m.get("verification") or {}).get("failed_checks"),
+        "usability": m.get("usability"),
+        "coverage": m.get("coverage"),
+        "retry": m.get("retry"),
+        "retry_error": m.get("retry_error"),
+        "selected_attempt": m.get("selected_attempt"),
+        "image": ref(m.get("output")),
+        "units": ref(m.get("units_file")),
+        "attempts": [attempt_entry(t, ref) for t in m.get("attempts") or []],
+        "warnings": m.get("warnings") or [],
+    }
+    return entry
+
+
 def build_manifest(
     job: dict, files: dict[str, dict], settings: MinioSettings, manifest_ref: dict, published_at: float
 ) -> dict:
@@ -375,6 +416,9 @@ def build_manifest(
             "judge_model": params.get("judge_model"),
             "claude_model": params.get("claude_model"),
             "mode_a_retry": params.get("mode_a_retry"),
+            "mode_c": bool(params.get("mode_c")),
+            "translate_model": params.get("translate_model"),
+            "inpaint_model": params.get("inpaint_model"),
         },
         "bucket": settings.bucket,
         "prefix": "/".join(p for p in (settings.prefix, job["job_id"]) if p),
@@ -386,37 +430,19 @@ def build_manifest(
         },
         "mode_a": None,
         "mode_b": [],
+        "mode_c": None,
     }
 
     if mode_a.get("status") not in (None, "skipped"):
-        manifest["mode_a"] = {
-            "status": mode_a.get("status"),
-            "error": mode_a.get("error"),
-            "model": mode_a.get("model"),
-            "served_model": mode_a.get("served_model"),
-            "elapsed_ms": mode_a.get("elapsed_ms"),
-            "vision_ms": mode_a.get("vision_ms"),
-            "claude_ms": mode_a.get("claude_ms"),
-            "tokens": mode_a.get("tokens"),
-            "cost_usd": mode_a.get("cost_usd"),
-            "judge_cost_usd": mode_a.get("judge_cost_usd"),
-            "total_cost_usd": mode_a.get("total_cost_usd"),
-            "cost_anthropic_usd": mode_a.get("cost_anthropic_usd"),
-            "cost_openrouter_usd": mode_a.get("cost_openrouter_usd"),
-            "word_count": mode_a.get("word_count"),
-            "unit_count": mode_a.get("unit_count"),
-            "translated_count": mode_a.get("translated_count"),
-            "verdict": mode_a.get("verdict"),
-            "failed_checks": (mode_a.get("verification") or {}).get("failed_checks"),
-            "usability": mode_a.get("usability"),
-            "coverage": mode_a.get("coverage"),
-            "retry": mode_a.get("retry"),
-            "retry_error": mode_a.get("retry_error"),
-            "selected_attempt": mode_a.get("selected_attempt"),
-            "image": ref(mode_a.get("output")),
-            "units": ref(mode_a.get("units_file")),
-            "attempts": [_mode_a_attempt_entry(t, ref) for t in mode_a.get("attempts") or []],
-            "warnings": mode_a.get("warnings") or [],
+        manifest["mode_a"] = _overlay_entry(mode_a, ref, _mode_a_attempt_entry)
+    mode_c = job.get("mode_c") or {}
+    if mode_c.get("status") not in (None, "skipped"):
+        manifest["mode_c"] = {
+            **_overlay_entry(mode_c, ref, _mode_c_attempt_entry),
+            "segment_ms": mode_c.get("segment_ms"),
+            "claude_calls": mode_c.get("claude_calls"),
+            "chunk_sizes": mode_c.get("chunk_sizes"),
+            "segment": {k: v for k, v in (mode_c.get("segment") or {}).items() if k != "reasons"},
         }
 
     results = (job.get("mode_b") or {}).get("results") or []
@@ -549,7 +575,7 @@ def batch_languages(batch_doc: dict) -> list[str]:
 
 
 def build_batch_manifest(batch_doc: dict, settings: MinioSettings, manifest_ref: dict, published_at: float) -> dict:
-    """The batch manifest (schema 3): every job manifest's presigned URL, the options and the summary rows.
+    """The batch manifest (schema 4): every job manifest's presigned URL, the options and the summary rows.
 
     `target_language` is the list of the distinct languages of the batch (["en", "zh-TW"]); every entry of
     `jobs` carries its own `target_language`.
@@ -608,6 +634,9 @@ def build_batch_manifest(batch_doc: dict, settings: MinioSettings, manifest_ref:
             "judge_model": params.get("judge_model"),
             "claude_model": params.get("claude_model"),
             "mode_a_retry": params.get("mode_a_retry"),
+            "mode_c": bool(params.get("mode_c")),
+            "translate_model": params.get("translate_model"),
+            "inpaint_model": params.get("inpaint_model"),
         },
         "bucket": settings.bucket,
         "prefix": "/".join(p for p in (settings.prefix, f"batch-{batch_doc.get('batch_id')}") if p),

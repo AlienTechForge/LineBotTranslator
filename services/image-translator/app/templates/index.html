@@ -100,6 +100,7 @@
   .seg ul { margin: 4px 0 0; padding-left: 18px; }
   .seg .src { color: var(--muted); }
   .seg .major { color: var(--err); font-weight: 600; }
+  .units-table td.why { white-space: normal; min-width: 180px; color: var(--muted); }
   .softrun { color: var(--warn); }
   #summary { margin-bottom: 14px; padding: 10px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
   .tablewrap { overflow-x: auto; max-width: 100%; }
@@ -126,7 +127,7 @@
 <body data-default-model="{{ default_image_model }}" data-max-models="{{ max_models }}" data-max-batch="{{ max_batch }}">
 <header>
   <h1>Overlay Lab{% if mock %}<span class="badge">LAB_MOCK=1</span>{% endif %}</h1>
-  <p class="sub">圖片翻譯 overlay 的離線對照實驗：一次最多 {{ max_batch }} 張圖，每張圖各跑 Mode A（hybrid：Vision 字框 + Claude 規劃 + 乾淨擦除 + 重繪，可重試一次）與 Mode B（影像模型整張重畫，可多模型、每個模型連跑多次）；每張輸出都由 Claude 看著原圖與輸出圖審查（數字、表格列、亂碼、漏翻、可用度）。不是正式服務。</p>
+  <p class="sub">圖片翻譯 overlay 的離線對照實驗：一次最多 {{ max_batch }} 張圖，每張圖各跑 Mode A（hybrid：Vision 字框 + Claude 規劃 + 乾淨擦除 + 重繪，可重試一次）、Mode C（Vision 的版面幾何 + 純文字翻譯 + 擦字模型，不重試）與 Mode B（影像模型整張重畫，可多模型、每個模型連跑多次）；每張輸出都由 Claude 看著原圖與輸出圖審查（數字、表格列、亂碼、漏翻、可用度）。不是正式服務。</p>
 </header>
 <main>
   <form id="form">
@@ -147,6 +148,7 @@
     <div>
       <label class="check"><input type="checkbox" id="mode-a" checked> Mode A（hybrid，{{ claude_model }}）</label>
       <label class="check"><input type="checkbox" id="mode-a-retry"{% if mode_a_retry %} checked{% endif %}> Mode A 重試一次（帶著 judge 的發現再請 Claude 規劃一次）</label>
+      <label class="check"><input type="checkbox" id="mode-c" checked> Mode C（幾何版面 + 純文字翻譯，{{ translate_model }}；擦字：{{ inpaint_model }}）</label>
       <label class="check"><input type="checkbox" id="mode-b" checked> Mode B（影像模型）</label>
     </div>
     <fieldset class="models" id="models-box">
@@ -194,6 +196,7 @@
     return n;
   };
   const SVGNS = 'http://www.w3.org/2000/svg';
+  const OVERLAYS = [['mode_a', 'Mode A'], ['mode_c', 'Mode C']];  // the two modes that draw in place
   const DEFAULT_MODEL = document.body.dataset.defaultModel;
   const MAX_MODELS = parseInt(document.body.dataset.maxModels, 10) || 4;
   const MAX_BATCH = parseInt(document.body.dataset.maxBatch, 10) || 4;
@@ -398,13 +401,14 @@
     c.append(el('h2', {}, '原圖'));
     const box = imgBox(job.image.url);
     c.append(box);
-    const a = job.mode_a;
-    if (a && a.units && a.units.length) {
+    for (const [key, name] of OVERLAYS) {
+      const a = job[key];
+      if (!(a && a.units && a.units.length)) continue;
       const svg = document.createElementNS(SVGNS, 'svg');
       const [pw, ph] = a.page || [job.image.width, job.image.height];
       svg.setAttribute('viewBox', `0 0 ${pw} ${ph}`);
       svg.setAttribute('preserveAspectRatio', 'none');
-      svg.style.display = ctx.showFrames ? '' : 'none';
+      svg.style.display = ctx.showFrames[key] ? '' : 'none';
       const colors = { translated: '#1f6fe0', kept: '#1f9a50', skipped: '#999' };
       for (const u of a.units) {
         const poly = document.createElementNS(SVGNS, 'polygon');
@@ -421,26 +425,36 @@
       }
       box.append(svg);
       const cb = el('input', { type: 'checkbox' });
-      cb.checked = ctx.showFrames;
-      cb.addEventListener('change', () => { ctx.showFrames = cb.checked; svg.style.display = ctx.showFrames ? '' : 'none'; });
-      c.append(el('label', { class: 'check toggle' }, cb, '疊上 Mode A 的 unit 框（藍：翻譯／綠：保留／灰：略過）'));
+      cb.checked = !!ctx.showFrames[key];
+      cb.addEventListener('change', () => { ctx.showFrames[key] = cb.checked; svg.style.display = cb.checked ? '' : 'none'; });
+      c.append(el('label', { class: 'check toggle' }, cb, '疊上 ' + name + ' 的 unit 框（藍：翻譯／綠：保留／灰：略過）'));
     }
     const dl = el('dl'); row(dl, '尺寸', job.image.width + ' × ' + job.image.height + ' px'); row(dl, '目標語言', job.params.target_lang);
     c.append(dl);
   }
 
-  function unitsTable(units) {
-    const head = ['id', '動作', '角色', '重要性', '群組（字級 / 粗細）', '擦除（原因）', '用字', '字級（比例）', '長出'].map((h) => el('th', {}, h));
+  function unitsTable(units, segment) {
+    const why = {};  // Mode C: the layout reasons of every unit (segment.reasons, by unit id)
+    for (const r of (segment && segment.reasons) || []) why[r.id] = r;
+    const head = ['id', '動作', '角色', '重要性', '群組（字級 / 粗細）', '擦除（原因）', '擦字器 / 殘留', '用字', '字級（比例）', '長出']
+      .concat(segment ? ['版面（極性、行、理由）'] : []).map((h) => el('th', {}, h));
     const body = units.map((u) => {
       const action = u.action === 'skipped' ? 'skipped: ' + (u.skip_reason || '') : u.action;
-      return el('tr', {},
+      const cells = [
         el('td', {}, u.id), el('td', {}, action), el('td', {}, u.role), el('td', {}, u.importance || ''),
         el('td', {}, u.group ? u.group + '：' + (u.group_size ? u.group_size + ' px' : '—') + ' · ' + (u.group_weight || '—') + (u.group_size_broken ? '　⚠ 達不到共同字級' : '') : '—'),
-        el('td', {}, u.erase_method ? u.erase_method + (u.erase_reason ? '（' + u.erase_reason + '）' : '') : '—'), el('td', {}, u.text_used || '—'),
+        el('td', {}, u.erase_method ? u.erase_method + (u.erase_reason ? '（' + u.erase_reason + '）' : '') : '—'),
+        el('td', {}, u.erase_method ? (u.inpaint ? 'inpaint: ' + u.inpaint + ' · ' : '') + '殘留 ' + (u.erase_residue != null ? (u.erase_residue * 100).toFixed(1) + '%' : '—') + (u.erase_passes > 1 ? '，擦了 2 次' : '') : '—'),
+        el('td', {}, u.text_used || '—'),
         el('td', {}, u.font_size ? u.font_size + ' px（' + (u.fit_ratio != null ? u.fit_ratio : '—') + (u.readable === false ? '，低於可讀門檻' : '') + '）' : '—'),
-        el('td', {}, u.grow && (u.grow[0] || u.grow[1]) ? u.grow.join(' / ') + ' px' : '—'));
+        el('td', {}, u.grow && (u.grow[0] || u.grow[1]) ? u.grow.join(' / ') + ' px' : '—')];
+      if (segment) {
+        const r = why[u.id] || {};
+        cells.push(el('td', { class: 'why' }, [r.polarity || '—', r.lines ? r.lines + ' 行' : null, ...(r.reasons || [])].filter(Boolean).join('；')));
+      }
+      return el('tr', {}, cells);
     });
-    return el('table', { class: 'units-table' }, el('thead', {}, el('tr', {}, head)), el('tbody', {}, body));
+    return el('div', { class: 'tablewrap' }, el('table', { class: 'units-table' }, el('thead', {}, el('tr', {}, head)), el('tbody', {}, body)));  // scrolls inside its column, never into the next one
   }
 
   function countBy(units, key, value) { return units.filter((u) => u[key] === value).length; }
@@ -455,12 +469,14 @@
     return d;
   }
 
-  function renderA(job, c) {
+  function renderOverlay(job, c, key) {
     c.replaceChildren();
-    const a = job.mode_a;
+    const a = job[key];
+    const isC = key === 'mode_c';
+    const name = isC ? 'Mode C' : 'Mode A';
     const attempts = a.attempts || [];
     const main = attempts.find((t) => t.selected) || attempts[0];
-    c.append(el('h2', {}, 'Mode A', pill(a.status), a.status === 'done' ? verdictBadge(a.verdict, false, a.usability) : null));
+    c.append(el('h2', {}, name, pill(a.status), a.status === 'done' ? verdictBadge(a.verdict, false, a.usability) : null));
     if (a.output) c.append(imgBox('files/' + job.job_id + '/' + a.output));
     else if (a.status !== 'error') c.append(el('div', { class: 'empty' }, '處理中…'));
     if (a.status === 'done') {
@@ -468,12 +484,17 @@
       const dl = el('dl');
       row(dl, '總耗時', fmtMs(a.elapsed_ms) + (attempts.length > 1 ? '（含重試）' : ''));
       row(dl, 'Vision', fmtMs(a.vision_ms));
-      row(dl, 'Claude 規劃', fmtMs(a.claude_ms));
+      if (isC) row(dl, 'segment（版面，不呼叫模型）', fmtMs(a.segment_ms));
+      row(dl, isC ? 'Claude 翻譯（純文字）' : 'Claude 規劃', fmtMs(a.claude_ms) + (isC && a.claude_calls ? '　' + a.claude_calls + ' 次呼叫' + (a.claude_calls > 1 ? '（每次 ' + (a.chunk_sizes || []).join(' / ') + ' 個 unit，平行）' : '') : ''));
       row(dl, 'erase / render', fmtMs(a.erase_ms) + ' / ' + fmtMs(a.render_ms));
       row(dl, '審查耗時', fmtMs(a.verify_ms));
       row(dl, 'tokens (in / out)', a.tokens.input + ' / ' + a.tokens.output + (attempts.length > 1 ? '（兩次規劃合計）' : ''));
-      row(dl, '費用（Anthropic 額度）', a.total_cost_usd == null ? '（未知模型，只顯示 tokens）' : fmtUsd(a.total_cost_usd) + '（規劃 ' + fmtUsd(a.cost_usd) + ' + judge ' + fmtUsd(a.judge_cost_usd) + '）');
+      row(dl, '費用（Anthropic 額度）', a.total_cost_usd == null ? '（未知模型，只顯示 tokens）' : fmtUsd(a.total_cost_usd) + '（' + (isC ? '翻譯 ' : '規劃 ') + fmtUsd(a.cost_usd) + ' + judge ' + fmtUsd(a.judge_cost_usd) + '）');
       row(dl, 'units', `${a.translated_count} 翻譯 / ${a.unit_count} 共 / ${a.word_count} 字`);
+      const seg = a.segment;
+      if (isC && seg) {
+        row(dl, '版面', `${seg.words} 字 → ${seg.paragraphs} 段 → ${seg.lines} 行 → ${seg.units} 個 unit（保留 ${seg.kept}；欄位切開 ${seg.column_splits}；極性切開 ${seg.polarity_splits}；多行合併 ${seg.merges}；直排 ${seg.vertical_units}）`);
+      }
       const cov = a.planner_coverage;
       if (a.coverage_pass && cov) {
         row(dl, '覆蓋補翻', cov.error
@@ -481,6 +502,11 @@
           : `補翻 ${cov.added_words} 字（第一次有 ${cov.unlisted_before} / ${cov.words} 字沒進任何 unit，補翻新增 ${cov.added_units} 個 unit，之後還剩 ${cov.unlisted_after} 字）`);
       }
       row(dl, '擦除方法', `flat ${countBy(units, 'erase_method', 'flat')} 個 / inpaint ${countBy(units, 'erase_method', 'inpaint')} 個`);
+      const engines = {};
+      for (const u of units) if (u.inpaint) engines[u.inpaint] = (engines[u.inpaint] || 0) + 1;
+      if (Object.keys(engines).length) row(dl, '擦字器', Object.entries(engines).map(([k, v]) => k + ' ' + v + ' 個').join('；') + '（INPAINT_MODEL=' + (job.params.inpaint_model || '—') + '）');
+      const dirty = units.filter((u) => u.skip_reason === 'erase residue').length;
+      if (dirty) row(dl, '殘留而還原', dirty + ' 個 unit 擦了兩次還是有殘留，已還原成原圖（保持原樣）');
       const grouped = new Set(units.filter((u) => u.group).map((u) => u.group));
       if (grouped.size) row(dl, '群組', `${grouped.size} 組（同組同字級、同粗細）` + (units.some((u) => u.group_size_broken) ? '；有 unit 達不到共同字級' : ''));
       row(dl, '用 short 的 unit', countBy(units, 'text_used', 'short') + ' 個');
@@ -499,11 +525,11 @@
       const over = units.filter((u) => u.overflowed).length;
       if (over) c.append(el('div', { class: 'note' }, over + ' 個 unit 超出框（見 units 表的字級與 JSON 面板的 overflowed）'));
       if (main) c.append(verificationPanel(job, a, main, job.params.verify_details));
-      if (units.length) c.append(el('details', {}, el('summary', {}, 'Mode A 每個 unit（擦除方法、用字、字級）'), unitsTable(units)));
+      if (units.length) c.append(el('details', {}, el('summary', {}, name + ' 每個 unit（擦除方法、用字、字級' + (isC ? '、版面理由' : '') + '）'), unitsTable(units, isC ? seg : null)));
       for (const t of attempts) if (!t.selected) c.append(aAttemptBlock(job, a, t));
     }
     addErr(c, a.error);
-    addErr(c, a.retry_error ? 'Mode A 自動重試失敗（沿用嘗試 1）：' + a.retry_error : null);
+    addErr(c, a.retry_error ? name + ' 自動重試失敗（沿用嘗試 1）：' + a.retry_error : null);
   }
 
   function sizeNote(b, t) {
@@ -588,7 +614,7 @@
         el('td', {}, verdict, runs),
         el('td', { class: 'num', 'data-label': '可用度' }, r.status === 'done' ? fmtScore(r.usability) : '—'),
         el('td', { class: 'num', 'data-label': 'Anthropic（額度）' }, fmtUsd(r.cost_anthropic_usd)),
-        el('td', { class: 'num', 'data-label': 'OpenRouter（現金）' }, r.mode === 'A' ? '—' : fmtUsd(r.cost_openrouter_usd)),
+        el('td', { class: 'num', 'data-label': 'OpenRouter（現金）' }, r.mode !== 'B' ? '—' : fmtUsd(r.cost_openrouter_usd)),
         el('td', { class: 'num', 'data-label': '時間' }, fmtMs(r.elapsed_ms))));
     }
     const t = batch.totals || {};
@@ -596,7 +622,7 @@
       el('td', { class: 'num', 'data-label': 'Anthropic（額度）' }, fmtUsd(t.cost_anthropic_usd)), el('td', { class: 'num', 'data-label': 'OpenRouter（現金）' }, fmtUsd(t.cost_openrouter_usd)), el('td', {})));
     table.append(body);
     box.append(el('div', { class: 'tablewrap' }, table));  // scrolls inside the box on a phone, never the page
-    box.append(el('div', { class: 'hint' }, '判定與可用度是該列最佳一次的結果（Mode B 連跑多次時取 verify.choose_attempt 排出的最佳 run）；Anthropic 是 Claude 的費用（Mode A 的規劃與所有 judge，由訂閱額度支付），OpenRouter 是影像模型的現金費用（含重試）；時間是每次嘗試的平均。費用只算已完成的 run，且是依價目表的估計。'));
+    box.append(el('div', { class: 'hint' }, '判定與可用度是該列最佳一次的結果（Mode B 連跑多次時取 verify.choose_attempt 排出的最佳 run）；Anthropic 是 Claude 的費用（Mode A 的規劃、Mode C 的翻譯與所有 judge，由訂閱額度支付），OpenRouter 是影像模型的現金費用（含重試）；時間是每次嘗試的平均。費用只算已完成的 run，且是依價目表的估計。'));
   }
 
   // ------------------------------------------------------------ the reviewer links
@@ -663,10 +689,11 @@
     const head = el('h2', {});
     const share = el('div', { class: 'share' });
     const grid = el('div', { class: 'grid' });
-    const units = el('details', { hidden: 'hidden' }, el('summary', {}, 'Mode A units（JSON，每個 attempt 的最後選用版）'), el('pre'));
-    root.append(head, share, el('div', { class: 'scroller' }, grid), units);
+    const units = {};
+    for (const [key, name] of OVERLAYS) units[key] = el('details', { hidden: 'hidden' }, el('summary', {}, name + ' units（JSON，每個 attempt 的最後選用版）'), el('pre'));
+    root.append(head, share, el('div', { class: 'scroller' }, grid), ...Object.values(units));
     $('jobs').append(root);
-    ctx = { n, root, head, share, grid, units, seen: {}, gridKey: null, showFrames: false };
+    ctx = { n, root, head, share, grid, units, seen: {}, gridKey: null, showFrames: {} };
     sections[job.job_id] = ctx;
     return ctx;
   }
@@ -678,9 +705,11 @@
     return true;
   }
 
+  const modeCStatus = (job) => (job.mode_c || {}).status || 'skipped';  // a job stored before round 8 has no mode_c
+
   function ensureGrid(job, ctx) {
     const results = job.mode_b.results || [];
-    const key = JSON.stringify([job.mode_a.status === 'skipped', results.length]);
+    const key = JSON.stringify([job.mode_a.status === 'skipped', modeCStatus(job) === 'skipped', results.length]);
     if (ctx.gridKey === key) return;
     ctx.gridKey = key;
     ctx.seen = {};
@@ -688,6 +717,7 @@
     const col = (cls) => ctx.grid.append(el('article', { class: 'col ' + cls }));
     col('c-orig');
     if (job.mode_a.status !== 'skipped') col('c-a');
+    if (modeCStatus(job) !== 'skipped') col('c-c');
     results.forEach((_, i) => col('c-b-' + i));
   }
 
@@ -697,13 +727,16 @@
     const cols = (cls) => ctx.grid.querySelector('.' + cls);
     if (changed(ctx, 'head', [job.image.name, job.status])) ctx.head.textContent = '圖片 ' + n + (job.image.name ? ' · ' + job.image.name : '');
     // re-render a column only when its data changed, so pictures do not flicker while polling
-    if (changed(ctx, 'orig', [job.image, job.mode_a.units, job.mode_a.page])) renderOriginal(job, cols('c-orig'), ctx);
-    if (job.mode_a.status !== 'skipped' && changed(ctx, 'a', [job.mode_a, job.params.verify_details])) renderA(job, cols('c-a'));
+    if (changed(ctx, 'orig', [job.image, job.mode_a.units, job.mode_a.page, (job.mode_c || {}).units, (job.mode_c || {}).page])) renderOriginal(job, cols('c-orig'), ctx);
+    if (job.mode_a.status !== 'skipped' && changed(ctx, 'a', [job.mode_a, job.params.verify_details])) renderOverlay(job, cols('c-a'), 'mode_a');
+    if (modeCStatus(job) !== 'skipped' && changed(ctx, 'c', [job.mode_c, job.params.verify_details, job.params.inpaint_model])) renderOverlay(job, cols('c-c'), 'mode_c');
     (job.mode_b.results || []).forEach((r, i) => { if (changed(ctx, 'b' + i, [r, job.params.verify_details])) renderB(job, i, cols('c-b-' + i)); });
     if (changed(ctx, 'share', [job.status, job.publish, job.warnings])) renderShare(job, ctx.share);
-    const a = job.mode_a;
-    if (changed(ctx, 'units', a.units)) {
-      if (a && a.units) { ctx.units.querySelector('pre').textContent = JSON.stringify(a.units, null, 2); ctx.units.hidden = false; } else ctx.units.hidden = true;
+    for (const [key] of OVERLAYS) {
+      const m = job[key] || {};
+      if (changed(ctx, 'units-' + key, m.units)) {
+        if (m.units) { ctx.units[key].querySelector('pre').textContent = JSON.stringify(m.units, null, 2); ctx.units[key].hidden = false; } else ctx.units[key].hidden = true;
+      }
     }
   }
 
@@ -752,8 +785,8 @@
     const files = Array.from($('file').files);
     if (!files.length) return;
     if (files.length > MAX_BATCH) { setBusy(false, '一次最多 ' + MAX_BATCH + ' 張圖，你選了 ' + files.length + ' 張'); return; }
-    const useA = $('mode-a').checked, useB = $('mode-b').checked;
-    if (!useA && !useB) { setBusy(false, '請至少勾選一個 Mode'); return; }
+    const useA = $('mode-a').checked, useB = $('mode-b').checked, useC = $('mode-c').checked;
+    if (!useA && !useB && !useC) { setBusy(false, '請至少勾選一個 Mode'); return; }
     if (useB && !picker.selected.length) { setBusy(false, '請至少選一個影像模型'); return; }
     const fd = new FormData();
     for (const f of files) fd.append('files', f);
@@ -762,6 +795,7 @@
     for (const r of langRows) fd.append('target_langs', r.select.value);
     fd.append('mode_a', useA ? '1' : '0');
     fd.append('mode_b', useB ? '1' : '0');
+    fd.append('mode_c', useC ? '1' : '0');
     fd.append('mode_a_retry', $('mode-a-retry').checked ? '1' : '0');
     for (const m of picker.selected) fd.append('image_models', m);
     fd.append('output_size', $('size').value);

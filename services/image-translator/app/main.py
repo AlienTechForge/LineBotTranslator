@@ -23,7 +23,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from . import jobs, mock, openrouter, v1
+from . import inpaint, jobs, mock, openrouter, v1
 from .config import (
     DEFAULT_OUTPUT_SIZE,
     LANGUAGES,
@@ -76,6 +76,7 @@ class Options:
     runs: int
     judge: bool
     mode_a_retry: bool | None
+    mode_c: bool = False
 
 
 def form_options(
@@ -90,11 +91,12 @@ def form_options(
     runs: int = Form(1),
     judge: bool = Form(True),
     mode_a_retry: bool | None = Form(None),
+    mode_c: bool = Form(False),
 ) -> Options:
     if target_lang not in LANGUAGES:
         raise HTTPException(400, f"target_lang must be one of {', '.join(LANGUAGES)}")
-    if not (mode_a or mode_b):
-        raise HTTPException(400, "select at least one of Mode A and Mode B")
+    if not (mode_a or mode_b or mode_c):
+        raise HTTPException(400, "select at least one of Mode A, Mode B and Mode C")
     models = parse_models(image_models, image_model) or [get_settings().openrouter_image_model]
     if len(models) > MAX_IMAGE_MODELS:
         raise HTTPException(400, f"select at most {MAX_IMAGE_MODELS} image models")
@@ -106,7 +108,9 @@ def form_options(
         raise HTTPException(400, f"output_size must be one of: default, {', '.join(s for s in OUTPUT_SIZES if s)}")
     if not 1 <= runs <= MAX_RUNS:
         raise HTTPException(400, f"runs must be between 1 and {MAX_RUNS}")
-    return Options(target_lang, mode_a, mode_b, models, output_size, verify, verify_details, runs, judge, mode_a_retry)
+    return Options(
+        target_lang, mode_a, mode_b, models, output_size, verify, verify_details, runs, judge, mode_a_retry, mode_c
+    )
 
 
 def resolve_target_langs(values: list[str], default: str, count: int) -> list[str]:
@@ -185,6 +189,8 @@ async def index() -> HTMLResponse:
         max_claude=MAX_CONCURRENT_CLAUDE,
         max_batch=MAX_BATCH_FILES,
         mode_a_retry=settings.mode_a_retry,
+        translate_model=settings.translate_model,
+        inpaint_model=inpaint.effective_model(),
         judge_model=settings.claude_judge_model,
         output_sizes=[s for s in OUTPUT_SIZES if s],
         default_output_size=DEFAULT_OUTPUT_SIZE,
@@ -219,7 +225,7 @@ async def create_job(request: Request, file: UploadFile = File(...), opts: Optio
     job_id = jobs.start_job(
         request.app.state.store, image, opts.target_lang, opts.mode_a, opts.mode_b, opts.models, opts.verify,
         opts.verify_details, opts.output_size, runs=opts.runs, judge_on=opts.judge,
-        mode_a_retry=opts.mode_a_retry, name=safe_name(file.filename),
+        mode_a_retry=opts.mode_a_retry, name=safe_name(file.filename), run_c=opts.mode_c,
     )  # fmt: skip
     return JSONResponse({"job_id": job_id})
 
@@ -239,7 +245,7 @@ async def create_batch(
     batch_id, job_ids = jobs.start_batch(
         request.app.state.store, images, opts.target_lang, opts.mode_a, opts.mode_b, opts.models, opts.verify,
         opts.verify_details, opts.output_size, runs=opts.runs, judge_on=opts.judge,
-        mode_a_retry=opts.mode_a_retry, langs=langs,
+        mode_a_retry=opts.mode_a_retry, langs=langs, run_c=opts.mode_c,
     )  # fmt: skip
     return JSONResponse({"batch_id": batch_id, "job_ids": job_ids})
 

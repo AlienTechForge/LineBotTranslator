@@ -17,12 +17,19 @@ its own:
   BOX_SPREAD_WITH_RING_MAX) passes too when the ring is clean and agrees; round 5 inpainted those
   headings and Telea dragged their orange into the cream paper;
 * a flat background is erased by **flat fill**, edges feathered over FEATHER_SIGMA; anything else
-  is **inpainted** (OpenCV Telea);
+  is **inpainted** (OpenCV Telea, or the trained LaMa model when INPAINT_MODEL=lama: inpaint.py);
 * in both cases the dilation of the glyph mask is **colour-guarded**: it only grows over pixels
   whose colour is within a tolerance of the unit's background colour, so it never reaches into a
   black cell, a rule line or any neighbour of another colour (for inpainting, not even within the
   radius Telea reads from);
-* the words that are not translated keep their pixels.
+* the words that are not translated keep their pixels;
+* round 8, the residue check: after the erase, the share of the erased pixels that are still farther than
+  INK_DISTANCE from the colour of the paper around them must be at most RESIDUE_MAX_SHARE. The paper is a
+  plane fitted to the ring (a flat ring gives its median, a gentle gradient or glare gives its slope, so a fill
+  that follows it is not residue); on noisy paper the distance grows with the ring's own deviation
+  (RESIDUE_NOISE_K). A unit above the share is erased once more with its mask grown by RESIDUE_DILATE_PX; if
+  it is still above, its original pixels are put back and it is reported (`restored`): a visible original word
+  beats a grey smudge.
 """
 
 from __future__ import annotations
@@ -32,9 +39,10 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 
+from . import inpaint as inpainting
+from .inpaint import TELEA_RADIUS as INPAINT_RADIUS
 from .models import Word
 
-INPAINT_RADIUS = 3
 MIN_DILATE_PX = 2
 DILATE_RATIO = 0.15
 
@@ -57,6 +65,11 @@ RING_END_MIN_PX = 24  # an end of the ring with fewer usable pixels than this is
 MIN_RING_PX = 24  # fewer usable ring pixels than this: no evidence either way (the box decides alone)
 RING_MIN_SHARE = 0.15  # the ring's background colour must cover this share of the ring, else the ring is too mixed
 OCCUPIED_PAD_PX = 2  # words of the page are left out of every ring, padded by this much
+RESIDUE_MAX_SHARE = 0.03  # round 8: more than this share of the erased pixels still unlike the paper = the erase failed
+RESIDUE_DILATE_PX = 2  # the mask of a unit that failed the residue check is grown by this much for the second erase
+RESIDUE_NOISE_K = 3.0  # on noisy paper the distance that counts as residue is this many times the ring's typical deviation
+SKIP_ERASE_RESIDUE = "erase residue"  # the skip_reason of a unit whose original pixels were put back
+RESTORE_REACH_PX = 5  # a failed unit gets its original pixels back this far beyond its mask (the feather)
 
 
 def dilation_px(glyph_h: float) -> int:
@@ -458,7 +471,7 @@ def build_global_mask(
 
 
 def inpaint_all(rgb: np.ndarray, mask: np.ndarray) -> np.ndarray:
-    """One Telea inpaint over the whole image for the given mask."""
+    """One Telea inpaint over the whole image for the given mask (the model-independent baseline)."""
     if not mask.any():
         return rgb.copy()
     return cv2.inpaint(rgb, mask, INPAINT_RADIUS, cv2.INPAINT_TELEA)
@@ -478,6 +491,10 @@ class EraseResult:
     methods: dict[str, str]  # uid -> flat | inpaint
     mask_px: dict[str, int]  # uid -> pixels of its guarded erase area
     extension: dict[str, str] = field(default_factory=dict)  # uid -> filled | skipped (only units that grew)
+    engines: dict[str, str] = field(default_factory=dict)  # uid -> lama | telea | telea (lama unavailable: <class>), inpainted units
+    residue: dict[str, float] = field(default_factory=dict)  # uid -> share of the erased pixels still unlike the paper
+    passes: dict[str, int] = field(default_factory=dict)  # uid -> 1, or 2 when the residue check made it erase again
+    restored: list[str] = field(default_factory=list)  # uids whose original pixels were put back (still dirty after pass 2)
 
 
 def _flat_fill(out: np.ndarray, um: UnitMask, color: tuple[int, int, int], blocked: np.ndarray) -> None:
@@ -496,14 +513,126 @@ def _flat_fill(out: np.ndarray, um: UnitMask, color: tuple[int, int, int], block
     out[sl] = np.clip(np.rint(region * (1.0 - alpha) + np.asarray(color, np.float32) * alpha), 0, 255).astype(np.uint8)
 
 
+@dataclass
+class RingPlane:
+    """The paper around a unit: `a + b * dx + c * dy` per channel (rows of `coef`), and how noisy it is."""
+
+    coef: np.ndarray  # (3, 3): per channel (a, b, c); dx, dy are measured from the top left of the unit's mask area
+    noise: float  # the median distance of the ring pixels from the plane (a few levels on smooth paper)
+
+    @property
+    def threshold(self) -> float:
+        """What counts as unlike the paper: INK_DISTANCE, or more on noisy paper (RESIDUE_NOISE_K x the ring's deviation)."""
+        return max(INK_DISTANCE, RESIDUE_NOISE_K * self.noise)
+
+
+def ring_plane(rgb: np.ndarray, um: UnitMask, exclude: np.ndarray | None = None) -> RingPlane | None:
+    """Fit the paper around a unit as a plane per channel.
+
+    Least squares over the pixels of the ring (the band of RING_PX around the erase area, minus `exclude`)
+    that are within INK_DISTANCE of the ring's median. A flat ring gives a constant; a gentle gradient (shaded
+    paper, glare) gives the slope, so a fill that follows it is not mistaken for residue. None when the ring
+    has too few usable pixels to say anything.
+    """
+    img_h, img_w = rgb.shape[:2]
+    h, w = um.dilated.shape
+    pad = RING_PX + 1
+    x0, y0 = max(0, um.x0 - pad), max(0, um.y0 - pad)
+    x1, y1 = min(img_w, um.x0 + w + pad), min(img_h, um.y0 + h + pad)
+    inner = np.zeros((y1 - y0, x1 - x0), np.uint8)
+    inner[um.y0 - y0 : um.y0 - y0 + h, um.x0 - x0 : um.x0 - x0 + w] = um.dilated
+    band = (cv2.dilate(inner, _ellipse(RING_PX)) > 0) & (inner == 0)
+    if exclude is not None:
+        band &= ~exclude[y0:y1, x0:x1]
+    ys, xs = np.nonzero(band)
+    if ys.size < MIN_RING_PX:
+        return None
+    colors = rgb[y0:y1, x0:x1][ys, xs].astype(np.float64)
+    design = np.stack([np.ones(xs.size), xs + (x0 - um.x0), ys + (y0 - um.y0)], axis=1).astype(np.float64)
+    keep = np.linalg.norm(colors - np.median(colors, axis=0), axis=1) <= INK_DISTANCE
+    coef = None
+    for _ in range(2):  # the second round drops what the first fit does not explain
+        if int(keep.sum()) < MIN_RING_PX:
+            return None
+        coef = np.linalg.lstsq(design[keep], colors[keep], rcond=None)[0]
+        spread = np.linalg.norm(design @ coef - colors, axis=1)
+        keep = spread <= INK_DISTANCE
+    return RingPlane(coef.T, float(np.median(spread)))
+
+
+def residue_share(erased: np.ndarray, unit: EraseUnit, blocked: np.ndarray, plane: RingPlane | None = None) -> float:
+    """Round 8: the share of the erased pixels of `unit` that are still farther than INK_DISTANCE from the paper.
+
+    The erased pixels are its guarded mask (and the filled part of a grown frame) without the pixels that
+    belong to untouched neighbours. The paper is the plane fitted to the ring (`ring_plane`; without one the
+    ring median, else the colour of the unit's own box); on noisy paper the distance is the plane's
+    `threshold`. Flat fills and clean inpaints are at 0; a ghost of the glyphs, a grey patch or a smear is
+    what lifts the share above RESIDUE_MAX_SHARE.
+    """
+    fallback = np.asarray(unit.info.ring_color if unit.info.ring_color is not None else unit.info.color, np.float64)
+    limit = INK_DISTANCE if plane is None else plane.threshold
+    far = total = 0
+    for um in (unit.mask, unit.extension):
+        if um is None or um.guarded is None:
+            continue
+        h, w = um.guarded.shape
+        y1, x1 = min(erased.shape[0], um.y0 + h), min(erased.shape[1], um.x0 + w)
+        hh, ww = y1 - um.y0, x1 - um.x0
+        region = (um.guarded[:hh, :ww] > 0) & ~blocked[um.y0 : y1, um.x0 : x1]
+        ys, xs = np.nonzero(region)
+        if ys.size == 0:
+            continue
+        pixels = erased[um.y0 : y1, um.x0 : x1][ys, xs].astype(np.float64)
+        if plane is None:
+            expected = fallback
+        else:  # the plane is anchored at the top left of the unit's own mask area
+            ox, oy = um.x0 - unit.mask.x0, um.y0 - unit.mask.y0
+            expected = np.clip(
+                plane.coef[:, 0] + np.outer(xs + ox, plane.coef[:, 1]) + np.outer(ys + oy, plane.coef[:, 2]), 0, 255
+            )
+        far += int((np.linalg.norm(pixels - expected, axis=1) > limit).sum())
+        total += ys.size
+    return far / total if total else 0.0
+
+
+def _grow_mask(um: UnitMask, blocked: np.ndarray) -> None:
+    """The second erase of a unit: its guarded mask grown by RESIDUE_DILATE_PX (not into untouched neighbours)."""
+    h, w = um.guarded.shape
+    y1, x1 = min(blocked.shape[0], um.y0 + h), min(blocked.shape[1], um.x0 + w)
+    grown = cv2.dilate(um.guarded, _ellipse(RESIDUE_DILATE_PX))
+    grown[: y1 - um.y0, : x1 - um.x0][blocked[um.y0 : y1, um.x0 : x1]] = 0
+    um.guarded = grown
+    um.allowed = (um.allowed if um.allowed is not None else grown > 0) | (grown > 0)
+
+
+def _restore(erased: np.ndarray, rgb: np.ndarray, unit: EraseUnit, keep: np.ndarray) -> None:
+    """Put the original pixels of a unit back: its mask and the feather around it, except where another unit erased."""
+    img_h, img_w = rgb.shape[:2]
+    for um in (unit.mask, unit.extension):
+        if um is None or um.guarded is None or not um.guarded.any():
+            continue
+        h, w = um.guarded.shape
+        x0, y0 = max(0, um.x0 - RESTORE_REACH_PX), max(0, um.y0 - RESTORE_REACH_PX)
+        x1, y1 = min(img_w, um.x0 + w + RESTORE_REACH_PX), min(img_h, um.y0 + h + RESTORE_REACH_PX)
+        canvas = np.zeros((y1 - y0, x1 - x0), np.uint8)
+        gy, gx = um.y0 - y0, um.x0 - x0
+        hh, ww = min(h, y1 - um.y0), min(w, x1 - um.x0)
+        canvas[gy : gy + hh, gx : gx + ww] = um.guarded[:hh, :ww]
+        region = (cv2.dilate(canvas, _ellipse(RESTORE_REACH_PX)) > 0) & (keep[y0:y1, x0:x1] == 0)
+        erased[y0:y1, x0:x1][region] = rgb[y0:y1, x0:x1][region]
+
+
 def erase_units(
-    rgb: np.ndarray, units: list[EraseUnit], protect_masks: list[UnitMask] | None = None
+    rgb: np.ndarray, units: list[EraseUnit], protect_masks: list[UnitMask] | None = None, *, model: str | None = None
 ) -> EraseResult:
     """Erase every translated unit: flat fill where the background is flat, inpaint elsewhere.
 
     The dilation of every unit mask is colour-guarded first. Untouched words (`protect_masks`) keep
     their pixels in both methods, except where a translated unit's own polygon covers them. The
-    inpaint units share one Telea call (on the original), then the flat fills are applied on top.
+    inpaint units share one inpainter call on the original (`model`: telea or lama, default INPAINT_MODEL;
+    lama runs on crops and falls back to Telea, see inpaint.py), then the flat fills are applied on top.
+    Round 8: the residue check follows (see the module docstring); `EraseResult.restored` lists the units
+    whose original pixels were put back.
     """
     img_h, img_w = rgb.shape[:2]
     extension_state: dict[str, str] = {}
@@ -539,16 +668,65 @@ def erase_units(
     mask = build_global_mask(
         (img_h, img_w), [u.mask for u in inpaint_units], protect_masks, which="guarded", own_masks=own
     )
-    erased = inpaint_all(rgb, mask)
+    inpainted = inpainting.inpaint_report(rgb, mask, model=model)
+    erased = inpainted.image
     methods: dict[str, str] = {}
     mask_px: dict[str, int] = {}
+    engines: dict[str, str] = {}
+
+    def label_of(result, unit: EraseUnit) -> str:
+        h, w = unit.mask.raw.shape
+        return result.label_at((unit.mask.x0, unit.mask.y0, unit.mask.x0 + w, unit.mask.y0 + h))
+
+    def fill_flat(unit: EraseUnit) -> None:
+        _flat_fill(erased, unit.mask, unit.info.fill_color, blocked)
+        if unit.extension is not None and extension_state.get(unit.uid) == "filled":
+            _flat_fill(erased, unit.extension, unit.info.fill_color, blocked)
+
     for unit in units:
         methods[unit.uid] = unit.info.method
         if unit.info.flat:
-            _flat_fill(erased, unit.mask, unit.info.fill_color, blocked)
-            if unit.extension is not None and extension_state.get(unit.uid) == "filled":
-                _flat_fill(erased, unit.extension, unit.info.fill_color, blocked)
+            fill_flat(unit)
+        else:
+            engines[unit.uid] = label_of(inpainted, unit)
+
+    # ---- the residue check: erase once more with a slightly larger mask, and give up on a unit that stays dirty
+    planes = {u.uid: ring_plane(rgb, u.mask, blocked) for u in units}
+    residue = {u.uid: residue_share(erased, u, blocked, planes[u.uid]) for u in units}
+    passes = {u.uid: 1 for u in units}
+    failing = [u for u in units if residue[u.uid] > RESIDUE_MAX_SHARE]
+    restored: list[str] = []
+    if failing:
+        for unit in failing:
+            _grow_mask(unit.mask, blocked)
+            passes[unit.uid] = 2
+        again = [u for u in failing if not u.info.flat]
+        if again:
+            second_mask = build_global_mask(
+                (img_h, img_w), [u.mask for u in again], protect_masks, which="guarded", own_masks=own
+            )
+            second = inpainting.inpaint_report(rgb, second_mask, model=model)
+            picked = second_mask > 0
+            erased[picked] = second.image[picked]
+            for unit in again:
+                engines[unit.uid] = label_of(second, unit)
+        for unit in failing:
+            if unit.info.flat:
+                fill_flat(unit)
+        for unit in failing:
+            residue[unit.uid] = residue_share(erased, unit, blocked, planes[unit.uid])
+        dirty = [u for u in failing if residue[u.uid] > RESIDUE_MAX_SHARE]
+        if dirty:
+            gone = {u.uid for u in dirty}
+            keep = np.zeros((img_h, img_w), np.uint8)
+            for unit in units:
+                if unit.uid not in gone:
+                    unit.mask.paste_into(keep, "guarded")
+            for unit in dirty:
+                _restore(erased, rgb, unit, keep)
+                restored.append(unit.uid)
+    for unit in units:
         mask_px[unit.uid] = int(np.count_nonzero(unit.mask.guarded)) + (
             int(np.count_nonzero(unit.extension.guarded)) if unit.extension is not None else 0
         )
-    return EraseResult(erased, methods, mask_px, extension_state)
+    return EraseResult(erased, methods, mask_px, extension_state, engines, residue, passes, restored)

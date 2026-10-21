@@ -116,32 +116,45 @@ def _fill_costs(row: dict, anthropic: float | None, openrouter: float | None) ->
     row["cost_total_usd"] = _sum_known([anthropic, openrouter])
 
 
+def _overlay_row(job: dict, key: str, mode: str, fallback_model: str | None) -> dict | None:
+    """The row of Mode A (`mode_a`) or Mode C (`mode_c`): both are one Claude call, one render and one judge."""
+    a = job.get(key) or {}
+    if a.get("status") in (None, "skipped"):
+        return None
+    model = a.get("model") or fallback_model
+    row = _row(job, mode, f"Mode {mode} · " + str(model or ""), model)
+    row["status"] = a.get("status") or "pending"
+    row["error"] = a.get("error")
+    if a.get("status") == "done":
+        verification = a.get("verification") or {}
+        row.update(
+            verdict=a.get("verdict"),
+            failed_checks=verification.get("failed_checks") or [],
+            usability=a.get("usability"),
+            coverage=a.get("coverage"),
+            elapsed_ms=a.get("elapsed_ms"),
+            output=a.get("output"),
+            runs_done=1,
+            passes=int(a.get("verdict") == verify.VERDICT_PASS),
+        )
+        _fill_costs(row, a.get("cost_anthropic_usd"), a.get("cost_openrouter_usd"))
+    elif a.get("status") == "error":
+        row["runs_failed"] = 1
+    return row
+
+
 def summarise_batch(jobs: list[dict]) -> list[dict]:
-    """One row per image x mode / model, in submission order (Mode A first, then each Mode B model)."""
+    """One row per image x mode / model, in submission order (Mode A, Mode C, then each Mode B model)."""
     rows: list[dict] = []
     for job in jobs:
-        a = job.get("mode_a") or {}
-        if a.get("status") not in (None, "skipped"):
-            params = job.get("params") or {}
-            row = _row(job, "A", "Mode A · " + str(a.get("model") or params.get("claude_model") or ""), a.get("model") or params.get("claude_model"))
-            row["status"] = a.get("status") or "pending"
-            row["error"] = a.get("error")
-            if a.get("status") == "done":
-                verification = a.get("verification") or {}
-                row.update(
-                    verdict=a.get("verdict"),
-                    failed_checks=verification.get("failed_checks") or [],
-                    usability=a.get("usability"),
-                    coverage=a.get("coverage"),
-                    elapsed_ms=a.get("elapsed_ms"),
-                    output=a.get("output"),
-                    runs_done=1,
-                    passes=int(a.get("verdict") == verify.VERDICT_PASS),
-                )
-                _fill_costs(row, a.get("cost_anthropic_usd"), a.get("cost_openrouter_usd"))
-            elif a.get("status") == "error":
-                row["runs_failed"] = 1
-            rows.append(row)
+        params = job.get("params") or {}
+        for key, mode, fallback in (
+            ("mode_a", "A", params.get("claude_model")),
+            ("mode_c", "C", params.get("translate_model") or params.get("claude_model")),
+        ):
+            row = _overlay_row(job, key, mode, fallback)
+            if row is not None:
+                rows.append(row)
         results = (job.get("mode_b") or {}).get("results") or []
         for summary in summarise_runs(results):
             runs = [r for r in results if r.get("model_index", r.get("model")) == summary["model_index"]]

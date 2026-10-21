@@ -95,3 +95,32 @@ def test_script_subtags_and_undetermined_codes_are_normalised(monkeypatch):
     assert [w.lang for w in result.words] == ["zh", None, "ja"]
     assert [w.id for w in result.words] == ["w0001", "w0002", "w0003"]
     assert base_language("zh_TW") == "zh" and base_language(None) is None and base_language("") is None
+
+
+class FullBrk(enum.IntEnum):
+    UNKNOWN = 0
+    SPACE = 1
+    SURE_SPACE = 2
+    EOL_SURE_SPACE = 3
+    HYPHEN = 4
+    LINE_BREAK = 5
+
+
+def broken_word(text, brk):
+    verts = [NS(x=0, y=0), NS(x=10, y=0), NS(x=10, y=10), NS(x=0, y=10)]
+    symbols = [NS(text=ch, property=NS(detected_break=NS(type_=FullBrk.UNKNOWN))) for ch in text[:-1]]
+    symbols.append(NS(text=text[-1], property=NS(detected_break=NS(type_=brk))))
+    return NS(bounding_box=NS(vertices=verts), symbols=symbols, confidence=0.9, property=langs())
+
+
+def test_the_hierarchy_is_kept_paragraph_and_block_indexes_and_the_break_after_every_word(monkeypatch):
+    first = NS(words=[broken_word("Pork", FullBrk.SPACE), broken_word("cutlet", FullBrk.EOL_SURE_SPACE), broken_word("set", FullBrk.LINE_BREAK)], property=langs())
+    second = NS(words=[broken_word("Rice", FullBrk.LINE_BREAK)], property=langs())
+    third = NS(words=[broken_word("ex", FullBrk.HYPHEN), broken_word("ample", FullBrk.UNKNOWN)], property=langs())
+    page = NS(width=100, height=50, property=langs(), blocks=[NS(paragraphs=[first, second], property=langs()), NS(paragraphs=[third], property=langs())])
+    resp = NS(error=None, full_text_annotation=NS(pages=[page], text=""))
+    words = run(monkeypatch, resp).words
+    assert [(w.text, w.block, w.para, w.brk) for w in words] == [
+        ("Pork", 0, 0, "SPACE"), ("cutlet", 0, 0, "EOL_SURE_SPACE"), ("set", 0, 0, "LINE_BREAK"),
+        ("Rice", 0, 1, "LINE_BREAK"), ("ex", 1, 2, "HYPHEN"), ("ample", 1, 2, None),
+    ]  # fmt: skip
