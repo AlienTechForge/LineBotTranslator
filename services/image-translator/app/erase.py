@@ -40,6 +40,7 @@ import cv2
 import numpy as np
 
 from . import inpaint as inpainting
+from .config import get_settings
 from .inpaint import TELEA_RADIUS as INPAINT_RADIUS
 from .models import Word
 
@@ -495,6 +496,7 @@ class EraseResult:
     residue: dict[str, float] = field(default_factory=dict)  # uid -> share of the erased pixels still unlike the paper
     passes: dict[str, int] = field(default_factory=dict)  # uid -> 1, or 2 when the residue check made it erase again
     restored: list[str] = field(default_factory=list)  # uids whose original pixels were put back (still dirty after pass 2)
+    residue_checked: bool = False  # whether the residue measurement was acted on (ERASE_RESIDUE_CHECK / `residue_check`)
 
 
 def _flat_fill(out: np.ndarray, um: UnitMask, color: tuple[int, int, int], blocked: np.ndarray) -> None:
@@ -623,7 +625,12 @@ def _restore(erased: np.ndarray, rgb: np.ndarray, unit: EraseUnit, keep: np.ndar
 
 
 def erase_units(
-    rgb: np.ndarray, units: list[EraseUnit], protect_masks: list[UnitMask] | None = None, *, model: str | None = None
+    rgb: np.ndarray,
+    units: list[EraseUnit],
+    protect_masks: list[UnitMask] | None = None,
+    *,
+    model: str | None = None,
+    residue_check: bool | None = None,
 ) -> EraseResult:
     """Erase every translated unit: flat fill where the background is flat, inpaint elsewhere.
 
@@ -631,9 +638,12 @@ def erase_units(
     their pixels in both methods, except where a translated unit's own polygon covers them. The
     inpaint units share one inpainter call on the original (`model`: telea or lama, default INPAINT_MODEL;
     lama runs on crops and falls back to Telea, see inpaint.py), then the flat fills are applied on top.
-    Round 8: the residue check follows (see the module docstring); `EraseResult.restored` lists the units
-    whose original pixels were put back.
+    Round 8: the residue share of every unit is measured afterwards (see the module docstring) and reported;
+    only with `residue_check` (default: the ERASE_RESIDUE_CHECK setting, off) is it acted on: a second erase
+    with a grown mask, then `EraseResult.restored` lists the units whose original pixels were put back.
     """
+    if residue_check is None:
+        residue_check = get_settings().erase_residue_check
     img_h, img_w = rgb.shape[:2]
     extension_state: dict[str, str] = {}
     for unit in units:
@@ -690,11 +700,12 @@ def erase_units(
         else:
             engines[unit.uid] = label_of(inpainted, unit)
 
-    # ---- the residue check: erase once more with a slightly larger mask, and give up on a unit that stays dirty
+    # ---- the residue check: measured always; with `residue_check`, erase once more with a slightly larger mask and
+    # give up on a unit that stays dirty
     planes = {u.uid: ring_plane(rgb, u.mask, blocked) for u in units}
     residue = {u.uid: residue_share(erased, u, blocked, planes[u.uid]) for u in units}
     passes = {u.uid: 1 for u in units}
-    failing = [u for u in units if residue[u.uid] > RESIDUE_MAX_SHARE]
+    failing = [u for u in units if residue[u.uid] > RESIDUE_MAX_SHARE] if residue_check else []
     restored: list[str] = []
     if failing:
         for unit in failing:
@@ -729,4 +740,4 @@ def erase_units(
         mask_px[unit.uid] = int(np.count_nonzero(unit.mask.guarded)) + (
             int(np.count_nonzero(unit.extension.guarded)) if unit.extension is not None else 0
         )
-    return EraseResult(erased, methods, mask_px, extension_state, engines, residue, passes, restored)
+    return EraseResult(erased, methods, mask_px, extension_state, engines, residue, passes, restored, bool(residue_check))
