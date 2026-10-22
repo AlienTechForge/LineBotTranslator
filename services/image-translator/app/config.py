@@ -135,6 +135,11 @@ class Settings:
     anthropic_monthly_budget_usd: float = DEFAULT_ANTHROPIC_MONTHLY_BUDGET_USD
     claude_translate_model: str = ""  # CLAUDE_TRANSLATE_MODEL: the Mode C translator ("" = the planner model, CLAUDE_MODEL)
     mode_c_image_context: bool = True  # MODE_C_IMAGE_CONTEXT: attach the downscaled picture to every translation call
+    # ERASE_RESIDUE_CHECK: act on the residue measurement of erase.py (erase again, then restore a unit that stays dirty).
+    # Off by default since the first real round: on real photos the measurement failed 20-35% of the LaMa-inpainted units
+    # and the flat fills on dark backgrounds, and restoring them left the pictures half translated. The share is still
+    # measured and reported (`erase_residue`) so that the rule can be calibrated.
+    erase_residue_check: bool = False
     mode_c_chunk_units: int = DEFAULT_MODE_C_CHUNK_UNITS  # MODE_C_CHUNK_UNITS
     inpaint_model: str = DEFAULT_INPAINT_MODEL  # INPAINT_MODEL: telea | lama
     inpaint_model_path: str = ""  # INPAINT_MODEL_PATH ("" = <LAB_DATA_DIR>/models/lama_fp32.onnx)
@@ -283,6 +288,7 @@ def get_settings() -> Settings:
         ),
         claude_translate_model=_env("CLAUDE_TRANSLATE_MODEL"),
         mode_c_image_context=_flag("MODE_C_IMAGE_CONTEXT", True),
+        erase_residue_check=_flag("ERASE_RESIDUE_CHECK", False),
         mode_c_chunk_units=int(_number("MODE_C_CHUNK_UNITS", DEFAULT_MODE_C_CHUNK_UNITS, low=1.0, high=1000.0)),
         inpaint_model=inpaint,
         inpaint_model_path=_env("INPAINT_MODEL_PATH") or str(data_dir / "models" / INPAINT_MODEL_FILE),

@@ -67,6 +67,25 @@ def smudges(n, rgb, mask):
 # ---------------------------------------------------------------- the check
 
 
+@pytest.fixture(autouse=True)
+def residue_check_on(monkeypatch):
+    """These tests exercise the rule; since the first real round it is off unless ERASE_RESIDUE_CHECK=1."""
+    monkeypatch.setenv("ERASE_RESIDUE_CHECK", "1")
+
+
+def test_the_check_is_off_by_default_the_share_is_still_measured_and_nothing_is_restored(monkeypatch):
+    monkeypatch.delenv("ERASE_RESIDUE_CHECK", raising=False)
+    img, unit = scene()
+    calls = recorder(monkeypatch, smudges)
+    result = erase_units(img, [unit])
+    assert result.residue_checked is False and len(calls) == 1  # one erase, no second pass
+    assert result.residue["u01"] > erase.RESIDUE_MAX_SHARE and result.passes == {"u01": 1} and result.restored == []
+    assert not np.array_equal(result.erased, img)  # the (dirty) erase stays: nothing is put back
+    img2, unit2 = scene()
+    forced = erase_units(img2, [unit2], residue_check=True)
+    assert forced.residue_checked is True and forced.restored == ["u01"] and len(calls) == 3
+
+
 def test_a_clean_erase_has_no_residue_and_one_pass():
     img, unit = scene()
     result = erase_units(img, [unit])

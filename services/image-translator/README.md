@@ -427,6 +427,7 @@ docker inspect linebot-translator --format '{{range .Config.Env}}{{println .}}{{
 | `V1_DEADLINE_S` | `210` | 一個 `/v1/translations` 請求從開始算起的總時限（秒）；超過後不再開始新的工作。 |
 | `V1_RETENTION_MINUTES` | `15` | `/v1` 的記錄與圖片保留幾分鐘（背景清掃刪除）。 |
 | `MODE_B_MIN_REMAINING_S` | `90` | Mode B 開始時至少要剩的秒數，否則跳過（`reason: deadline`）。 |
+| `ERASE_RESIDUE_CHECK` | `0` | `1` = 擦除後的殘留檢查會動作（遮罩加大再擦一次、還是髒就把 unit 還原成原文）；`0` = 只量不動作（`erase_residue` 仍會寫進 unit 報告）。 |
 | `MODE_A_MIN_GLYPH_PX` | `12` | 來源字高中位數（px，`source.median_glyph_px`）低於它、且策略是 `a_then_b` 時，Mode B 先跑，Mode A 只在 B 沒做出能送的圖時才補跑（見「字太小」）。`0` = 關掉這條規則；Mock 模式不套用。 |
 | `MIN_ROTATED_COLUMN_PX` | `16` | 目標語言不是中日韓時，欄寬（字高）小於它的直排 unit 保持原樣（`skipped: column too narrow`）。 |
 | `LAB_MOCK` | `0` | `1` = 不打任何網路（`/v1` 也是），改用內建 fixture（Mode B 直接回傳輸入圖，Vision 用內建字框，Claude 與 judge 用罐頭答案，上傳改用記憶體假物件）。 |
@@ -814,7 +815,7 @@ Mode A 與 Mode C 的擦除都經過 `inpaint.py` 的同一個介面 `inpaint(rg
 
 `erase.erase_units` 呼叫這個介面，所以 Mode A 拿到同一個修補器。**退回 Telea**：缺 `onnxruntime`、模型檔不存在又下載不了、檔案壞掉、或某個叢集推論失敗時，該叢集（缺套件／模型時是全部）改用 Telea，unit 報告的 `inpaint` 寫 `telea (lama unavailable: <例外類別名>)`（成功是 `lama`，Telea 是 `telea`），Mode 的提醒區多一行；載入失敗會記住 5 分鐘（`RETRY_AFTER_S`），不會每個 job 都重新下載 200 MB。同時進行的推論最多 2 個（`MAX_CONCURRENT_INFERENCES`）。
 
-**殘留檢查**（任何擦除之後，flat 或 inpaint，兩個 Mode 都有）：每個 unit 在擦除範圍內，離「周圍的紙」超過 `INK_DISTANCE`（40）的像素佔比必須不超過 `RESIDUE_MAX_SHARE`（0.03）。「周圍的紙」是用環帶（`RING_PX`）裡和紙色接近的像素擬合出來的一個平面（每個通道 `a + b·x + c·y`），所以漸層、反光不會被誤判成殘留；紙本身雜訊很大時，距離放寬成環帶典型偏差的 `RESIDUE_NOISE_K`（3）倍。超過時：遮罩膨脹 `RESIDUE_DILATE_PX`（2 px）再擦一次；還是超過：這個 unit **還原成原圖的像素**（連羽化的邊），報告 `skipped: erase residue`，並列入警告——寧可看得到原文，也不要灰色髒斑。unit 報告的 `erase_residue`（最後一次的佔比）、`erase_passes`（1 或 2）、`inpaint` 都看得到。
+**殘留檢查**（任何擦除之後，flat 或 inpaint，兩個 Mode 都有；**預設只量不動作**，`ERASE_RESIDUE_CHECK=1` 才會擦第二次與還原。第 8 輪第一次在真實照片上跑時，它把 20–35% 用 LaMa 擦過的 unit 和深色底上的平填 unit 判成殘留而還原成原文，整張圖變成一半翻一半沒翻，所以關掉；佔比仍寫進 `erase_residue` 以便校正）：每個 unit 在擦除範圍內，離「周圍的紙」超過 `INK_DISTANCE`（40）的像素佔比必須不超過 `RESIDUE_MAX_SHARE`（0.03）。「周圍的紙」是用環帶（`RING_PX`）裡和紙色接近的像素擬合出來的一個平面（每個通道 `a + b·x + c·y`），所以漸層、反光不會被誤判成殘留；紙本身雜訊很大時，距離放寬成環帶典型偏差的 `RESIDUE_NOISE_K`（3）倍。超過時：遮罩膨脹 `RESIDUE_DILATE_PX`（2 px）再擦一次；還是超過：這個 unit **還原成原圖的像素**（連羽化的邊），報告 `skipped: erase residue`，並列入警告——寧可看得到原文，也不要灰色髒斑。unit 報告的 `erase_residue`（最後一次的佔比）、`erase_passes`（1 或 2）、`inpaint` 都看得到。
 
 **時間**：LaMa 在 CPU 上跑得慢。這個開發沙盒（4 核）量到：第一次載入模型約 30 秒，之後每次 512×512 推論約 4–6 秒；1478×1108 的合成頁（兩個叢集）含載入共約 39 秒，Telea 同一頁約 0.6 秒。擁有者的伺服器沒有量過，叢集越多越久（每個叢集一次推論）。Mode C 的省時（沒有 132 秒的規劃）有一部分會被這裡花掉。
 
@@ -952,7 +953,7 @@ lab 的 API（路徑現在在 `/lab` 底下：`POST /lab/api/batches`、`POST /l
 - **Mode C**（幾何版面 + 純文字翻譯，見上）：`segment.py`、`claude_text.py`、`pipeline_c.py`；lab 多了勾選框與欄位 `mode_c`、job 的 `mode_c`、彙總表的 `Mode C` 列。`jobs.start_job(..., run_c=False)`、`jobs.start_batch(..., run_c=False)` 是新的關鍵字參數；`main.Options` 多了 `mode_c`；沒有任何 Mode 回 400 的訊息變成 `select at least one of Mode A, Mode B and Mode C`。批次彙總表每張圖的列順序是 Mode A、Mode C、各 Mode B 模型。
 - **`Word.block`**（Vision 的區塊編號，和 `para` 一樣）；mock 的字也有合理的 `para`／`block`／`brk`（同一行的字共用段落，每行最後一個字是 `LINE_BREAK`）。其他 OCR 行為不變。
 - **擦字模型（LaMa）**（見上）：`inpaint.py`、`modelfetch.py`、`requirements-inpaint.txt`，變數 `INPAINT_MODEL`、`INPAINT_MODEL_PATH`、`INPAINT_MODEL_URL`、`INPAINT_MODEL_SHA256`。`erase.erase_units(rgb, units, protect_masks=None, *, model=None)` 呼叫修補器，`EraseResult` 多了 `engines`、`residue`、`passes`、`restored`。`erase.INPAINT_RADIUS` 仍在（現在是 `inpaint.TELEA_RADIUS`），`erase.inpaint_all` 仍是純 Telea。
-- **殘留檢查**（兩個 Mode、flat 與 inpaint 都有）：`RESIDUE_MAX_SHARE` 0.03、`RESIDUE_DILATE_PX` 2、`RESIDUE_NOISE_K` 3。unit 多了 `skipped: erase residue` 這個結果；報告多了 `inpaint`、`erase_residue`、`erase_passes`。**這也影響 `/v1` 的 Mode A**（沒有 opt-in 的開關）：以前留下髒斑的 unit 現在會還原成原文，不再畫譯文。
+- **殘留檢查**（兩個 Mode、flat 與 inpaint 都有）：`RESIDUE_MAX_SHARE` 0.03、`RESIDUE_DILATE_PX` 2、`RESIDUE_NOISE_K` 3。unit 多了 `skipped: erase residue` 這個結果；報告多了 `inpaint`、`erase_residue`、`erase_passes`。**預設關閉**（`ERASE_RESIDUE_CHECK=0`，只量不動作）：第一次真實照片的結果見上面；開著時它也影響 `/v1` 的 Mode A。
 - **文字顏色**：`colors.INK_FRACTION`（0.40）改名成 `INK_CORE_FRACTION` 並改成 0.15；`LAB_INK_FRACTION` 的預設值變成 0.15。也影響 `/v1` 的 Mode A。
 - **manifest `schema_version: 4`**（job 與批次）：job manifest 多了 `mode_c`（沒跑是 `null`，欄位和 `mode_a` 相同，另有 `segment_ms`、`claude_calls`、`chunk_sizes`、`segment`（計數，不含 `reasons`）），`options` 多了 `mode_c`、`translate_model`、`inpaint_model`，`objects` 多了 `C_a1*` 檔案；批次 manifest 的 `options` 同樣多了這三個，`summary[]` 多了 `mode: "C"` 的列。其餘欄位的意思沒變。
 - **`/lab/api/jobs` 與 `/lab/api/batches`** 多了 `mode_c`；job 的 `params` 多了 `mode_c`、`translate_model`、`inpaint_model`。
